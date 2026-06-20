@@ -632,7 +632,9 @@ const PROVIDER_LOGOUT_COMMANDS: Record<ProviderId, string[][]> = {
   claude: [["auth", "logout"]],
   codex: [["logout"], ["login", "logout"]],
   gemini: [],
-  antigravity: [["logout"], ["auth", "logout"]],
+  // `agy --help` currently exposes no logout/auth subcommand. Signing out is
+  // therefore the same safe local-token backup flow used for Gemini.
+  antigravity: [],
 };
 
 function credentialFilesFor(id: ProviderId, homeDir: string): string[] {
@@ -645,6 +647,7 @@ function credentialFilesFor(id: ProviderId, homeDir: string): string[] {
   if (id === "codex") return [join(homeDir, ".codex", "auth.json")];
   if (id === "gemini") return [join(homeDir, ".gemini", "oauth_creds.json")];
   return [
+    join(homeDir, ".gemini", "antigravity-cli", "antigravity-oauth-token"),
     join(homeDir, ".antigravity", "auth.json"),
     join(homeDir, ".antigravity", "oauth_creds.json"),
     join(homeDir, ".config", "antigravity", "auth.json"),
@@ -680,8 +683,34 @@ function backupCredentialFile(filePath: string, homeDir: string, now: Date): Log
   }
 }
 
+function logoutErrorLine(out: string, fallback: string): string {
+  return out
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-1)[0] || fallback;
+}
+
 function commandText(command: string, args: string[]): string {
   return [command, ...args].join(" ");
+}
+
+async function deleteAntigravityKeychainCredential(run: ProbeRunner): Promise<LogoutResult | null> {
+  const service = "gemini";
+  const account = "antigravity";
+  const result = await run("security", ["delete-generic-password", "-s", service, "-a", account], 12000);
+  if (result.code === 0) {
+    return {
+      ok: true,
+      detail: "Removed Antigravity keychain credential.",
+      command: "security delete-generic-password -s gemini -a antigravity",
+    };
+  }
+  if (/item could not be found|could not be found|not found/i.test(result.out)) return null;
+  return {
+    ok: false,
+    error: `Could not remove Antigravity keychain credential: ${logoutErrorLine(result.out, "security command failed")}`,
+  };
 }
 
 export async function logoutProvider(id: ProviderId, deps: LogoutDeps = {}): Promise<LogoutResult> {
@@ -702,9 +731,28 @@ export async function logoutProvider(id: ProviderId, deps: LogoutDeps = {}): Pro
     }
   }
 
+  const details: string[] = [];
+  if (id === "antigravity") {
+    const keychainResult = await deleteAntigravityKeychainCredential(run);
+    if (keychainResult) {
+      if (!keychainResult.ok) return keychainResult;
+      if (keychainResult.detail) details.push(keychainResult.detail);
+    }
+  }
+
   for (const filePath of credentialFilesFor(id, homeDir)) {
     const result = backupCredentialFile(filePath, homeDir, now());
-    if (result) return result;
+    if (!result) continue;
+    if (!result.ok) return result;
+    if (id !== "antigravity") return result;
+    if (result.detail) details.push(result.detail);
+  }
+
+  if (details.length > 0) {
+    return {
+      ok: true,
+      detail: details.join(" "),
+    };
   }
 
   return {
@@ -724,15 +772,36 @@ const LABELS_FOR_RESULT: Record<ProviderId, string> = {
 
 const URL_RE = /(https?:\/\/[^\s'"]+)/;
 const ANTIGRAVITY_CODE_LOGIN_HINT =
-  "Opened Antigravity sign-in without Terminal. Complete Google OAuth in the browser, paste the authorization code here, and this page updates automatically once agy models works.";
+  "Open Google OAuth.";
 const ANTIGRAVITY_MANUAL_LOGIN_HINT =
   "Could not start Antigravity sign-in automatically. Copy this command into Terminal, then complete the Antigravity sign-in prompts. This page updates automatically once agy models works.";
 const ANTIGRAVITY_LOGIN_PROMPT = "Reply with exactly OK.";
 const ANTIGRAVITY_LOGIN_JOB_TTL_MS = 5 * 60_000;
+const ANTIGRAVITY_EXPECT_BIN = "/usr/bin/expect";
 
 interface AntigravityLoginJob {
   child: ReturnType<typeof spawn>;
   createdAt: number;
+}
+
+function tclWord(value: string): string {
+  return `{${value.replace(/[{}\\]/g, "\\$&")}}`;
+}
+
+function antigravityLoginInvocation(command: string): { command: string; args: string[] } {
+  if (!existsSync(ANTIGRAVITY_EXPECT_BIN)) {
+    return { command, args: ["--print", ANTIGRAVITY_LOGIN_PROMPT] };
+  }
+  const script = [
+    "set timeout 300",
+    `spawn ${tclWord(command)} --print ${tclWord(ANTIGRAVITY_LOGIN_PROMPT)}`,
+    "expect {",
+    "  -re {Or, paste.*Enter:} { interact }",
+    "  eof {}",
+    "  timeout {}",
+    "}"
+  ].join("\n");
+  return { command: ANTIGRAVITY_EXPECT_BIN, args: ["-c", script] };
 }
 
 const antigravityLoginJobs = new Map<string, AntigravityLoginJob>();
@@ -952,7 +1021,8 @@ async function startAntigravityLogin(deps: LoginDeps = {}): Promise<LoginResult>
   cleanupAntigravityLoginJobs();
   let child: ReturnType<typeof spawn>;
   try {
-    child = spawnLogin(command, ["--print", ANTIGRAVITY_LOGIN_PROMPT], {
+    const invocation = antigravityLoginInvocation(command);
+    child = spawnLogin(invocation.command, invocation.args, {
       stdio: ["pipe", "pipe", "pipe"],
       detached: false
     });
@@ -1292,6 +1362,14 @@ export function renderLoginPage(port: number): string {
     min-width: 0;
     border-radius: 10px;
   }
+  .card .actions .auth-pending {
+    display: inline-flex; align-items: center; justify-content: center;
+    flex: 1 1 auto; min-width: 156px;
+    border: 1px solid color-mix(in srgb, var(--antigravity) 42%, var(--border-strong));
+    border-radius: 10px; padding: 8px 13px;
+    background: color-mix(in srgb, var(--antigravity) 16%, var(--panel-2));
+    color: var(--text); font-weight: 720; font-size: 13px;
+  }
 
   button.btn {
     appearance: none; border: 0; cursor: pointer; font: inherit; font-weight: 600;
@@ -1343,17 +1421,28 @@ export function renderLoginPage(port: number): string {
   .hintbox .auth-code-row {
     display: flex; gap: 8px; align-items: stretch; margin-top: 9px; flex-wrap: wrap;
   }
+  .hintbox .auth-code-lead {
+    margin: 0 0 8px; color: var(--faint); font-size: 12.5px;
+  }
+  .hintbox .oauth-link {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 100%; min-height: 40px; border-radius: 10px;
+    background: var(--antigravity); color: #fff; text-decoration: none;
+    font-weight: 700; margin-bottom: 9px; padding: 9px 12px;
+  }
+  .hintbox .oauth-link:hover { filter: brightness(1.06); }
   .hintbox .auth-code-row input {
     flex: 1 1 220px; min-width: 0;
     border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg);
     color: var(--text); font: inherit; font-size: 12.5px; padding: 8px 10px;
   }
   .hintbox .auth-code-row button {
-    appearance: none; border: 1px solid var(--border-strong); border-radius: 10px;
-    background: var(--panel); color: var(--text); cursor: pointer; font: inherit;
-    font-size: 12.5px; font-weight: 650; padding: 8px 12px;
+    appearance: none; flex: 1 1 190px; border: 1px solid transparent; border-radius: 10px;
+    background: var(--antigravity); color: #fff; cursor: pointer; font: inherit;
+    font-size: 13px; font-weight: 760; padding: 8px 14px;
   }
-  .hintbox .auth-code-row button:hover { border-color: var(--accent); color: var(--accent); }
+  .hintbox .auth-code-row button:hover { filter: brightness(1.06); }
+  .hintbox .auth-code-row button:disabled { opacity: .65; cursor: default; filter: none; }
   .hintbox .cmd {
     flex: 1 1 auto; min-width: 0;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
@@ -1833,6 +1922,7 @@ export function renderLoginPage(port: number): string {
   var lastStatus = null;
   var lastModelPayload = null;
   var lastUsagePayload = null;
+  var authStage = {};
   var LANG_STORAGE_KEY = "meridian.gateway.language";
   var I18N = {
     en: {
@@ -1903,15 +1993,17 @@ export function renderLoginPage(port: number): string {
       installNetworkError: "Network error while installing.",
       updateNetworkError: "Network error while updating.",
       manualSignIn: "Sign in manually to connect.",
-      antigravityTerminalLoginHint: "Opened Antigravity sign-in without Terminal. Complete Google OAuth in the browser, paste the authorization code here, and this page updates automatically once agy models works.",
+      antigravityTerminalLoginHint: "Open Google OAuth.",
       antigravityManualLoginHint: "Could not start Antigravity sign-in automatically. Copy this command into Terminal, then complete the Antigravity sign-in prompts. This page updates automatically once agy models works.",
       openAuthPage: "Open Google OAuth page",
-      authCodePlaceholder: "Paste authorization code",
-      submitAuthCode: "Submit code",
+      authCodePlaceholder: "Paste code from Google",
+      submitAuthCode: "Submit authorization code",
+      authCodePendingAction: "Submit code below",
+      authCodeSubmittedAction: "Signing in…",
       authCodeSubmitted: "Code submitted. Waiting for Antigravity to finish sign-in…",
       authCodeFailed: "Couldn’t submit the code. Start sign-in again.",
       openingBrowser: "Opening your browser — finish signing in there; this updates automatically.",
-      openingBrowserLink: " If it didn’t open, <a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">use this link</a>.",
+      openingBrowserLink: "<a class=\\\"oauth-link\\\" href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">Open Google OAuth</a>",
       signInFailed: "Couldn’t start sign-in. Please try again.",
       signingOutHint: "Signing out of {provider}…",
       signedOut: "Signed out. Connect again to choose an account.",
@@ -2015,15 +2107,17 @@ export function renderLoginPage(port: number): string {
       installNetworkError: "安装时出现网络错误。",
       updateNetworkError: "更新时出现网络错误。",
       manualSignIn: "请手动登录以完成连接。",
-      antigravityTerminalLoginHint: "已在不打开 Terminal 的情况下启动 Antigravity 登录。请在浏览器完成 Google OAuth，把授权 code 粘贴到这里；当 agy models 可用后，此页面会自动更新。",
+      antigravityTerminalLoginHint: "打开 Google OAuth。",
       antigravityManualLoginHint: "无法自动启动 Antigravity 登录。请复制这个命令到 Terminal，然后完成 Antigravity 登录提示；当 agy models 可用后，此页面会自动更新。",
       openAuthPage: "打开 Google OAuth 页面",
-      authCodePlaceholder: "粘贴授权 code",
-      submitAuthCode: "提交 code",
+      authCodePlaceholder: "粘贴 Google 授权 code",
+      submitAuthCode: "提交授权 code",
+      authCodePendingAction: "提交下方授权 code",
+      authCodeSubmittedAction: "登录中…",
       authCodeSubmitted: "code 已提交，正在等待 Antigravity 完成登录…",
       authCodeFailed: "无法提交 code。请重新开始登录。",
       openingBrowser: "正在打开浏览器，请在浏览器中完成登录；此处会自动更新。",
-      openingBrowserLink: " 如果没有打开，<a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">使用此链接</a>。",
+      openingBrowserLink: "<a class=\\\"oauth-link\\\" href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">打开 Google OAuth</a>",
       signInFailed: "无法启动登录，请重试。",
       signingOutHint: "正在登出 {provider}…",
       signedOut: "已登出。再次连接即可选择账号。",
@@ -2127,15 +2221,17 @@ export function renderLoginPage(port: number): string {
       installNetworkError: "インストール中にネットワークエラーが発生しました。",
       updateNetworkError: "更新中にネットワークエラーが発生しました。",
       manualSignIn: "接続するには手動でログインしてください。",
-      antigravityTerminalLoginHint: "Terminal を開かずに Antigravity のサインインを開始しました。ブラウザで Google OAuth を完了し、認可 code をここに貼り付けてください。agy models が使えるようになると、この画面は自動更新されます。",
+      antigravityTerminalLoginHint: "Google OAuth を開く。",
       antigravityManualLoginHint: "Antigravity サインインを自動開始できませんでした。このコマンドを Terminal にコピーし、Antigravity のサインイン手順を完了してください。agy models が使えるようになると、この画面は自動更新されます。",
       openAuthPage: "Google OAuth ページを開く",
-      authCodePlaceholder: "認可 code を貼り付け",
-      submitAuthCode: "code を送信",
+      authCodePlaceholder: "Google の認可 code を貼り付け",
+      submitAuthCode: "認可 code を送信",
+      authCodePendingAction: "下の認可 code を送信",
+      authCodeSubmittedAction: "サインイン中…",
       authCodeSubmitted: "code を送信しました。Antigravity のサインイン完了を待っています…",
       authCodeFailed: "code を送信できませんでした。サインインをもう一度開始してください。",
       openingBrowser: "ブラウザを開いています。そこでログインを完了してください。この画面は自動更新されます。",
-      openingBrowserLink: " 開かない場合は、<a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">このリンク</a>を使ってください。",
+      openingBrowserLink: "<a class=\\\"oauth-link\\\" href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">Google OAuth を開く</a>",
       signInFailed: "サインインを開始できませんでした。もう一度お試しください。",
       signingOutHint: "{provider} からログアウトしています…",
       signedOut: "ログアウトしました。別アカウントを選ぶには再接続してください。",
@@ -2301,6 +2397,10 @@ export function renderLoginPage(port: number): string {
     if (btn) btn.addEventListener("click", function () { updateCli(id); });
   }
 
+  function authActionLabel(id) {
+    return authStage[id] === "finishing" ? t("authCodeSubmittedAction") : t("authCodePendingAction");
+  }
+
   function renderFacts(card, id, state) {
     var facts = el(card, ".facts");
     if (!facts) return;
@@ -2327,6 +2427,7 @@ export function renderLoginPage(port: number): string {
     var actions = el(card, ".actions");
     var installed = !state || state.installed !== false; // default true if field absent
     if (state && state.connected) {
+      delete authStage[id];
       card.classList.add("connected");
       statText.textContent = t("connected");
       detail.textContent = state.detail || "";
@@ -2338,6 +2439,7 @@ export function renderLoginPage(port: number): string {
       hideHint(id);
       stopPoll(id);
     } else if (!installed) {
+      delete authStage[id];
       // CLI isn't installed on this machine → one-click "Set up" (install).
       card.classList.remove("connected");
       statText.textContent = t("notInstalled");
@@ -2353,8 +2455,12 @@ export function renderLoginPage(port: number): string {
       detail.textContent = (state && state.detail) || "";
       detail.style.display = (state && state.detail) ? "" : "none";
       renderFacts(card, id, state);
-      actions.innerHTML = '<button class="btn" type="button">' + esc(t("connect")) + '</button>' + updateButton(id);
-      actions.querySelector(".btn").addEventListener("click", function () { connect(id); });
+      if (authStage[id]) {
+        actions.innerHTML = '<span class="auth-pending">' + esc(authActionLabel(id)) + '</span>' + updateButton(id);
+      } else {
+        actions.innerHTML = '<button class="btn" type="button">' + esc(t("connect")) + '</button>' + updateButton(id);
+        actions.querySelector(".btn").addEventListener("click", function () { connect(id); });
+      }
       bindUpdateButton(card, id);
     }
   }
@@ -2392,15 +2498,56 @@ export function renderLoginPage(port: number): string {
     if (btn) btn.addEventListener("click", function () { copyText(cmd, btn); });
   }
 
+  var pendingOAuthWindows = {};
+
+  function openOAuthWindow(id) {
+    if (id !== "antigravity") return null;
+    try {
+      var popup = window.open("about:blank", "_blank");
+      if (popup) pendingOAuthWindows[id] = popup;
+      return popup;
+    } catch {
+      return null;
+    }
+  }
+
+  function closeOAuthWindow(id) {
+    var popup = pendingOAuthWindows[id];
+    delete pendingOAuthWindows[id];
+    if (!popup || popup.closed) return;
+    try { popup.close(); } catch {}
+  }
+
+  function navigateOAuthWindow(id, url) {
+    var popup = pendingOAuthWindows[id];
+    delete pendingOAuthWindows[id];
+    if (popup && !popup.closed) {
+      try {
+        popup.opener = null;
+        popup.location.href = url;
+        return true;
+      } catch {
+        // fall through to a direct open below
+      }
+    }
+    try {
+      window.open(url, "_blank", "noopener");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function showAuthCodePrompt(id, lead, url, jobId) {
     var card = cardFor(id);
     if (!card) return;
     var link = url
-      ? '<div style="margin-top:8px"><a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(t("openAuthPage")) + '</a></div>'
+      ? '<a class="oauth-link" href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(t("openAuthPage")) + '</a>'
       : "";
+    var leadHtml = lead ? '<div class="auth-code-lead">' + esc(lead) + '</div>' : "";
     showHint(id,
-      esc(lead) +
       link +
+      leadHtml +
       '<div class="auth-code-row">' +
       '<input class="auth-code-input" type="password" autocomplete="one-time-code" placeholder="' + esc(t("authCodePlaceholder")) + '" />' +
       '<button class="auth-code-submit" type="button">' + esc(t("submitAuthCode")) + '</button>' +
@@ -2411,6 +2558,8 @@ export function renderLoginPage(port: number): string {
     var send = function () {
       var code = input && input.value ? input.value.trim() : "";
       if (!code) return;
+      authStage[id] = "finishing";
+      rerenderProvider(id);
       if (submit) submit.disabled = true;
       fetch("/providers/antigravity/login/" + encodeURIComponent(jobId) + "/code", {
         method: "POST",
@@ -2426,7 +2575,9 @@ export function renderLoginPage(port: number): string {
           startPoll(id);
         })
         .catch(function () {
-          showHint(id, esc(t("authCodeFailed")), false);
+          authStage[id] = "code";
+          rerenderProvider(id);
+          showAuthCodePrompt(id, t("authCodeFailed"), url, jobId);
           if (submit) submit.disabled = false;
         });
     };
@@ -2527,6 +2678,7 @@ export function renderLoginPage(port: number): string {
   function connect(id, chained) {
     var card = cardFor(id);
     var btn = card && el(card, ".actions button.btn");
+    if (id === "antigravity") openOAuthWindow(id);
     busy[id] = true;
     if (btn) { btn.disabled = true; btn.textContent = t("opening"); }
     fetch("/providers/" + id + "/login", { method: "POST" })
@@ -2534,13 +2686,18 @@ export function renderLoginPage(port: number): string {
       .then(function (res) {
         if (res && res.needsCode && res.jobId) {
           busy[id] = false;
-          showAuthCodePrompt(id, localizeKnownValue(res.hint || t("manualSignIn")), res.url, res.jobId);
-          if (btn) { btn.disabled = false; btn.textContent = t("connect"); }
+          if (res.url) navigateOAuthWindow(id, res.url);
+          else closeOAuthWindow(id);
+          authStage[id] = "code";
+          rerenderProvider(id);
+          showAuthCodePrompt(id, "", res.url, res.jobId);
           startPoll(id);
           return;
         }
         if (res && res.manual) {
           busy[id] = false;
+          delete authStage[id];
+          closeOAuthWindow(id);
           if (res.command) {
             showCommandFallback(id, localizeKnownValue(res.hint || t("manualSignIn")), null, res.command);
           } else {
@@ -2551,12 +2708,16 @@ export function renderLoginPage(port: number): string {
           return;
         }
         var msg = res && res.hint ? esc(localizeKnownValue(res.hint)) : t("openingBrowser");
+        delete authStage[id];
         if (res && res.command) {
+          closeOAuthWindow(id);
           showCommandFallback(id, localizeKnownValue(res.hint || t("manualSignIn")), null, res.command);
         } else if (res && res.url) {
+          navigateOAuthWindow(id, res.url);
           msg += t("openingBrowserLink", { url: esc(res.url) });
           showHint(id, msg, true);
         } else {
+          closeOAuthWindow(id);
           showHint(id, msg, true);
         }
         // Allow status polling to take over the card now that login is in flight.
@@ -2565,6 +2726,8 @@ export function renderLoginPage(port: number): string {
       })
       .catch(function () {
         busy[id] = false;
+        delete authStage[id];
+        closeOAuthWindow(id);
         showHint(id, t("signInFailed"), false);
         if (btn) { btn.disabled = false; btn.textContent = t("connect"); }
       });

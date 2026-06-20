@@ -93,6 +93,16 @@ test("renderLoginPage includes Antigravity as an independent provider", () => {
   assert.match(html, /antigravityManualLoginHint/);
   assert.match(html, /function showAuthCodePrompt/);
   assert.match(html, /\/providers\/antigravity\/login\/"\s*\+\s*encodeURIComponent\(jobId\)\s*\+\s*"\/code/);
+  assert.match(html, /class="oauth-link"/);
+  assert.match(html, /class="auth-pending"/);
+  assert.match(html, /function openOAuthWindow/);
+  assert.match(html, /authStage\[id\]\s*=\s*"code"/);
+  assert.match(html, /authStage\[id\]\s*=\s*"finishing"/);
+  assert.match(html, /authCodePendingAction/);
+  assert.match(html, /authCodeSubmittedAction/);
+  assert.match(html, /\.location\.href\s*=\s*url/);
+  assert.doesNotMatch(html, /已在不打开 Terminal 的情况下启动 Antigravity 登录/);
+  assert.doesNotMatch(html, /Opened Antigravity sign-in without Terminal/);
   assert.match(html, /res\.command/);
   assert.match(html, /showCommandFallback\(id,\s*localizeKnownValue/);
   assert.match(html, /--antigravity:/);
@@ -199,6 +209,10 @@ test("startLogin starts a browserless Antigravity OAuth code job", async () => {
   const result = await startLogin("antigravity", {
     spawnLogin: (command, args) => {
       calls.push([command, ...args].join(" "));
+      assert.equal(command, "/usr/bin/expect");
+      assert.equal(args[0], "-c");
+      assert.match(args[1] ?? "", /spawn \{agy\} --print/);
+      assert.match(args[1] ?? "", /interact/);
       queueMicrotask(() => {
         child.stdout.write("Authentication required. Please visit the URL to log in:\n");
         child.stdout.write("  https://accounts.google.com/o/oauth2/auth?state=test-state\n");
@@ -213,8 +227,8 @@ test("startLogin starts a browserless Antigravity OAuth code job", async () => {
   assert.equal(typeof result.jobId, "string");
   assert.equal(result.command, "agy");
   assert.match(result.url ?? "", /^https:\/\/accounts\.google\.com\/o\/oauth2\/auth/);
-  assert.match(result.hint ?? "", /Antigravity/);
-  assert.deepEqual(calls, ["agy --print Reply with exactly OK."]);
+  assert.equal(result.hint, "Open Google OAuth.");
+  assert.equal(calls.length, 1);
 
   const submitted = submitAntigravityLoginCode(result.jobId ?? "", "test-code");
   assert.equal(submitted.ok, true);
@@ -293,6 +307,59 @@ test("logoutProvider backs up Codex auth file when CLI logout is unavailable", a
   assert.equal(readFileSync(backupPath, "utf8"), JSON.stringify({ tokens: { refresh_token: "secret" } }));
   assert.match(result.detail ?? "", /backed up/);
   assert.doesNotMatch(result.detail ?? "", /secret/);
+});
+
+test("logoutProvider backs up Gemini OAuth file without a CLI logout command", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "meridian-gateway-logout-"));
+  const authDir = join(homeDir, ".gemini");
+  const authPath = join(authDir, "oauth_creds.json");
+  const calls: string[] = [];
+  mkdirSync(authDir, { recursive: true });
+  writeFileSync(authPath, JSON.stringify({ refresh_token: "gemini-secret" }), "utf8");
+
+  const result = await logoutProvider("gemini", {
+    homeDir,
+    now: () => new Date("2026-06-20T01:02:03.456Z"),
+    run: async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      return { code: 1, out: "should not be called" };
+    },
+  });
+
+  const backupPath = join(authDir, "oauth_creds.json.logged-out-2026-06-20T01-02-03-456Z");
+  assert.deepEqual(calls, []);
+  assert.equal(result.ok, true);
+  assert.equal(existsSync(authPath), false);
+  assert.equal(readFileSync(backupPath, "utf8"), JSON.stringify({ refresh_token: "gemini-secret" }));
+  assert.match(result.detail ?? "", /backed up/);
+  assert.doesNotMatch(result.detail ?? "", /gemini-secret/);
+});
+
+test("logoutProvider backs up Antigravity OAuth token and removes keychain auth without unsupported CLI logout commands", async () => {
+  const homeDir = mkdtempSync(join(tmpdir(), "meridian-gateway-logout-"));
+  const authDir = join(homeDir, ".gemini", "antigravity-cli");
+  const authPath = join(authDir, "antigravity-oauth-token");
+  const calls: string[] = [];
+  mkdirSync(authDir, { recursive: true });
+  writeFileSync(authPath, "antigravity-secret", "utf8");
+
+  const result = await logoutProvider("antigravity", {
+    homeDir,
+    now: () => new Date("2026-06-20T01:02:03.456Z"),
+    run: async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      return { code: 0, out: "" };
+    },
+  });
+
+  const backupPath = join(authDir, "antigravity-oauth-token.logged-out-2026-06-20T01-02-03-456Z");
+  assert.deepEqual(calls, ["security delete-generic-password -s gemini -a antigravity"]);
+  assert.equal(result.ok, true);
+  assert.equal(existsSync(authPath), false);
+  assert.equal(readFileSync(backupPath, "utf8"), "antigravity-secret");
+  assert.match(result.detail ?? "", /backed up/);
+  assert.match(result.detail ?? "", /keychain/);
+  assert.doesNotMatch(result.detail ?? "", /antigravity-secret/);
 });
 
 test("logoutProvider uses provider logout command when it succeeds", async () => {
