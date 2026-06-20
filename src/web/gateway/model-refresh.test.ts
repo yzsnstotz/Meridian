@@ -166,6 +166,86 @@ test("GatewayModelRegistry refreshes and caches only successfully probed CLI mod
   assert.equal(listed.errors, undefined);
 });
 
+test("GatewayModelRegistry refreshes one selected provider without clearing other cached providers", async () => {
+  const cachePath = join(mkdtempSync(join(tmpdir(), "meridian-model-cache-")), "models.json");
+  const catalogCalls: ProviderModelCatalogProvider[] = [];
+  const probed: string[] = [];
+  const registry = new GatewayModelRegistry({
+    cachePath,
+    now: () => new Date(catalogCalls.length < 4 ? "2026-06-20T01:02:03.000Z" : "2026-06-20T02:03:04.000Z"),
+    catalog: {
+      async listModels(provider: ProviderModelCatalogProvider): Promise<ProviderModelCatalogResult> {
+        catalogCalls.push(provider);
+        if (provider === "claude") {
+          return { provider, models: [{ id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" }] };
+        }
+        if (provider === "gemini") {
+          return { provider, models: [{ id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" }] };
+        }
+        if (provider === "antigravity") {
+          const label = catalogCalls.filter((entry) => entry === "antigravity").length === 1
+            ? "Gemini 3.5 Flash (Medium)"
+            : "Claude Opus 4.6 (Thinking)";
+          return { provider, models: [{ id: `antigravity/${label}`, label }] };
+        }
+        return { provider, models: [{ id: "gpt-live-codex", label: "GPT Live Codex" }] };
+      }
+    },
+    completions: {
+      claude: async (req: ChatCompletionRequest) => {
+        probed.push(`claude:${req.model ?? ""}`);
+        return ok(req.model);
+      },
+      gemini: async (req: ChatCompletionRequest) => {
+        probed.push(`gemini:${req.model ?? ""}`);
+        return ok(req.model);
+      },
+      antigravity: async (req: ChatCompletionRequest) => {
+        probed.push(`antigravity:${req.model ?? ""}`);
+        return ok(req.model);
+      }
+    }
+  });
+
+  await registry.refresh(status({
+    claude: { installed: true, connected: true },
+    codex: { installed: true, connected: true },
+    gemini: { installed: true, connected: true },
+    antigravity: { installed: true, connected: true }
+  }));
+  const refreshed = await registry.refresh(status({
+    claude: { installed: true, connected: true },
+    codex: { installed: true, connected: true },
+    gemini: { installed: true, connected: true },
+    antigravity: { installed: true, connected: true }
+  }), { provider: "antigravity" });
+
+  assert.deepEqual(catalogCalls, ["claude", "codex", "gemini", "antigravity", "antigravity"]);
+  assert.deepEqual(probed, [
+    "claude:claude-sonnet-4-6",
+    "gemini:gemini-2.5-pro",
+    "antigravity:antigravity/Gemini 3.5 Flash (Medium)",
+    "antigravity:antigravity/Claude Opus 4.6 (Thinking)"
+  ]);
+  assert.deepEqual(refreshed.providers.antigravity?.models, [
+    { id: "antigravity/Claude Opus 4.6 (Thinking)", label: "Claude Opus 4.6 (Thinking)" }
+  ]);
+
+  const listed = await registry.list(status({
+    claude: { installed: true, connected: true },
+    codex: { installed: true, connected: true },
+    gemini: { installed: true, connected: true },
+    antigravity: { installed: true, connected: true }
+  }));
+
+  assert.deepEqual(listed.data.map((model) => model.id), [
+    "claude-sonnet-4-6",
+    "antigravity/Claude Opus 4.6 (Thinking)",
+    "gemini-2.5-pro",
+    "gpt-live-codex"
+  ]);
+});
+
 test("GatewayModelRegistry marks Gemini unsupported-client accounts unavailable during refresh", async () => {
   const registry = new GatewayModelRegistry({
     cachePath: join(mkdtempSync(join(tmpdir(), "meridian-model-cache-")), "models.json"),

@@ -14,6 +14,7 @@
 // commands + credential files); only POST /providers/:id/login spawns a CLI,
 // and it does so detached so the browser flow never blocks the gateway.
 import { spawn, execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync, renameSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { homedir } from "node:os";
@@ -54,6 +55,13 @@ export interface LoginResult {
   url?: string;
   hint?: string;
   command?: string;
+  jobId?: string;
+  needsCode?: boolean;
+}
+
+export interface LoginCodeResult {
+  ok: boolean;
+  error?: string;
 }
 
 export interface InstallResult {
@@ -715,14 +723,37 @@ const LABELS_FOR_RESULT: Record<ProviderId, string> = {
 // ── Login kick-off ───────────────────────────────────────────────────────────
 
 const URL_RE = /(https?:\/\/[^\s'"]+)/;
-const ANTIGRAVITY_TERMINAL_LOGIN_HINT =
-  "Opened Antigravity sign-in in Terminal. Complete the prompts there; this page updates automatically once agy models works.";
+const ANTIGRAVITY_CODE_LOGIN_HINT =
+  "Opened Antigravity sign-in without Terminal. Complete Google OAuth in the browser, paste the authorization code here, and this page updates automatically once agy models works.";
 const ANTIGRAVITY_MANUAL_LOGIN_HINT =
-  "Could not open Terminal automatically. Copy this command into Terminal, then complete the Antigravity sign-in prompts. This page updates automatically once agy models works.";
+  "Could not start Antigravity sign-in automatically. Copy this command into Terminal, then complete the Antigravity sign-in prompts. This page updates automatically once agy models works.";
+const ANTIGRAVITY_LOGIN_PROMPT = "Reply with exactly OK.";
+const ANTIGRAVITY_LOGIN_JOB_TTL_MS = 5 * 60_000;
+
+interface AntigravityLoginJob {
+  child: ReturnType<typeof spawn>;
+  createdAt: number;
+}
+
+const antigravityLoginJobs = new Map<string, AntigravityLoginJob>();
+
+function cleanupAntigravityLoginJobs(): void {
+  const cutoff = Date.now() - ANTIGRAVITY_LOGIN_JOB_TTL_MS;
+  for (const [jobId, job] of antigravityLoginJobs) {
+    if (job.createdAt >= cutoff) continue;
+    try {
+      job.child.kill();
+    } catch {
+      // best-effort cleanup
+    }
+    antigravityLoginJobs.delete(jobId);
+  }
+}
 
 interface LoginDeps {
   platform?: NodeJS.Platform;
   run?: ProbeRunner;
+  spawnLogin?: (command: string, args: string[], options: Parameters<typeof spawn>[2]) => ReturnType<typeof spawn>;
 }
 
 /**
@@ -915,39 +946,93 @@ function startGeminiLogin(): Promise<LoginResult> {
   });
 }
 
-function escapeAppleScriptString(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
-}
-
 async function startAntigravityLogin(deps: LoginDeps = {}): Promise<LoginResult> {
   const command = PROVIDER_PACKAGES.antigravity.bin;
-  const platform = deps.platform ?? process.platform;
-  if (platform !== "darwin") {
+  const spawnLogin = deps.spawnLogin ?? spawn;
+  cleanupAntigravityLoginJobs();
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawnLogin(command, ["--print", ANTIGRAVITY_LOGIN_PROMPT], {
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: false
+    });
+  } catch {
     return {
       manual: true,
       hint: ANTIGRAVITY_MANUAL_LOGIN_HINT,
       command,
     };
   }
-  const run = deps.run ?? runProbe;
-  const result = await run("osascript", [
-    "-e",
-    'tell application "Terminal" to activate',
-    "-e",
-    `tell application "Terminal" to do script "${escapeAppleScriptString(command)}"`,
-  ], 12000);
-  if (result.code === 0) {
-    return {
-      started: true,
-      hint: ANTIGRAVITY_TERMINAL_LOGIN_HINT,
-      command,
+
+  const jobId = randomUUID();
+  antigravityLoginJobs.set(jobId, { child, createdAt: Date.now() });
+  const ttlTimer = setTimeout(() => {
+    const job = antigravityLoginJobs.get(jobId);
+    if (!job) return;
+    try {
+      job.child.kill();
+    } catch {
+      // best-effort cleanup
+    }
+    antigravityLoginJobs.delete(jobId);
+  }, ANTIGRAVITY_LOGIN_JOB_TTL_MS);
+  ttlTimer.unref?.();
+
+  return new Promise((resolve) => {
+    let url: string | undefined;
+    let resolved = false;
+    const finish = (result?: Partial<LoginResult>): void => {
+      if (resolved) return;
+      resolved = true;
+      resolve({
+        started: true,
+        hint: ANTIGRAVITY_CODE_LOGIN_HINT,
+        command,
+        jobId,
+        needsCode: true,
+        url,
+        ...result
+      });
     };
+    const scan = (chunk: Buffer): void => {
+      const m = URL_RE.exec(chunk.toString());
+      if (m && !url) {
+        url = m[1];
+        finish();
+      }
+    };
+    child.stdout?.on("data", scan);
+    child.stderr?.on("data", scan);
+    child.on("error", () => {
+      antigravityLoginJobs.delete(jobId);
+      finish({ started: undefined, manual: true, needsCode: undefined, jobId: undefined, hint: ANTIGRAVITY_MANUAL_LOGIN_HINT });
+    });
+    child.on("close", () => {
+      setTimeout(() => antigravityLoginJobs.delete(jobId), 30_000).unref?.();
+      if (!resolved) finish({ needsCode: false });
+    });
+    setTimeout(() => finish(), 3000).unref?.();
+  });
+}
+
+export function submitAntigravityLoginCode(jobId: string, code: string): LoginCodeResult {
+  cleanupAntigravityLoginJobs();
+  const safeJobId = jobId.trim();
+  const safeCode = code.trim();
+  if (!safeJobId || !safeCode) {
+    return { ok: false, error: "missing authorization code" };
   }
-  return {
-    manual: true,
-    hint: ANTIGRAVITY_MANUAL_LOGIN_HINT,
-    command,
-  };
+  const job = antigravityLoginJobs.get(safeJobId);
+  if (!job || !job.child.stdin || job.child.stdin.destroyed) {
+    return { ok: false, error: "login session expired" };
+  }
+  try {
+    job.child.stdin.write(`${safeCode}\n`);
+    antigravityLoginJobs.delete(safeJobId);
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "could not submit authorization code" };
+  }
 }
 
 export async function startLogin(id: ProviderId, deps: LoginDeps = {}): Promise<LoginResult> {
@@ -1255,6 +1340,20 @@ export function renderLoginPage(port: number): string {
   .hintbox .cmd-row {
     display: flex; gap: 8px; align-items: stretch; margin-top: 9px;
   }
+  .hintbox .auth-code-row {
+    display: flex; gap: 8px; align-items: stretch; margin-top: 9px; flex-wrap: wrap;
+  }
+  .hintbox .auth-code-row input {
+    flex: 1 1 220px; min-width: 0;
+    border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg);
+    color: var(--text); font: inherit; font-size: 12.5px; padding: 8px 10px;
+  }
+  .hintbox .auth-code-row button {
+    appearance: none; border: 1px solid var(--border-strong); border-radius: 10px;
+    background: var(--panel); color: var(--text); cursor: pointer; font: inherit;
+    font-size: 12.5px; font-weight: 650; padding: 8px 12px;
+  }
+  .hintbox .auth-code-row button:hover { border-color: var(--accent); color: var(--accent); }
   .hintbox .cmd {
     flex: 1 1 auto; min-width: 0;
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
@@ -1307,6 +1406,34 @@ export function renderLoginPage(port: number): string {
   button.copy:hover { border-color: var(--accent); color: var(--accent); }
   button.copy.done { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
   button.copy svg { width: 15px; height: 15px; }
+  .model-refresh-controls {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .model-refresh-controls select {
+    appearance: none;
+    min-height: 34px;
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    background: var(--panel-2);
+    color: var(--text);
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 650;
+    padding: 0 29px 0 10px;
+    cursor: pointer;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+      linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position:
+      calc(100% - 14px) 14px,
+      calc(100% - 9px) 14px;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+  }
   button.refresh-models {
     appearance: none;
     border: 1px solid var(--border-strong);
@@ -1631,7 +1758,16 @@ export function renderLoginPage(port: number): string {
           <h2 data-i18n="modelsTitle">Models</h2>
           <div class="meta" id="modelsMeta" data-i18n="modelsRefreshHint">Refresh to verify which CLI models this OAuth account can use now.</div>
         </div>
-        <button class="refresh-models" id="refreshModelsBtn" type="button" data-i18n="refreshModels">Refresh models</button>
+        <div class="model-refresh-controls">
+          <select id="refreshProvider" aria-label="Refresh provider" data-i18n-aria="refreshProviderAria">
+            <option value="all" data-i18n="allProviders">All providers</option>
+            <option value="claude">Claude</option>
+            <option value="codex">ChatGPT (Codex)</option>
+            <option value="gemini">Gemini</option>
+            <option value="antigravity">Antigravity</option>
+          </select>
+          <button class="refresh-models" id="refreshModelsBtn" type="button" data-i18n="refreshModels">Refresh models</button>
+        </div>
       </div>
       <div class="models" id="models"><div class="empty" data-i18n="loadingModels">Loading models…</div></div>
     </section>
@@ -1731,6 +1867,8 @@ export function renderLoginPage(port: number): string {
       testCli: "Test CLI",
       modelsTitle: "Models",
       refreshModels: "Refresh models",
+      refreshProviderAria: "Refresh provider",
+      allProviders: "All providers",
       refreshingModels: "Refreshing…",
       modelsRefreshHint: "Refresh to verify which CLI models this OAuth account can use now.",
       modelsRefreshed: "Models refreshed.",
@@ -1765,8 +1903,13 @@ export function renderLoginPage(port: number): string {
       installNetworkError: "Network error while installing.",
       updateNetworkError: "Network error while updating.",
       manualSignIn: "Sign in manually to connect.",
-      antigravityTerminalLoginHint: "Opened Antigravity sign-in in Terminal. Complete the prompts there; this page updates automatically once agy models works.",
-      antigravityManualLoginHint: "Could not open Terminal automatically. Copy this command into Terminal, then complete the Antigravity sign-in prompts. This page updates automatically once agy models works.",
+      antigravityTerminalLoginHint: "Opened Antigravity sign-in without Terminal. Complete Google OAuth in the browser, paste the authorization code here, and this page updates automatically once agy models works.",
+      antigravityManualLoginHint: "Could not start Antigravity sign-in automatically. Copy this command into Terminal, then complete the Antigravity sign-in prompts. This page updates automatically once agy models works.",
+      openAuthPage: "Open Google OAuth page",
+      authCodePlaceholder: "Paste authorization code",
+      submitAuthCode: "Submit code",
+      authCodeSubmitted: "Code submitted. Waiting for Antigravity to finish sign-in…",
+      authCodeFailed: "Couldn’t submit the code. Start sign-in again.",
       openingBrowser: "Opening your browser — finish signing in there; this updates automatically.",
       openingBrowserLink: " If it didn’t open, <a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">use this link</a>.",
       signInFailed: "Couldn’t start sign-in. Please try again.",
@@ -1836,6 +1979,8 @@ export function renderLoginPage(port: number): string {
       testCli: "测试 CLI",
       modelsTitle: "模型",
       refreshModels: "刷新模型",
+      refreshProviderAria: "刷新供应商",
+      allProviders: "全部供应商",
       refreshingModels: "刷新中…",
       modelsRefreshHint: "刷新以验证这个 OAuth 账号当前真正可用的 CLI 模型。",
       modelsRefreshed: "模型已刷新。",
@@ -1870,8 +2015,13 @@ export function renderLoginPage(port: number): string {
       installNetworkError: "安装时出现网络错误。",
       updateNetworkError: "更新时出现网络错误。",
       manualSignIn: "请手动登录以完成连接。",
-      antigravityTerminalLoginHint: "已在 Terminal 中打开 Antigravity 登录流程。请在该窗口完成提示；当 agy models 可用后，此页面会自动更新。",
-      antigravityManualLoginHint: "无法自动打开 Terminal。请复制这个命令到 Terminal，然后完成 Antigravity 登录提示；当 agy models 可用后，此页面会自动更新。",
+      antigravityTerminalLoginHint: "已在不打开 Terminal 的情况下启动 Antigravity 登录。请在浏览器完成 Google OAuth，把授权 code 粘贴到这里；当 agy models 可用后，此页面会自动更新。",
+      antigravityManualLoginHint: "无法自动启动 Antigravity 登录。请复制这个命令到 Terminal，然后完成 Antigravity 登录提示；当 agy models 可用后，此页面会自动更新。",
+      openAuthPage: "打开 Google OAuth 页面",
+      authCodePlaceholder: "粘贴授权 code",
+      submitAuthCode: "提交 code",
+      authCodeSubmitted: "code 已提交，正在等待 Antigravity 完成登录…",
+      authCodeFailed: "无法提交 code。请重新开始登录。",
       openingBrowser: "正在打开浏览器，请在浏览器中完成登录；此处会自动更新。",
       openingBrowserLink: " 如果没有打开，<a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">使用此链接</a>。",
       signInFailed: "无法启动登录，请重试。",
@@ -1941,6 +2091,8 @@ export function renderLoginPage(port: number): string {
       testCli: "CLI をテスト",
       modelsTitle: "モデル",
       refreshModels: "モデルを更新",
+      refreshProviderAria: "更新するプロバイダー",
+      allProviders: "すべてのプロバイダー",
       refreshingModels: "更新中…",
       modelsRefreshHint: "この OAuth アカウントで今使える CLI モデルを検証します。",
       modelsRefreshed: "モデルを更新しました。",
@@ -1975,8 +2127,13 @@ export function renderLoginPage(port: number): string {
       installNetworkError: "インストール中にネットワークエラーが発生しました。",
       updateNetworkError: "更新中にネットワークエラーが発生しました。",
       manualSignIn: "接続するには手動でログインしてください。",
-      antigravityTerminalLoginHint: "Terminal で Antigravity のサインインを開きました。そこで手順を完了してください。agy models が使えるようになると、この画面は自動更新されます。",
-      antigravityManualLoginHint: "Terminal を自動で開けませんでした。このコマンドを Terminal にコピーし、Antigravity のサインイン手順を完了してください。agy models が使えるようになると、この画面は自動更新されます。",
+      antigravityTerminalLoginHint: "Terminal を開かずに Antigravity のサインインを開始しました。ブラウザで Google OAuth を完了し、認可 code をここに貼り付けてください。agy models が使えるようになると、この画面は自動更新されます。",
+      antigravityManualLoginHint: "Antigravity サインインを自動開始できませんでした。このコマンドを Terminal にコピーし、Antigravity のサインイン手順を完了してください。agy models が使えるようになると、この画面は自動更新されます。",
+      openAuthPage: "Google OAuth ページを開く",
+      authCodePlaceholder: "認可 code を貼り付け",
+      submitAuthCode: "code を送信",
+      authCodeSubmitted: "code を送信しました。Antigravity のサインイン完了を待っています…",
+      authCodeFailed: "code を送信できませんでした。サインインをもう一度開始してください。",
       openingBrowser: "ブラウザを開いています。そこでログインを完了してください。この画面は自動更新されます。",
       openingBrowserLink: " 開かない場合は、<a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">このリンク</a>を使ってください。",
       signInFailed: "サインインを開始できませんでした。もう一度お試しください。",
@@ -2235,6 +2392,53 @@ export function renderLoginPage(port: number): string {
     if (btn) btn.addEventListener("click", function () { copyText(cmd, btn); });
   }
 
+  function showAuthCodePrompt(id, lead, url, jobId) {
+    var card = cardFor(id);
+    if (!card) return;
+    var link = url
+      ? '<div style="margin-top:8px"><a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(t("openAuthPage")) + '</a></div>'
+      : "";
+    showHint(id,
+      esc(lead) +
+      link +
+      '<div class="auth-code-row">' +
+      '<input class="auth-code-input" type="password" autocomplete="one-time-code" placeholder="' + esc(t("authCodePlaceholder")) + '" />' +
+      '<button class="auth-code-submit" type="button">' + esc(t("submitAuthCode")) + '</button>' +
+      '</div>',
+      false);
+    var input = el(card, ".hintbox .auth-code-input");
+    var submit = el(card, ".hintbox .auth-code-submit");
+    var send = function () {
+      var code = input && input.value ? input.value.trim() : "";
+      if (!code) return;
+      if (submit) submit.disabled = true;
+      fetch("/providers/antigravity/login/" + encodeURIComponent(jobId) + "/code", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: code })
+      })
+        .then(function (r) {
+          return r.json().then(function (res) { return { ok: r.ok, res: res }; });
+        })
+        .then(function (payload) {
+          if (!payload.ok || !payload.res || !payload.res.ok) throw new Error("submit failed");
+          showHint(id, esc(t("authCodeSubmitted")), true);
+          startPoll(id);
+        })
+        .catch(function () {
+          showHint(id, esc(t("authCodeFailed")), false);
+          if (submit) submit.disabled = false;
+        });
+    };
+    if (submit) submit.addEventListener("click", send);
+    if (input) {
+      input.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter") send();
+      });
+      input.focus();
+    }
+  }
+
   // Manual install fallback: restore the Set-up button so the user can retry too.
   function showInstallFallback(id, errMsg, command) {
     var card = cardFor(id);
@@ -2328,6 +2532,13 @@ export function renderLoginPage(port: number): string {
     fetch("/providers/" + id + "/login", { method: "POST" })
       .then(function (r) { return r.json(); })
       .then(function (res) {
+        if (res && res.needsCode && res.jobId) {
+          busy[id] = false;
+          showAuthCodePrompt(id, localizeKnownValue(res.hint || t("manualSignIn")), res.url, res.jobId);
+          if (btn) { btn.disabled = false; btn.textContent = t("connect"); }
+          startPoll(id);
+          return;
+        }
         if (res && res.manual) {
           busy[id] = false;
           if (res.command) {
@@ -2482,6 +2693,12 @@ export function renderLoginPage(port: number): string {
       });
   }
 
+  function refreshProviderValue() {
+    var select = document.getElementById("refreshProvider");
+    var value = select && select.value ? select.value : "all";
+    return PROVIDERS.indexOf(value) >= 0 || value === "all" ? value : "all";
+  }
+
   function refreshModels() {
     var btn = document.getElementById("refreshModelsBtn");
     if (btn) {
@@ -2489,7 +2706,11 @@ export function renderLoginPage(port: number): string {
       btn.textContent = t("refreshingModels");
     }
     setModelsMeta(t("refreshingModels"));
-    return fetch("/models/refresh", { method: "POST" })
+    return fetch("/models/refresh", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: refreshProviderValue() })
+    })
       .then(function (r) {
         return r.json().then(function (res) {
           if (!r.ok) throw new Error((res && res.error && res.error.message) || t("modelsRefreshFailed"));

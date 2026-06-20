@@ -277,6 +277,76 @@ test("ProviderModelCatalog loads Antigravity models from agy models", async () =
   ]);
 });
 
+test("ProviderModelCatalog preserves real Antigravity display-name models from agy models", async () => {
+  const catalog = new ProviderModelCatalog({
+    realpathFn: async (filePath) => filePath,
+    execFileFn: async (file, args) => {
+      if (file === "/bin/sh" && args.join(" ").includes("command -v agy")) {
+        return { stdout: "/Users/example/.local/bin/agy\n", stderr: "" };
+      }
+      if (file === "agy" && args.join(" ") === "models") {
+        return {
+          stdout: [
+            "Gemini 3.5 Flash (Medium)",
+            "Gemini 3.5 Flash (High)",
+            "Claude Sonnet 4.6 (Thinking)",
+            "Claude Opus 4.6 (Thinking)",
+            "GPT-OSS 120B (Medium)"
+          ].join("\n"),
+          stderr: ""
+        };
+      }
+      throw new Error(`unexpected command ${file} ${args.join(" ")}`);
+    }
+  });
+
+  const result = await catalog.listModels("antigravity");
+
+  assert.equal(result.provider, "antigravity");
+  assert.deepEqual(result.models, [
+    { id: "antigravity/Claude Opus 4.6 (Thinking)", label: "Claude Opus 4.6 (Thinking)" },
+    { id: "antigravity/Claude Sonnet 4.6 (Thinking)", label: "Claude Sonnet 4.6 (Thinking)" },
+    { id: "antigravity/Gemini 3.5 Flash (High)", label: "Gemini 3.5 Flash (High)" },
+    { id: "antigravity/Gemini 3.5 Flash (Medium)", label: "Gemini 3.5 Flash (Medium)" },
+    { id: "antigravity/GPT-OSS 120B (Medium)", label: "GPT-OSS 120B (Medium)" }
+  ]);
+});
+
+test("ProviderModelCatalog falls back to a PTY for Antigravity models when pipe output hangs", async () => {
+  const calls: string[] = [];
+  const catalog = new ProviderModelCatalog({
+    realpathFn: async (filePath) => filePath,
+    execFileFn: async (file, args) => {
+      calls.push([file, ...args].join(" "));
+      if (file === "/bin/sh" && args.join(" ").includes("command -v agy")) {
+        return { stdout: "/Users/example/.local/bin/agy\n", stderr: "" };
+      }
+      if (file === "agy" && args.join(" ") === "models") {
+        throw new Error("Command failed: agy models");
+      }
+      if (file === "/usr/bin/expect") {
+        return {
+          stdout: [
+            "spawn agy models",
+            "Gemini 3.5 Flash (Medium)",
+            "Claude Opus 4.6 (Thinking)"
+          ].join("\n"),
+          stderr: ""
+        };
+      }
+      throw new Error(`unexpected command ${file} ${args.join(" ")}`);
+    }
+  });
+
+  const result = await catalog.listModels("antigravity");
+
+  assert.equal(calls.some((call) => call.startsWith("/usr/bin/expect -c ")), true);
+  assert.deepEqual(result.models, [
+    { id: "antigravity/Claude Opus 4.6 (Thinking)", label: "Claude Opus 4.6 (Thinking)" },
+    { id: "antigravity/Gemini 3.5 Flash (Medium)", label: "Gemini 3.5 Flash (Medium)" }
+  ]);
+});
+
 test("ProviderModelCatalog parses Cursor CLI output", async () => {
   const catalog = new ProviderModelCatalog({
     execFileFn: async () => ({

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough, Writable } from "node:stream";
 import { test } from "node:test";
 
 import {
@@ -10,6 +12,7 @@ import {
   logoutProvider,
   renderLoginPage,
   startLogin,
+  submitAntigravityLoginCode,
   summarizeCodexAuthJson,
   summarizeGeminiAuthJson,
   updateProviderCli
@@ -66,9 +69,13 @@ test("renderLoginPage includes CLI version and update controls", () => {
 test("renderLoginPage includes model refresh controls", () => {
   const html = renderLoginPage(8789);
 
+  assert.match(html, /id="refreshProvider"/);
+  assert.match(html, /<option value="all"[^>]*>All providers<\/option>/);
+  assert.match(html, /<option value="antigravity">Antigravity<\/option>/);
   assert.match(html, /id="refreshModelsBtn"/);
   assert.match(html, /function refreshModels/);
-  assert.match(html, /fetch\(["']\/models\/refresh["'],\s*\{\s*method:\s*["']POST["']/);
+  assert.match(html, /function refreshProviderValue/);
+  assert.match(html, /body:\s*JSON\.stringify\(\{\s*provider:\s*refreshProviderValue\(\)\s*\}\)/);
   assert.match(html, /Refresh models/);
   assert.match(html, /刷新模型/);
   assert.match(html, /モデルを更新/);
@@ -84,6 +91,8 @@ test("renderLoginPage includes Antigravity as an independent provider", () => {
   assert.match(html, /curl -fsSL https:\/\/antigravity\.google\/cli\/install\.sh \| bash/);
   assert.match(html, /antigravityInstallHint/);
   assert.match(html, /antigravityManualLoginHint/);
+  assert.match(html, /function showAuthCodePrompt/);
+  assert.match(html, /\/providers\/antigravity\/login\/"\s*\+\s*encodeURIComponent\(jobId\)\s*\+\s*"\/code/);
   assert.match(html, /res\.command/);
   assert.match(html, /showCommandFallback\(id,\s*localizeKnownValue/);
   assert.match(html, /--antigravity:/);
@@ -171,26 +180,48 @@ test("updateProviderCli runs the Antigravity installer and returns a fresh versi
   assert.equal(result.version?.installedVersion, "1.0.7");
 });
 
-test("startLogin opens a macOS Terminal session for Antigravity login", async () => {
+test("startLogin starts a browserless Antigravity OAuth code job", async () => {
   const calls: string[] = [];
+  const writes: string[] = [];
+  class FakeChild extends EventEmitter {
+    stdout = new PassThrough();
+    stderr = new PassThrough();
+    stdin = new Writable({
+      write(chunk, _encoding, callback) {
+        writes.push(chunk.toString());
+        callback();
+      }
+    });
+    unref(): void {}
+    kill(): boolean { return true; }
+  }
+  const child = new FakeChild();
   const result = await startLogin("antigravity", {
-    platform: "darwin",
-    run: async (command, args) => {
+    spawnLogin: (command, args) => {
       calls.push([command, ...args].join(" "));
-      return { code: 0, out: "" };
+      queueMicrotask(() => {
+        child.stdout.write("Authentication required. Please visit the URL to log in:\n");
+        child.stdout.write("  https://accounts.google.com/o/oauth2/auth?state=test-state\n");
+        child.stdout.write("Or, paste the authorization code here and press Enter:\n");
+      });
+      return child as never;
     }
   });
 
   assert.equal(result.started, true);
-  assert.equal(result.manual, undefined);
+  assert.equal(result.needsCode, true);
+  assert.equal(typeof result.jobId, "string");
   assert.equal(result.command, "agy");
+  assert.match(result.url ?? "", /^https:\/\/accounts\.google\.com\/o\/oauth2\/auth/);
   assert.match(result.hint ?? "", /Antigravity/);
-  assert.deepEqual(calls, [
-    "osascript -e tell application \"Terminal\" to activate -e tell application \"Terminal\" to do script \"agy\""
-  ]);
+  assert.deepEqual(calls, ["agy --print Reply with exactly OK."]);
+
+  const submitted = submitAntigravityLoginCode(result.jobId ?? "", "test-code");
+  assert.equal(submitted.ok, true);
+  assert.deepEqual(writes, ["test-code\n"]);
 });
 
-test("startLogin falls back to copyable Antigravity guidance when Terminal cannot be opened", async () => {
+test("startLogin falls back to copyable Antigravity guidance when background login cannot be started", async () => {
   const binDir = mkdtempSync(join(tmpdir(), "meridian-gateway-agy-login-"));
   const markerPath = join(binDir, "spawned");
   const fakeAgy = join(binDir, "agy");
@@ -204,8 +235,9 @@ test("startLogin falls back to copyable Antigravity guidance when Terminal canno
   process.env.PATH = `${binDir}:${oldPath ?? ""}`;
   try {
     const result = await startLogin("antigravity", {
-      platform: "darwin",
-      run: async () => ({ code: 1, out: "not allowed" })
+      spawnLogin: () => {
+        throw new Error("not allowed");
+      }
     });
 
     assert.equal(result.manual, true);
