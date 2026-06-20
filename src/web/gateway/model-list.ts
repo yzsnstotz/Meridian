@@ -12,6 +12,7 @@ export interface GatewayModelList {
   object: "list";
   data: GatewayModel[];
   errors?: Partial<Record<ProviderId, string>>;
+  refreshedAt?: string;
 }
 
 export interface GatewayModelCatalog {

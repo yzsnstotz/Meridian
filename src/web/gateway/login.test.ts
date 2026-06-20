@@ -60,6 +60,17 @@ test("renderLoginPage includes CLI version and update controls", () => {
   assert.match(html, /factCli/);
 });
 
+test("renderLoginPage includes model refresh controls", () => {
+  const html = renderLoginPage(8789);
+
+  assert.match(html, /id="refreshModelsBtn"/);
+  assert.match(html, /function refreshModels/);
+  assert.match(html, /fetch\(["']\/models\/refresh["'],\s*\{\s*method:\s*["']POST["']/);
+  assert.match(html, /Refresh models/);
+  assert.match(html, /刷新模型/);
+  assert.match(html, /モデルを更新/);
+});
+
 test("getProviderCliVersion detects installed and latest npm versions", async () => {
   const calls: string[] = [];
   const result = await getProviderCliVersion("gemini", {

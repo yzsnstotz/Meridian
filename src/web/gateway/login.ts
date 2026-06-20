@@ -1009,8 +1009,15 @@ export function renderLoginPage(port: number): string {
 
   section { margin-bottom: 22px; }
   .sec-head { margin: 0 2px 11px; }
+  .sec-head.row {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 12px;
+  }
   .sec-head h2 { font-size: 13px; font-weight: 640; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); margin: 0; }
   .sec-head p { margin: 4px 0 0; font-size: 13px; color: var(--faint); }
+  .sec-head .meta { margin-top: 3px; font-size: 12px; color: var(--faint); }
 
   .cards {
     display: grid; gap: 14px;
@@ -1173,6 +1180,23 @@ export function renderLoginPage(port: number): string {
   button.copy:hover { border-color: var(--accent); color: var(--accent); }
   button.copy.done { background: var(--ok-bg); border-color: var(--ok); color: var(--ok); }
   button.copy svg { width: 15px; height: 15px; }
+  button.refresh-models {
+    appearance: none;
+    border: 1px solid var(--border-strong);
+    background: var(--panel-2);
+    color: var(--text);
+    font: inherit;
+    font-weight: 650;
+    font-size: 12.5px;
+    border-radius: 10px;
+    padding: 8px 13px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background .12s ease, border-color .12s ease, color .12s ease, transform .04s ease;
+  }
+  button.refresh-models:hover { border-color: var(--accent); color: var(--accent); }
+  button.refresh-models:active { transform: translateY(1px); }
+  button.refresh-models:disabled { opacity: .55; cursor: default; transform: none; }
   .endpoint-note { margin: 13px 2px 0; font-size: 13px; color: var(--muted); line-height: 1.55; }
   .endpoint-note + .endpoint-note { margin-top: 7px; color: var(--faint); }
   .endpoint-note code, .endpoint-note kbd {
@@ -1459,7 +1483,13 @@ export function renderLoginPage(port: number): string {
     </section>
 
     <section>
-      <div class="sec-head"><h2 data-i18n="modelsTitle">Models</h2></div>
+      <div class="sec-head row">
+        <div>
+          <h2 data-i18n="modelsTitle">Models</h2>
+          <div class="meta" id="modelsMeta" data-i18n="modelsRefreshHint">Refresh to verify which CLI models this OAuth account can use now.</div>
+        </div>
+        <button class="refresh-models" id="refreshModelsBtn" type="button" data-i18n="refreshModels">Refresh models</button>
+      </div>
       <div class="models" id="models"><div class="empty" data-i18n="loadingModels">Loading models…</div></div>
     </section>
     </div>
@@ -1548,6 +1578,11 @@ export function renderLoginPage(port: number): string {
       testPromptDefault: "Reply with one short confirmation.",
       testCli: "Test CLI",
       modelsTitle: "Models",
+      refreshModels: "Refresh models",
+      refreshingModels: "Refreshing…",
+      modelsRefreshHint: "Refresh to verify which CLI models this OAuth account can use now.",
+      modelsRefreshed: "Models refreshed.",
+      modelsRefreshFailed: "Couldn’t refresh models.",
       loadingModels: "Loading models…",
       noModels: "No live models available from connected providers.",
       modelsLoadFailed: "Couldn’t load models — is the gateway still running?",
@@ -1643,6 +1678,11 @@ export function renderLoginPage(port: number): string {
       testPromptDefault: "请用一句简短的话确认。",
       testCli: "测试 CLI",
       modelsTitle: "模型",
+      refreshModels: "刷新模型",
+      refreshingModels: "刷新中…",
+      modelsRefreshHint: "刷新以验证这个 OAuth 账号当前真正可用的 CLI 模型。",
+      modelsRefreshed: "模型已刷新。",
+      modelsRefreshFailed: "无法刷新模型。",
       loadingModels: "正在加载模型…",
       noModels: "已连接供应商暂无可用实时模型。",
       modelsLoadFailed: "无法加载模型，Gateway 还在运行吗？",
@@ -1738,6 +1778,11 @@ export function renderLoginPage(port: number): string {
       testPromptDefault: "短い確認文を一文で返してください。",
       testCli: "CLI をテスト",
       modelsTitle: "モデル",
+      refreshModels: "モデルを更新",
+      refreshingModels: "更新中…",
+      modelsRefreshHint: "この OAuth アカウントで今使える CLI モデルを検証します。",
+      modelsRefreshed: "モデルを更新しました。",
+      modelsRefreshFailed: "モデルを更新できませんでした。",
       loadingModels: "モデルを読み込み中…",
       noModels: "接続済みプロバイダーから利用可能なライブモデルはありません。",
       modelsLoadFailed: "モデルを読み込めませんでした。Gateway はまだ稼働していますか？",
@@ -2194,6 +2239,11 @@ export function renderLoginPage(port: number): string {
     lastModelPayload = data;
     modelCache = list;
     populateTestModels();
+    if (data && data.refreshedAt) {
+      setModelsMeta(t("modelsRefreshed") + " " + fmtTime(data.refreshedAt));
+    } else {
+      setModelsMeta(t("modelsRefreshHint"));
+    }
     var errorHtml = renderModelErrors(errors);
     if (!list.length) {
       box.innerHTML = '<div class="empty">' + esc(t("noModels")) + '</div>' + errorHtml;
@@ -2214,6 +2264,11 @@ export function renderLoginPage(port: number): string {
     return rows.length ? '<div class="model-errors">' + rows.join("") + '</div>' : "";
   }
 
+  function setModelsMeta(message) {
+    var meta = document.getElementById("modelsMeta");
+    if (meta) meta.textContent = message || t("modelsRefreshHint");
+  }
+
   function populateTestModels() {
     var providerEl = document.getElementById("testProvider");
     var modelEl = document.getElementById("testModel");
@@ -2231,11 +2286,41 @@ export function renderLoginPage(port: number): string {
   }
 
   function loadModels() {
-    fetch("/v1/models")
+    return fetch("/v1/models")
       .then(function (r) { return r.json(); })
       .then(renderModels)
       .catch(function () {
         document.getElementById("models").innerHTML = '<div class="empty">' + esc(t("modelsLoadFailed")) + '</div>';
+        setModelsMeta(t("modelsLoadFailed"));
+      });
+  }
+
+  function refreshModels() {
+    var btn = document.getElementById("refreshModelsBtn");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = t("refreshingModels");
+    }
+    setModelsMeta(t("refreshingModels"));
+    return fetch("/models/refresh", { method: "POST" })
+      .then(function (r) {
+        return r.json().then(function (res) {
+          if (!r.ok) throw new Error((res && res.error && res.error.message) || t("modelsRefreshFailed"));
+          return res;
+        });
+      })
+      .then(function () {
+        setModelsMeta(t("modelsRefreshed"));
+        return loadModels();
+      })
+      .catch(function () {
+        setModelsMeta(t("modelsRefreshFailed"));
+      })
+      .then(function () {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = t("refreshModels");
+        }
       });
   }
 
@@ -2428,10 +2513,12 @@ export function renderLoginPage(port: number): string {
   var testProviderEl = document.getElementById("testProvider");
   var runTestBtn = document.getElementById("runTestBtn");
   var testPromptEl = document.getElementById("testPrompt");
+  var refreshModelsBtn = document.getElementById("refreshModelsBtn");
   var languageSelect = document.getElementById("languageSelect");
   if (languageSelect) languageSelect.addEventListener("change", function () { setLanguage(languageSelect.value); });
   if (testProviderEl) testProviderEl.addEventListener("change", populateTestModels);
   if (runTestBtn) runTestBtn.addEventListener("click", runDirectTest);
+  if (refreshModelsBtn) refreshModelsBtn.addEventListener("click", refreshModels);
   if (testPromptEl) {
     testPromptEl.addEventListener("keydown", function (event) {
       if (event.key === "Enter") runDirectTest();

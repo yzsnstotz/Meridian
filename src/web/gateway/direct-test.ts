@@ -39,7 +39,7 @@ function selectedClaudeModelFromError(message: string, fallback?: string): strin
   return match?.[1] ?? fallback;
 }
 
-function normalizeDirectTestError(provider: ProviderId, message: string, model?: string): string {
+export function normalizeDirectTestError(provider: ProviderId, message: string, model?: string): string {
   if (provider === "gemini" && /IneligibleTierError|UNSUPPORTED_CLIENT|migrate to the Antigravity/i.test(message)) {
     return "Gemini CLI reports this account or tier is no longer supported by the Gemini CLI client. " +
       "Use Update CLI from the provider card if an update is available; if it still fails, migrate this account to Antigravity: https://antigravity.google.";

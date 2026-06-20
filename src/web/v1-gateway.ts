@@ -34,7 +34,8 @@ import {
   renderLoginPage,
   type ProviderId
 } from "./gateway/login";
-import { listGatewayModels, ownerForProvider } from "./gateway/model-list";
+import { ownerForProvider } from "./gateway/model-list";
+import { GatewayModelRegistry } from "./gateway/model-refresh";
 import { runGatewayDirectTest } from "./gateway/direct-test";
 import { GatewayUsageLedger, type GatewayUsageSurface } from "./gateway/usage-ledger";
 
@@ -42,6 +43,7 @@ const PORT = Number(process.env.MERIDIAN_GATEWAY_PORT ?? process.env.PORT ?? 878
 const HOST = process.env.MERIDIAN_GATEWAY_HOST ?? "127.0.0.1";
 
 const gatewayModelCatalog = new ProviderModelCatalog();
+const gatewayModelRegistry = new GatewayModelRegistry({ catalog: gatewayModelCatalog });
 
 // ── API key (generated, persisted, enforced, rotatable) ────────────────────────
 //
@@ -276,7 +278,11 @@ const server = http.createServer((request, response) => {
       }
       if (request.method === "GET" && url.pathname === "/v1/models") {
         const status = await getProvidersStatus();
-        return sendJson(response, 200, await listGatewayModels(status, gatewayModelCatalog));
+        return sendJson(response, 200, await gatewayModelRegistry.list(status));
+      }
+      if (request.method === "POST" && url.pathname === "/models/refresh") {
+        const status = await getProvidersStatus();
+        return sendJson(response, 200, await gatewayModelRegistry.refresh(status));
       }
       if (request.method === "GET" && url.pathname === "/usage") {
         const rawLimit = Number(url.searchParams.get("limit") ?? 200);
