@@ -28,6 +28,7 @@ import {
   getProvidersStatus,
   getProvidersCliVersions,
   startLogin,
+  submitAntigravityLoginCode,
   installProvider,
   updateProviderCli,
   logoutProvider,
@@ -188,11 +189,20 @@ function boundPort(): number {
 }
 
 const LOGIN_ROUTE_RE = /^\/providers\/(claude|codex|gemini|antigravity)\/login$/;
+const ANTIGRAVITY_LOGIN_CODE_ROUTE_RE = /^\/providers\/antigravity\/login\/([^/]+)\/code$/;
 const INSTALL_ROUTE_RE = /^\/providers\/(claude|codex|gemini|antigravity)\/install$/;
 const UPDATE_ROUTE_RE = /^\/providers\/(claude|codex|gemini|antigravity)\/update$/;
 const LOGOUT_ROUTE_RE = /^\/providers\/(claude|codex|gemini|antigravity)\/logout$/;
 const TEST_ROUTE_RE = /^\/providers\/(claude|codex|gemini|antigravity)\/test$/;
 const MODEL_RETRIEVE_RE = /^\/v1\/models\/(.+)$/;
+
+function parseModelRefreshProvider(value: unknown): ProviderId | "all" | null | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value === "all" || value === "claude" || value === "codex" || value === "gemini" || value === "antigravity") {
+    return value;
+  }
+  return null;
+}
 
 const server = http.createServer((request, response) => {
   void (async () => {
@@ -219,6 +229,24 @@ const server = http.createServer((request, response) => {
         const m = request.method === "POST" ? LOGIN_ROUTE_RE.exec(url.pathname) : null;
         if (m) {
           return sendJson(response, 200, await startLogin(m[1] as ProviderId));
+        }
+      }
+      {
+        const m = request.method === "POST" ? ANTIGRAVITY_LOGIN_CODE_ROUTE_RE.exec(url.pathname) : null;
+        if (m) {
+          const raw = await readBody(request);
+          let parsed: unknown;
+          try {
+            parsed = raw ? JSON.parse(raw) : {};
+          } catch {
+            return sendJson(response, 400, { ok: false, error: "invalid JSON body" });
+          }
+          const code = parsed && typeof parsed === "object" ? (parsed as { code?: unknown }).code : undefined;
+          if (typeof code !== "string" || code.trim().length === 0) {
+            return sendJson(response, 400, { ok: false, error: "authorization code required" });
+          }
+          const result = submitAntigravityLoginCode(decodeURIComponent(m[1]), code);
+          return sendJson(response, result.ok ? 200 : 410, result);
         }
       }
       {
@@ -282,8 +310,28 @@ const server = http.createServer((request, response) => {
         return sendJson(response, 200, await gatewayModelRegistry.list(status));
       }
       if (request.method === "POST" && url.pathname === "/models/refresh") {
+        const queryProvider = parseModelRefreshProvider(url.searchParams.get("provider"));
+        if (queryProvider === null) {
+          return sendJson(response, 400, { error: { message: "invalid provider", type: "invalid_request_error" } });
+        }
+        let bodyProvider: ProviderId | "all" | null | undefined;
+        const raw = await readBody(request);
+        if (raw.trim()) {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(raw);
+          } catch {
+            return sendJson(response, 400, { error: { message: "invalid JSON body", type: "invalid_request_error" } });
+          }
+          bodyProvider = parseModelRefreshProvider(
+            parsed && typeof parsed === "object" ? (parsed as { provider?: unknown }).provider : undefined
+          );
+          if (bodyProvider === null) {
+            return sendJson(response, 400, { error: { message: "invalid provider", type: "invalid_request_error" } });
+          }
+        }
         const status = await getProvidersStatus();
-        return sendJson(response, 200, await gatewayModelRegistry.refresh(status));
+        return sendJson(response, 200, await gatewayModelRegistry.refresh(status, { provider: bodyProvider ?? queryProvider ?? "all" }));
       }
       if (request.method === "GET" && url.pathname === "/usage") {
         const rawLimit = Number(url.searchParams.get("limit") ?? 200);

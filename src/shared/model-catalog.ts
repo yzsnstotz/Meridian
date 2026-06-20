@@ -149,7 +149,7 @@ function parseGeminiCliModelIds(raw: string): string[] {
 
 function isSelectableAntigravityModelId(id: string): boolean {
   const lower = id.toLowerCase();
-  if (!/^(gemini-|auto-gemini-|claude-|gpt-|codex-|o\d|antigravity-)/.test(lower)) {
+  if (!/^(gemini[- ]|auto-gemini[- ]|claude[- ]|gpt[- ]|codex[- ]|o\d|antigravity[- ])/i.test(lower)) {
     return false;
   }
   return !/(embedding|text-embedding|image|tts|whisper|search)/.test(lower);
@@ -203,9 +203,11 @@ function parseAntigravityTextModels(raw: string): ProviderModel[] {
         .replace(/^[*\-•\d.)\s]+/, "")
         .replace(/^`|`$/g, "")
         .trim();
-      const id = antigravityBareId((normalized.split(/\s+/)[0] ?? "").replace(/[,;:]$/, ""));
+      const firstToken = (normalized.split(/\s+/)[0] ?? "").replace(/[,;:]$/, "");
+      const displayStyle = /\s/.test(normalized) && /^(gemini|claude|gpt|codex|o\d)\b/i.test(normalized);
+      const id = antigravityBareId(displayStyle ? normalized : firstToken);
       if (!id || !isSelectableAntigravityModelId(id)) return [];
-      return [{ id: antigravityGatewayId(id), label: formatModelLabel(id) }];
+      return [{ id: antigravityGatewayId(id), label: displayStyle ? id : formatModelLabel(id) }];
     });
 }
 
@@ -690,16 +692,45 @@ export class ProviderModelCatalog {
 
   private async listAntigravityModels(): Promise<ProviderModel[]> {
     await this.resolveCommandPath("agy");
-    const { stdout } = await this.execFileFn(
-      "agy",
-      ["models"],
-      { timeout: CLI_DISCOVERY_TIMEOUT_MS, maxBuffer: 512 * 1024 }
-    );
-    const models = parseAntigravityModels(stdout);
-    if (models.length === 0) {
-      throw new Error("Antigravity CLI returned no selectable models");
+    let stdout = "";
+    let directError: unknown;
+    try {
+      const direct = await this.execFileFn(
+        "agy",
+        ["models"],
+        { timeout: CLI_DISCOVERY_TIMEOUT_MS, maxBuffer: 512 * 1024 }
+      );
+      stdout = direct.stdout;
+    } catch (error) {
+      directError = error;
     }
-    return models;
+    const models = parseAntigravityModels(stdout);
+    if (models.length > 0) {
+      return models;
+    }
+
+    try {
+      const expectScript = [
+        "set timeout 25",
+        "spawn agy models",
+        "expect eof"
+      ].join("\n");
+      const fallback = await this.execFileFn(
+        "/usr/bin/expect",
+        ["-c", expectScript],
+        { timeout: 30_000, maxBuffer: 512 * 1024, env: process.env }
+      );
+      const ptyModels = parseAntigravityModels(fallback.stdout);
+      if (ptyModels.length > 0) {
+        return ptyModels;
+      }
+    } catch (fallbackError) {
+      const directMessage = directError instanceof Error ? directError.message : String(directError ?? "empty output");
+      const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      throw new Error(`Antigravity CLI model catalog unavailable: ${directMessage}; PTY fallback failed: ${fallbackMessage}`);
+    }
+
+    throw new Error("Antigravity CLI returned no selectable models");
   }
 
   private async listCursorModels(): Promise<ProviderModel[]> {

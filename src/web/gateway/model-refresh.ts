@@ -40,6 +40,10 @@ export interface ModelRefreshSnapshot {
   providers: Partial<Record<ProviderId, ProviderModelRefreshResult>>;
 }
 
+export interface ModelRefreshOptions {
+  provider?: ProviderId | "all";
+}
+
 export interface GatewayModelRegistryOptions {
   catalog?: GatewayModelCatalog;
   completions?: Partial<Record<ProviderId, ProbeCompletion>>;
@@ -210,14 +214,16 @@ export class GatewayModelRegistry {
     return result;
   }
 
-  async refresh(status: ProvidersStatus): Promise<ModelRefreshSnapshot> {
+  async refresh(status: ProvidersStatus, options: ModelRefreshOptions = {}): Promise<ModelRefreshSnapshot> {
     const existing = await this.readCache();
     const refreshedAt = this.now().toISOString();
+    const selectedProvider = options.provider && options.provider !== "all" ? options.provider : undefined;
+    const providersToRefresh = selectedProvider ? [selectedProvider] : PROVIDERS;
     const providers: Partial<Record<ProviderId, CachedProviderModels>> = {
       ...(existing?.providers ?? {})
     };
 
-    for (const provider of PROVIDERS) {
+    for (const provider of providersToRefresh) {
       if (!status[provider]?.connected) {
         delete providers[provider];
         continue;
