@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -9,6 +9,7 @@ import {
   installProvider,
   logoutProvider,
   renderLoginPage,
+  startLogin,
   summarizeCodexAuthJson,
   summarizeGeminiAuthJson,
   updateProviderCli
@@ -82,6 +83,9 @@ test("renderLoginPage includes Antigravity as an independent provider", () => {
   assert.match(html, /"antigravity-subscription":\s*\{\s*id:\s*"antigravity",\s*label:\s*"Antigravity"/);
   assert.match(html, /curl -fsSL https:\/\/antigravity\.google\/cli\/install\.sh \| bash/);
   assert.match(html, /antigravityInstallHint/);
+  assert.match(html, /antigravityManualLoginHint/);
+  assert.match(html, /res\.command/);
+  assert.match(html, /showCommandFallback\(id,\s*localizeKnownValue/);
   assert.match(html, /--antigravity:/);
 });
 
@@ -165,6 +169,53 @@ test("updateProviderCli runs the Antigravity installer and returns a fresh versi
   assert.equal(result.installed, true);
   assert.equal(result.version?.installed, true);
   assert.equal(result.version?.installedVersion, "1.0.7");
+});
+
+test("startLogin opens a macOS Terminal session for Antigravity login", async () => {
+  const calls: string[] = [];
+  const result = await startLogin("antigravity", {
+    platform: "darwin",
+    run: async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      return { code: 0, out: "" };
+    }
+  });
+
+  assert.equal(result.started, true);
+  assert.equal(result.manual, undefined);
+  assert.equal(result.command, "agy");
+  assert.match(result.hint ?? "", /Antigravity/);
+  assert.deepEqual(calls, [
+    "osascript -e tell application \"Terminal\" to activate -e tell application \"Terminal\" to do script \"agy\""
+  ]);
+});
+
+test("startLogin falls back to copyable Antigravity guidance when Terminal cannot be opened", async () => {
+  const binDir = mkdtempSync(join(tmpdir(), "meridian-gateway-agy-login-"));
+  const markerPath = join(binDir, "spawned");
+  const fakeAgy = join(binDir, "agy");
+  writeFileSync(
+    fakeAgy,
+    `#!/bin/sh\nprintf spawned > '${markerPath.replace(/'/g, "'\\''")}'\necho 'https://example.test/oauth'\n`,
+    "utf8"
+  );
+  chmodSync(fakeAgy, 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${binDir}:${oldPath ?? ""}`;
+  try {
+    const result = await startLogin("antigravity", {
+      platform: "darwin",
+      run: async () => ({ code: 1, out: "not allowed" })
+    });
+
+    assert.equal(result.manual, true);
+    assert.equal(result.started, undefined);
+    assert.equal(result.command, "agy");
+    assert.match(result.hint ?? "", /agy/);
+    assert.equal(existsSync(markerPath), false);
+  } finally {
+    process.env.PATH = oldPath;
+  }
 });
 
 test("renderLoginPage keeps provider cards equal height", () => {

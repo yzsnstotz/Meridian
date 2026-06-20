@@ -53,6 +53,7 @@ export interface LoginResult {
   manual?: boolean;
   url?: string;
   hint?: string;
+  command?: string;
 }
 
 export interface InstallResult {
@@ -714,6 +715,15 @@ const LABELS_FOR_RESULT: Record<ProviderId, string> = {
 // ── Login kick-off ───────────────────────────────────────────────────────────
 
 const URL_RE = /(https?:\/\/[^\s'"]+)/;
+const ANTIGRAVITY_TERMINAL_LOGIN_HINT =
+  "Opened Antigravity sign-in in Terminal. Complete the prompts there; this page updates automatically once agy models works.";
+const ANTIGRAVITY_MANUAL_LOGIN_HINT =
+  "Could not open Terminal automatically. Copy this command into Terminal, then complete the Antigravity sign-in prompts. This page updates automatically once agy models works.";
+
+interface LoginDeps {
+  platform?: NodeJS.Platform;
+  run?: ProbeRunner;
+}
 
 /**
  * Spawn an interactive sign-in CLI detached so it survives this request and
@@ -905,7 +915,42 @@ function startGeminiLogin(): Promise<LoginResult> {
   });
 }
 
-export async function startLogin(id: ProviderId): Promise<LoginResult> {
+function escapeAppleScriptString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+}
+
+async function startAntigravityLogin(deps: LoginDeps = {}): Promise<LoginResult> {
+  const command = PROVIDER_PACKAGES.antigravity.bin;
+  const platform = deps.platform ?? process.platform;
+  if (platform !== "darwin") {
+    return {
+      manual: true,
+      hint: ANTIGRAVITY_MANUAL_LOGIN_HINT,
+      command,
+    };
+  }
+  const run = deps.run ?? runProbe;
+  const result = await run("osascript", [
+    "-e",
+    'tell application "Terminal" to activate',
+    "-e",
+    `tell application "Terminal" to do script "${escapeAppleScriptString(command)}"`,
+  ], 12000);
+  if (result.code === 0) {
+    return {
+      started: true,
+      hint: ANTIGRAVITY_TERMINAL_LOGIN_HINT,
+      command,
+    };
+  }
+  return {
+    manual: true,
+    hint: ANTIGRAVITY_MANUAL_LOGIN_HINT,
+    command,
+  };
+}
+
+export async function startLogin(id: ProviderId, deps: LoginDeps = {}): Promise<LoginResult> {
   if (id === "claude") {
     return startBrowserLogin(claudeAgentConfig.command, ["auth", "login"]);
   }
@@ -913,7 +958,7 @@ export async function startLogin(id: ProviderId): Promise<LoginResult> {
     return startBrowserLogin(codexAgentConfig.command, ["login"]);
   }
   if (id === "antigravity") {
-    return startBrowserLogin(PROVIDER_PACKAGES.antigravity.bin, []);
+    return startAntigravityLogin(deps);
   }
   // gemini: no `login` subcommand — drive its first-run Google OAuth instead.
   return startGeminiLogin();
@@ -1720,6 +1765,8 @@ export function renderLoginPage(port: number): string {
       installNetworkError: "Network error while installing.",
       updateNetworkError: "Network error while updating.",
       manualSignIn: "Sign in manually to connect.",
+      antigravityTerminalLoginHint: "Opened Antigravity sign-in in Terminal. Complete the prompts there; this page updates automatically once agy models works.",
+      antigravityManualLoginHint: "Could not open Terminal automatically. Copy this command into Terminal, then complete the Antigravity sign-in prompts. This page updates automatically once agy models works.",
       openingBrowser: "Opening your browser — finish signing in there; this updates automatically.",
       openingBrowserLink: " If it didn’t open, <a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">use this link</a>.",
       signInFailed: "Couldn’t start sign-in. Please try again.",
@@ -1823,6 +1870,8 @@ export function renderLoginPage(port: number): string {
       installNetworkError: "安装时出现网络错误。",
       updateNetworkError: "更新时出现网络错误。",
       manualSignIn: "请手动登录以完成连接。",
+      antigravityTerminalLoginHint: "已在 Terminal 中打开 Antigravity 登录流程。请在该窗口完成提示；当 agy models 可用后，此页面会自动更新。",
+      antigravityManualLoginHint: "无法自动打开 Terminal。请复制这个命令到 Terminal，然后完成 Antigravity 登录提示；当 agy models 可用后，此页面会自动更新。",
       openingBrowser: "正在打开浏览器，请在浏览器中完成登录；此处会自动更新。",
       openingBrowserLink: " 如果没有打开，<a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">使用此链接</a>。",
       signInFailed: "无法启动登录，请重试。",
@@ -1926,6 +1975,8 @@ export function renderLoginPage(port: number): string {
       installNetworkError: "インストール中にネットワークエラーが発生しました。",
       updateNetworkError: "更新中にネットワークエラーが発生しました。",
       manualSignIn: "接続するには手動でログインしてください。",
+      antigravityTerminalLoginHint: "Terminal で Antigravity のサインインを開きました。そこで手順を完了してください。agy models が使えるようになると、この画面は自動更新されます。",
+      antigravityManualLoginHint: "Terminal を自動で開けませんでした。このコマンドを Terminal にコピーし、Antigravity のサインイン手順を完了してください。agy models が使えるようになると、この画面は自動更新されます。",
       openingBrowser: "ブラウザを開いています。そこでログインを完了してください。この画面は自動更新されます。",
       openingBrowserLink: " 開かない場合は、<a href=\\\"{url}\\\" target=\\\"_blank\\\" rel=\\\"noopener\\\">このリンク</a>を使ってください。",
       signInFailed: "サインインを開始できませんでした。もう一度お試しください。",
@@ -2012,6 +2063,8 @@ export function renderLoginPage(port: number): string {
     if (normalized === I18N.en.codexLimitation) return t("codexLimitation");
     if (normalized === I18N.en.geminiLimitation) return t("geminiLimitation");
     if (normalized === I18N.en.antigravityLimitation) return t("antigravityLimitation");
+    if (normalized === I18N.en.antigravityTerminalLoginHint) return t("antigravityTerminalLoginHint");
+    if (normalized === I18N.en.antigravityManualLoginHint) return t("antigravityManualLoginHint");
     return value;
   }
 
@@ -2277,16 +2330,24 @@ export function renderLoginPage(port: number): string {
       .then(function (res) {
         if (res && res.manual) {
           busy[id] = false;
-          showHint(id, (res.hint || t("manualSignIn")), false);
+          if (res.command) {
+            showCommandFallback(id, localizeKnownValue(res.hint || t("manualSignIn")), null, res.command);
+          } else {
+            showHint(id, esc(localizeKnownValue(res.hint || t("manualSignIn"))), false);
+          }
           if (btn) { btn.disabled = false; btn.textContent = t("connect"); }
           startPoll(id);
           return;
         }
-        var msg = t("openingBrowser");
-        if (res && res.url) {
+        var msg = res && res.hint ? esc(localizeKnownValue(res.hint)) : t("openingBrowser");
+        if (res && res.command) {
+          showCommandFallback(id, localizeKnownValue(res.hint || t("manualSignIn")), null, res.command);
+        } else if (res && res.url) {
           msg += t("openingBrowserLink", { url: esc(res.url) });
+          showHint(id, msg, true);
+        } else {
+          showHint(id, msg, true);
         }
-        showHint(id, msg, true);
         // Allow status polling to take over the card now that login is in flight.
         busy[id] = false;
         startPoll(id);
