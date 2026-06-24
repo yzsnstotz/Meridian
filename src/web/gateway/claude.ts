@@ -3,7 +3,7 @@
 // Validated in P1 against the real Claude subscription.
 import { spawn } from "node:child_process";
 import { claudeAgentConfig } from "../../agents/claude";
-import { buildPrompt, type ChatCompletionRequest, type CompletionResult, type FinishReason } from "./shared";
+import { buildPrompt, EXEC_TIMEOUT_MS, type ChatCompletionRequest, type CompletionResult, type FinishReason } from "./shared";
 
 // Kept for old imports only. Gateway model advertisement is live via
 // ProviderModelCatalog rather than hardcoded Claude CLI guesses.
@@ -40,8 +40,8 @@ export async function completeClaude(req: ChatCompletionRequest): Promise<Comple
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      reject(new Error("claude --print timed out after 180s"));
-    }, 180_000);
+      reject(new Error(`claude --print timed out after ${Math.round(EXEC_TIMEOUT_MS / 1000)}s`));
+    }, EXEC_TIMEOUT_MS);
     child.stdout.on("data", (d) => (stdout += d.toString()));
     child.stderr.on("data", (d) => (stderr += d.toString()));
     child.on("error", (err) => {
@@ -165,9 +165,9 @@ export function streamClaude(req: ChatCompletionRequest, cb: ClaudeStreamCallbac
 
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      cb.onError(new Error("claude stream timed out after 180s"));
+      cb.onError(new Error(`claude stream timed out after ${Math.round(EXEC_TIMEOUT_MS / 1000)}s`));
       finish();
-    }, 180_000);
+    }, EXEC_TIMEOUT_MS);
 
     const emitDelta = (full: string): void => {
       if (full.length > emitted.length && full.startsWith(emitted)) {

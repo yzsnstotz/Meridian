@@ -13,7 +13,7 @@
 // an arg) and pass an empty `-p` so the CLI stays headless and appends stdin.
 import { spawn } from "node:child_process";
 import { geminiAgentConfig } from "../../agents/gemini";
-import { buildPrompt, type ChatCompletionRequest, type CompletionResult, type FinishReason } from "./shared";
+import { buildPrompt, EXEC_TIMEOUT_MS, type ChatCompletionRequest, type CompletionResult, type FinishReason } from "./shared";
 
 // Kept for old imports only. Gateway model advertisement is live via
 // ProviderModelCatalog rather than hardcoded Gemini CLI guesses.
@@ -72,8 +72,8 @@ export async function completeGemini(req: ChatCompletionRequest): Promise<Comple
       let stderr = "";
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
-        reject(new Error("gemini -p timed out after 180s"));
-      }, 180_000);
+        reject(new Error(`gemini -p timed out after ${Math.round(EXEC_TIMEOUT_MS / 1000)}s`));
+      }, EXEC_TIMEOUT_MS);
       child.stdout.on("data", (d) => (stdout += d.toString()));
       child.stderr.on("data", (d) => (stderr += d.toString()));
       child.on("error", (err) => {

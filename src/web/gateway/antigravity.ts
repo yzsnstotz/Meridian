@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildPrompt, type ChatCompletionRequest, type CompletionResult } from "./shared";
+import { buildPrompt, EXEC_TIMEOUT_MS, type ChatCompletionRequest, type CompletionResult } from "./shared";
 
 export const ANTIGRAVITY_MODELS: string[] = [];
 
@@ -51,8 +51,8 @@ export async function completeAntigravity(req: ChatCompletionRequest): Promise<C
         let stderr = "";
         const timer = setTimeout(() => {
           child.kill("SIGKILL");
-          reject(new Error("agy -p timed out after 180s"));
-        }, 180_000);
+          reject(new Error(`agy -p timed out after ${Math.round(EXEC_TIMEOUT_MS / 1000)}s`));
+        }, EXEC_TIMEOUT_MS);
         child.stdout.on("data", (d) => (stdout += d.toString()));
         child.stderr.on("data", (d) => (stderr += d.toString()));
         child.on("error", (err) => {
