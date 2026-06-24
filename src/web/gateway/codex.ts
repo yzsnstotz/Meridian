@@ -15,7 +15,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexAgentConfig } from "../../agents/codex";
-import { buildPrompt, type ChatCompletionRequest, type CompletionResult, type FinishReason } from "./shared";
+import { buildPrompt, EXEC_TIMEOUT_MS, type ChatCompletionRequest, type CompletionResult, type FinishReason } from "./shared";
 
 // Kept for old imports only. The Gateway no longer advertises this static list:
 // `/v1/models` asks `ProviderModelCatalog`, which in turn asks `codex app-server`
@@ -113,8 +113,8 @@ export async function completeCodex(req: ChatCompletionRequest): Promise<Complet
       let stderr = "";
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
-        reject(new Error("codex exec timed out after 180s"));
-      }, 180_000);
+        reject(new Error(`codex exec timed out after ${Math.round(EXEC_TIMEOUT_MS / 1000)}s`));
+      }, EXEC_TIMEOUT_MS);
       child.stdout.on("data", (d) => (stdout += d.toString()));
       child.stderr.on("data", (d) => (stderr += d.toString()));
       child.on("error", (err) => {

@@ -3,6 +3,19 @@
 // one-shot mode and returns a normalized CompletionResult. The HTTP layer
 // (v1-gateway.ts) shapes that into OpenAI / Anthropic wire formats.
 
+/**
+ * Hard wall on a single CLI one-shot before the gateway SIGKILLs it.
+ *
+ * Was a hardcoded 180s in every backend (codex/claude/gemini/antigravity). A
+ * coding CLI handles large/long requests fine, but 180s killed them mid-flight —
+ * the child was reaped before producing any stdout, so the request died with a
+ * dropped connection (clients retry, then surface "Connection error after N
+ * retries") and NO usage-ledger row (it never completed). Default 24h; override
+ * with `MERIDIAN_EXEC_TIMEOUT_MS` (ms). These one-shots are user-driven; we'd
+ * rather wait than truncate a real result.
+ */
+export const EXEC_TIMEOUT_MS = Number(process.env.MERIDIAN_EXEC_TIMEOUT_MS) || 86_400_000;
+
 export type Role = "system" | "user" | "assistant" | "tool";
 
 export interface ChatMessage {
