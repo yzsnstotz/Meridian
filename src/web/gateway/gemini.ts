@@ -12,7 +12,7 @@
 // We feed the prompt on stdin (the model name is too long / unsafe to inline as
 // an arg) and pass an empty `-p` so the CLI stays headless and appends stdin.
 import { spawn } from "node:child_process";
-import { geminiAgentConfig } from "../../agents/gemini";
+import { resolveCli } from "./cli-resolver";
 import { buildPrompt, EXEC_TIMEOUT_MS, type ChatCompletionRequest, type CompletionResult, type FinishReason } from "./shared";
 
 // Kept for old imports only. Gateway model advertisement is live via
@@ -65,9 +65,17 @@ export async function completeGemini(req: ChatCompletionRequest): Promise<Comple
   const args = ["-p", "", "-o", "json", "--approval-mode", "plan"];
   if (req.model && /^gemini/i.test(req.model)) args.push("--model", req.model);
 
+  // Resolve the gemini CLI to an absolute, verified path; a missing/broken
+  // install becomes a clean error result rather than a raw per-request ENOENT.
+  const resolved = resolveCli("gemini");
+  if (!resolved.path) {
+    return errorResult(req, resolved.error ?? "gemini CLI not available");
+  }
+  const geminiBin = resolved.path;
+
   const { code, stdout, stderr } = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
     (resolve, reject) => {
-      const child = spawn(geminiAgentConfig.command, args, { stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(geminiBin, args, { stdio: ["pipe", "pipe", "pipe"] });
       let stdout = "";
       let stderr = "";
       const timer = setTimeout(() => {
@@ -76,6 +84,19 @@ export async function completeGemini(req: ChatCompletionRequest): Promise<Comple
       }, EXEC_TIMEOUT_MS);
       child.stdout.on("data", (d) => (stdout += d.toString()));
       child.stderr.on("data", (d) => (stderr += d.toString()));
+      // Guard stdio pipes so a mid-write EPIPE rejects cleanly instead of
+      // throwing as an unhandled 'error' event.
+      child.stdin.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.stdout.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.stderr.on("error", () => {
+        // diagnostic-only pipe; ignore.
+      });
       child.on("error", (err) => {
         clearTimeout(timer);
         reject(err);

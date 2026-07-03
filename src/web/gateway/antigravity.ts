@@ -8,11 +8,11 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveCli } from "./cli-resolver";
 import { buildPrompt, EXEC_TIMEOUT_MS, type ChatCompletionRequest, type CompletionResult } from "./shared";
 
 export const ANTIGRAVITY_MODELS: string[] = [];
 
-const ANTIGRAVITY_COMMAND = "agy";
 const DEFAULT_ANTIGRAVITY_MODEL = "antigravity-default";
 
 export function matchesAntigravity(model: string | undefined): boolean {
@@ -43,10 +43,26 @@ export async function completeAntigravity(req: ChatCompletionRequest): Promise<C
   const args = ["-p", fullPrompt];
   if (selectedModel) args.push("--model", selectedModel);
 
+  // Resolve the antigravity CLI (`agy`) to an absolute, verified path; a
+  // missing/broken install becomes a clean error result, not a raw ENOENT.
+  const resolved = resolveCli("antigravity");
+  if (!resolved.path) {
+    rmSync(workDir, { recursive: true, force: true });
+    return {
+      text: "",
+      model: req.model ?? DEFAULT_ANTIGRAVITY_MODEL,
+      finishReason: "stop",
+      usage: { promptTokens: 0, completionTokens: 0 },
+      isError: true,
+      errorMessage: resolved.error ?? "antigravity CLI (agy) not available"
+    };
+  }
+  const antigravityBin = resolved.path;
+
   try {
     const { code, stdout, stderr } = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
       (resolve, reject) => {
-        const child = spawn(ANTIGRAVITY_COMMAND, args, { cwd: workDir, stdio: ["ignore", "pipe", "pipe"] });
+        const child = spawn(antigravityBin, args, { cwd: workDir, stdio: ["ignore", "pipe", "pipe"] });
         let stdout = "";
         let stderr = "";
         const timer = setTimeout(() => {
@@ -55,6 +71,15 @@ export async function completeAntigravity(req: ChatCompletionRequest): Promise<C
         }, EXEC_TIMEOUT_MS);
         child.stdout.on("data", (d) => (stdout += d.toString()));
         child.stderr.on("data", (d) => (stderr += d.toString()));
+        // Guard stdio pipes so a mid-stream drop rejects cleanly instead of
+        // throwing as an unhandled 'error' event. (stdin is 'ignore' here.)
+        child.stdout.on("error", (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+        child.stderr.on("error", () => {
+          // diagnostic-only pipe; ignore.
+        });
         child.on("error", (err) => {
           clearTimeout(timer);
           reject(err);

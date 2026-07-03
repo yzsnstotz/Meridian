@@ -2,7 +2,7 @@
 // plus a real token-streaming variant (`--output-format stream-json`).
 // Validated in P1 against the real Claude subscription.
 import { spawn } from "node:child_process";
-import { claudeAgentConfig } from "../../agents/claude";
+import { resolveCliOrThrow } from "./cli-resolver";
 import { buildPrompt, EXEC_TIMEOUT_MS, type ChatCompletionRequest, type CompletionResult, type FinishReason } from "./shared";
 
 // Kept for old imports only. Gateway model advertisement is live via
@@ -34,8 +34,9 @@ export async function completeClaude(req: ChatCompletionRequest): Promise<Comple
   if (req.model && /^claude/i.test(req.model)) args.push("--model", req.model);
   if (system) args.push("--append-system-prompt", system);
 
+  const claudeBin = resolveCliOrThrow("claude");
   const out = await new Promise<ClaudePrintResult>((resolve, reject) => {
-    const child = spawn(claudeAgentConfig.command, args, { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(claudeBin, args, { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {
@@ -44,6 +45,19 @@ export async function completeClaude(req: ChatCompletionRequest): Promise<Comple
     }, EXEC_TIMEOUT_MS);
     child.stdout.on("data", (d) => (stdout += d.toString()));
     child.stderr.on("data", (d) => (stderr += d.toString()));
+    // Guard stdio pipes so a mid-write EPIPE rejects cleanly instead of throwing
+    // as an unhandled 'error' event.
+    child.stdin.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.stdout.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.stderr.on("error", () => {
+      // diagnostic-only pipe; ignore.
+    });
     child.on("error", (err) => {
       clearTimeout(timer);
       reject(err);
@@ -149,7 +163,8 @@ export function streamClaude(req: ChatCompletionRequest, cb: ClaudeStreamCallbac
 
     let child;
     try {
-      child = spawn(claudeAgentConfig.command, args, { stdio: ["pipe", "pipe", "pipe"] });
+      const claudeBin = resolveCliOrThrow("claude");
+      child = spawn(claudeBin, args, { stdio: ["pipe", "pipe", "pipe"] });
     } catch (e) {
       cb.onError(e as Error);
       finish();
@@ -242,6 +257,22 @@ export function streamClaude(req: ChatCompletionRequest, cb: ClaudeStreamCallbac
       drain();
     });
     child.stderr.on("data", (d) => (stderr += d.toString()));
+    // Guard stdio pipes: a mid-stream drop (e.g. the child dies while we're still
+    // writing the prompt, or a pipe breaks) would otherwise surface as an
+    // unhandled 'error' event and crash the process. Route it through onError.
+    child.stdin.on("error", (err) => {
+      clearTimeout(timer);
+      cb.onError(err);
+      finish();
+    });
+    child.stdout.on("error", (err) => {
+      clearTimeout(timer);
+      cb.onError(err);
+      finish();
+    });
+    child.stderr.on("error", () => {
+      // diagnostic-only pipe; ignore.
+    });
     child.on("error", (err) => {
       clearTimeout(timer);
       cb.onError(err);

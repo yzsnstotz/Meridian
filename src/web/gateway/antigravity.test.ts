@@ -5,6 +5,7 @@ import { delimiter, join } from "node:path";
 import { test } from "node:test";
 
 import { completeAntigravity } from "./antigravity";
+import { resetCliResolverCache } from "./cli-resolver";
 
 test("completeAntigravity estimates usage when agy print mode returns text without token stats", async () => {
   const binDir = mkdtempSync(join(tmpdir(), "meridian-agy-bin-"));
@@ -12,6 +13,8 @@ test("completeAntigravity estimates usage when agy print mode returns text witho
   writeFileSync(
     fakeAgy,
     "#!/bin/sh\n" +
+      // Handle --version so the CLI resolver verifies this fake binary.
+      'case "$1" in --version) echo "agy 1.0.0"; exit 0;; esac\n' +
       "echo 'Antigravity response with enough words to need multiple tokens.'\n",
     "utf8"
   );
@@ -19,6 +22,7 @@ test("completeAntigravity estimates usage when agy print mode returns text witho
 
   const oldPath = process.env.PATH;
   process.env.PATH = `${binDir}${delimiter}${oldPath ?? ""}`;
+  resetCliResolverCache();
   try {
     const result = await completeAntigravity({
       model: "antigravity/Gemini 3.1 Pro (Low)",
@@ -32,5 +36,6 @@ test("completeAntigravity estimates usage when agy print mode returns text witho
     assert.ok(result.usage.completionTokens > 0);
   } finally {
     process.env.PATH = oldPath;
+    resetCliResolverCache();
   }
 });

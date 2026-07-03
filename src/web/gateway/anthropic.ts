@@ -121,8 +121,30 @@ export async function handleAnthropicMessages(body: AnthropicMessagesRequest): P
 }
 
 // ── Streaming response (Anthropic SSE event sequence) ─────────────────────────
+/**
+ * Emit one SSE event defensively. A client that dropped mid-stream makes the
+ * write emit an 'error' event (write EPIPE); we skip if the stream already ended
+ * and swallow a synchronous throw so a client disconnect never crashes the
+ * gateway. The `res.on('error')` handler (installed in streamAnthropicMessages)
+ * logs the drop.
+ */
 function sse(res: http.ServerResponse, event: string, data: unknown): void {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  if (res.writableEnded || res.destroyed) return;
+  try {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  } catch {
+    // Client stream dropped mid-response (EPIPE / ERR_STREAM_DESTROYED).
+  }
+}
+
+/** Terminate the stream defensively (skip/swallow if the client already dropped). */
+function safeEnd(res: http.ServerResponse): void {
+  if (res.writableEnded || res.destroyed) return;
+  try {
+    res.end();
+  } catch {
+    // Client already gone; nothing to flush.
+  }
 }
 
 /**
@@ -131,6 +153,13 @@ function sse(res: http.ServerResponse, event: string, data: unknown): void {
  * response.
  */
 export async function streamAnthropicMessages(res: http.ServerResponse, body: AnthropicMessagesRequest): Promise<CompletionResult | null> {
+  // A client that disconnects mid-stream makes the next write to its socket emit
+  // an 'error' event (write EPIPE). Without a listener Node treats it as an
+  // unhandled 'error' and crashes the process. Attach a handler so a dropped
+  // client aborts THIS stream cleanly and is logged, never an uncaught throw.
+  res.on("error", (err) => {
+    console.warn(`[meridian-gateway] anthropic stream client dropped: ${(err as Error).message}`);
+  });
   res.writeHead(200, SSE_HEADERS);
   const id = messageId();
   const requestedModel = body.model ?? "claude";
@@ -219,7 +248,7 @@ export async function streamAnthropicMessages(res: http.ServerResponse, body: An
     usage: { input_tokens: inputTokens, output_tokens: outputTokens },
   });
   sse(res, "message_stop", { type: "message_stop" });
-  res.end();
+  safeEnd(res);
   return completion ?? {
     text: "",
     model: finalModel,
