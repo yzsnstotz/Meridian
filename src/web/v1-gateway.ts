@@ -18,6 +18,7 @@ import { matchesGemini } from "./gateway/gemini";
 import type { ChatCompletionRequest, CompletionResult } from "./gateway/shared";
 import { normalizeModel } from "./gateway/shared";
 import { complete, providerForModel } from "./gateway/router";
+import { resolveAllClis } from "./gateway/cli-resolver";
 import { streamChatCompletion } from "./gateway/streaming";
 import {
   handleAnthropicMessages,
@@ -463,7 +464,27 @@ const server = http.createServer((request, response) => {
 // bin dir, leaving just-installed CLIs unspawnable.)
 const npmBinDir = ensureSpawnPath();
 
+// Eagerly resolve each provider CLI to an absolute, VERIFIED path at startup (the
+// PATH is already augmented above). This surfaces a stale/broken duplicate CLI
+// (the production incident: an fnm-global codex shadowing the working install)
+// once at boot instead of as a raw per-request ENOENT — and warms the resolver
+// cache so the first completion doesn't pay the probe cost.
+function logResolvedClis(): void {
+  const resolved = resolveAllClis();
+  for (const [provider, info] of Object.entries(resolved)) {
+    if (info.path) {
+      console.log(
+        `[meridian-gateway] cli-resolve ${provider}: ${info.path}` +
+          (info.version ? ` (${info.version.split("\n")[0]})` : "")
+      );
+    } else {
+      console.warn(`[meridian-gateway] cli-resolve ${provider}: NOT USABLE — ${info.error ?? "unknown"}`);
+    }
+  }
+}
+
 server.listen(PORT, HOST, () => {
   console.log(`[meridian-gateway] /v1 listening on http://${HOST}:${PORT}`);
   console.log(`[meridian-gateway] PATH augmented with npm global bin dir: ${npmBinDir ?? "(npm not resolvable)"}`);
+  logResolvedClis();
 });

@@ -32,6 +32,38 @@ interface ChunkChoiceDelta {
   content?: string;
 }
 
+/**
+ * Write to the client stream defensively. If the client already dropped
+ * (writableEnded/destroyed) we skip; a synchronous throw (EPIPE on a half-open
+ * socket) is swallowed so a mid-stream client disconnect never becomes an
+ * unhandled throw that crashes the gateway.
+ */
+function safeWrite(res: http.ServerResponse, chunk: string): void {
+  if (res.writableEnded || res.destroyed) return;
+  try {
+    res.write(chunk);
+  } catch {
+    // Client stream dropped mid-response (EPIPE / ERR_STREAM_DESTROYED); the
+    // 'error' handler installed on `res` logs it. Nothing else to do.
+  }
+}
+
+/** Terminate the stream defensively (skip/swallow if the client already dropped). */
+function safeEnd(res: http.ServerResponse): void {
+  if (res.writableEnded || res.destroyed) return;
+  try {
+    res.end();
+  } catch {
+    // Client already gone; nothing to flush.
+  }
+}
+
+/** Emit the terminal `data: [DONE]` marker and end the stream safely. */
+function endStream(res: http.ServerResponse): void {
+  safeWrite(res, "data: [DONE]\n\n");
+  safeEnd(res);
+}
+
 /** Serialize one OpenAI chat.completion.chunk as an SSE `data:` line. */
 function sseChunk(
   res: http.ServerResponse,
@@ -48,7 +80,7 @@ function sseChunk(
     model,
     choices: [{ index: 0, delta, finish_reason: finishReason }],
   };
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  safeWrite(res, `data: ${JSON.stringify(payload)}\n\n`);
 }
 
 /**
@@ -56,6 +88,13 @@ function sseChunk(
  * validated auth + the request body and has NOT written any headers yet.
  */
 export async function streamChatCompletion(res: http.ServerResponse, req: ChatCompletionRequest): Promise<CompletionResult | null> {
+  // A client that disconnects mid-stream makes the next write to its socket emit
+  // an 'error' event (write EPIPE). Without a listener Node treats it as an
+  // unhandled 'error' and crashes the process. Attach a handler so a dropped
+  // client aborts THIS stream cleanly and is logged, never an uncaught throw.
+  res.on("error", (err) => {
+    console.warn(`[meridian-gateway] chat stream client dropped: ${(err as Error).message}`);
+  });
   res.writeHead(200, SSE_HEADERS);
   const id = chunkId();
   const created = Math.floor(Date.now() / 1000);
@@ -91,8 +130,7 @@ export async function streamChatCompletion(res: http.ServerResponse, req: ChatCo
       sseChunk(res, id, created, finalModel, { content: `\n[error: ${(errored as Error).message}]` }, null);
     }
     sseChunk(res, id, created, finalModel, {}, finalReason);
-    res.write("data: [DONE]\n\n");
-    res.end();
+    endStream(res);
     return {
       text: "",
       model: finalModel,
@@ -112,13 +150,11 @@ export async function streamChatCompletion(res: http.ServerResponse, req: ChatCo
   if (out.isError) {
     sseChunk(res, id, created, out.model, { content: `[error: ${out.errorMessage ?? "upstream error"}]` }, null);
     sseChunk(res, id, created, out.model, {}, "stop");
-    res.write("data: [DONE]\n\n");
-    res.end();
+    endStream(res);
     return out;
   }
   if (out.text) sseChunk(res, id, created, out.model, { content: out.text }, null);
   sseChunk(res, id, created, out.model, {}, out.finishReason);
-  res.write("data: [DONE]\n\n");
-  res.end();
+  endStream(res);
   return out;
 }

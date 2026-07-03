@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { codexAgentConfig } from "../../agents/codex";
+import { resolveCliOrThrow } from "./cli-resolver";
 import { buildPrompt, EXEC_TIMEOUT_MS, type ChatCompletionRequest, type CompletionResult, type FinishReason } from "./shared";
 
 // Kept for old imports only. The Gateway no longer advertises this static list:
@@ -106,9 +106,26 @@ export async function completeCodex(req: ChatCompletionRequest): Promise<Complet
   if (requestedModel) args.push("--model", requestedModel);
   args.push("-"); // read the prompt from stdin
 
+  // Resolve the codex CLI to an absolute, verified path. If nothing usable is
+  // installed, surface a clean gateway error instead of a raw per-request ENOENT.
+  let codexBin: string;
+  try {
+    codexBin = resolveCliOrThrow("codex");
+  } catch (e) {
+    rmSync(workDir, { recursive: true, force: true });
+    return {
+      text: "",
+      model: requestedModel ?? DEFAULT_CODEX_MODEL,
+      finishReason: mapFinish(),
+      usage: { promptTokens: 0, completionTokens: 0 },
+      isError: true,
+      errorMessage: (e as Error).message,
+    };
+  }
+
   try {
     const parsed = await new Promise<CodexParsed>((resolve, reject) => {
-      const child = spawn(codexAgentConfig.command, args, { stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(codexBin, args, { stdio: ["pipe", "pipe", "pipe"] });
       let stdout = "";
       let stderr = "";
       const timer = setTimeout(() => {
@@ -117,6 +134,20 @@ export async function completeCodex(req: ChatCompletionRequest): Promise<Complet
       }, EXEC_TIMEOUT_MS);
       child.stdout.on("data", (d) => (stdout += d.toString()));
       child.stderr.on("data", (d) => (stderr += d.toString()));
+      // Guard the stdio pipes: if the child dies mid-write (EPIPE) or a pipe
+      // errors, reject cleanly rather than letting an unhandled 'error' event
+      // crash the process.
+      child.stdin.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.stdout.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      child.stderr.on("error", () => {
+        // stderr is diagnostic-only; ignore pipe errors on it.
+      });
       child.on("error", (err) => {
         clearTimeout(timer);
         reject(err);
