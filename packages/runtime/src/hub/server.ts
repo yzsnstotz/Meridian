@@ -4,7 +4,7 @@ import net from "node:net";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { config, type AppConfig } from "../config";
+import { config, runtimePaths, type AppConfig } from "../config";
 import { createLogger } from "../logger";
 import type { Logger } from "pino";
 import { MonitorEventSchema, type MonitorEvent } from "../monitor/events";
@@ -89,7 +89,7 @@ export function loadOrGenerateBootstrapKey(
   options: LoadOrGenerateBootstrapKeyOptions = {}
 ): BootstrapKeyResult {
   const env = options.env ?? process.env;
-  const envFilePath = options.envFilePath ?? path.resolve(process.cwd(), ".env");
+  const envFilePath = options.envFilePath ?? path.join(runtimePaths.configDir, ".env");
   const existing = env[BOOTSTRAP_KEY_ENV_VAR];
   if (typeof existing === "string" && existing.trim().length > 0) {
     return { key: existing.trim(), generated: false, envFilePath };
@@ -434,8 +434,8 @@ export class HubServer {
     // unlinks AFTER the new hub binds (it can take a few seconds for the
     // old process to drain idempotency cleanup + pane broadcaster close),
     // the directory entry disappears even though the new hub's fd is
-    // still alive, and downstream meridian-roles fails its
-    // hub_socket_reachable check on /tmp/hub-core.sock. Leaving the
+    // still alive, and the downstream orchestrator fails its
+    // hub_socket_reachable check on the resolved socket. Leaving the
     // stale entry is harmless — start() always calls removeStaleSocket()
     // before listen(), and Node will refuse to bind a path with a live
     // listener (EADDRINUSE). The kernel reclaims the inode when the
@@ -1419,8 +1419,8 @@ export class HubServer {
     // Before unlinking, probe to see if another process is actively
     // listening on this path. PM2 routinely spawns transient children
     // during restart races; a blind unlink here would delete the live
-    // hub's directory entry while leaving its fd open — meridian-roles
-    // then fails hub_socket_reachable on /tmp/hub-core.sock and the
+    // hub's directory entry while leaving its fd open — the orchestrator
+    // then fails hub_socket_reachable on the resolved socket and the
     // chain spirals into ensure_meridian_hub_socket → restart → repeat.
     const liveListener = await new Promise<boolean>((resolve) => {
       const probe = net.createConnection(this.socketPath);

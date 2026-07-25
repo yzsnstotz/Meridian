@@ -177,7 +177,7 @@ export class TokenUsageCollector {
   //   4. among survivors, choosing the one with the smallest |meta.ts - pid.start|.
   //
   // The source-↔-argv filter matters when multiple codex sessions share a
-  // cwd. The hub forks every codex from `/Users/yzliu/work` regardless of
+  // cwd. The hub can fork every codex from the same configured work root regardless of
   // whether it's agentapi-bound (interactive `cli`) or a stateless
   // `codex exec --json` (`exec`) validator/pm-resolver call. Live obs
   // 2026-05-17 (agent-dispatcher-00f759ff): codex_01 dispatcher (pid 77365)

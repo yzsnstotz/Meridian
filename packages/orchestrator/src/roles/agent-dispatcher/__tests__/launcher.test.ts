@@ -422,7 +422,7 @@ describe("dispatcherHubSystemPromptPath", () => {
 
   it("does not leak host-specific node toolchain paths into displayCommand", () => {
     const repoRoot = "/tmp/meridian-roles";
-    const hermesNode = "/Users/yzliu/.hermes/node/bin/node";
+    const hermesNode = "/home/tester/.hermes/node/bin/node";
     const command = resolveMeridianToolCommand({
       repoRoot,
       runtimeTree: "dist",

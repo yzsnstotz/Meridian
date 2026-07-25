@@ -435,7 +435,7 @@ describe("buildSystemMonitorSnapshot", () => {
           pid: 110,
           ppid: 1,
           etime: "00:20",
-          command: "/Users/yzliu/.openclaw/npm/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex app-server --listen stdio://"
+          command: "/home/tester/.openclaw/npm/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex app-server --listen stdio://"
         }
       ],
       now: () => new Date("2026-05-23T05:00:00.000Z"),

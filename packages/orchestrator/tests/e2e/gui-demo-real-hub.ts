@@ -2,7 +2,7 @@
  * GUI demo against a real Meridian Hub (no mocked launchDispatcher / no stub sendToHub).
  *
  * Prerequisites:
- * - Meridian Hub is running and listening on HUB_SOCKET_PATH (default: /tmp/hub-socks/hub-core.sock).
+ * - Meridian Hub is running and listening on HUB_SOCKET_PATH or the resolved native socket path.
  * - Run from repo root, or cwd will be set to Meridian-roles root so spawn --spawn-dir matches this repo.
  *
  * Usage:
@@ -19,7 +19,9 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 
-const HUB_SOCKET_CANDIDATES = ["/tmp/hub-socks/hub-core.sock", "/tmp/hub-core.sock"];
+import { resolveMeridianPaths } from "@meridian/contracts";
+
+const HUB_SOCKET_CANDIDATES = [resolveMeridianPaths().hubSocketPath];
 const DEFAULT_TIMEOUT_MS = 900_000;
 
 async function getFreePort(): Promise<number> {

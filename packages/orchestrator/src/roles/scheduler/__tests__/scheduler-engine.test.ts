@@ -815,7 +815,7 @@ describe("SchedulerEngine", () => {
     });
 
     execFileSyncMock.mockReturnValue([
-      `71436 node /Users/yzliu/.local/share/fnm/aliases/default/bin/clawhub-fetch detail-fetch --scan-run-id ${scanRunId} --db /Volumes/Elements/clawhub/clawhub.db --manifest /tmp/clawhub-scan/${scanRunId}/W-DETAIL.remaining-managed.json`
+      `71436 node /home/tester/.local/share/fnm/aliases/default/bin/clawhub-fetch detail-fetch --scan-run-id ${scanRunId} --db /Volumes/Elements/clawhub/clawhub.db --manifest /tmp/clawhub-scan/${scanRunId}/W-DETAIL.remaining-managed.json`
     ].join("\n"));
 
     const continueWorker = vi.fn(async () => ({

@@ -1,2 +1,2 @@
-claude:A read=/Users/yzliu/work/Meridian/Meridian-roles/test/fileflow/fileflow-d80efef7/input.txt write=/Users/yzliu/work/Meridian/Meridian-roles/test/fileflow/fileflow-d80efef7/step1.txt
-codex:B read=/Users/yzliu/work/Meridian/Meridian-roles/test/fileflow/fileflow-d80efef7/step1.txt write=/Users/yzliu/work/Meridian/Meridian-roles/test/fileflow/fileflow-d80efef7/final.txt
+claude:A read=/workspace/Meridian/Meridian-roles/test/fileflow/fileflow-d80efef7/input.txt write=/workspace/Meridian/Meridian-roles/test/fileflow/fileflow-d80efef7/step1.txt
+codex:B read=/workspace/Meridian/Meridian-roles/test/fileflow/fileflow-d80efef7/step1.txt write=/workspace/Meridian/Meridian-roles/test/fileflow/fileflow-d80efef7/final.txt

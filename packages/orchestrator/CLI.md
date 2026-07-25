@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-cd /Users/yzliu/work/Meridian/Meridian-roles
+cd /workspace/Meridian/Meridian-roles
 npm install
 npm run build
 npm link
@@ -14,7 +14,7 @@ npm link
 Alternative global install flow:
 
 ```bash
-cd /Users/yzliu/work/Meridian/Meridian-roles
+cd /workspace/Meridian/Meridian-roles
 npm install
 npm run build
 npm install -g .
@@ -67,7 +67,7 @@ The CLI talks to two services:
 | `MERIDIAN_ROLES_HTTP` | `http://127.0.0.1:${GUI_PORT}` | Base URL for the Meridian-roles HTTP API |
 | `GUI_PORT` | `7701` | Default port used when `MERIDIAN_ROLES_HTTP` is unset |
 | `GUI_LISTEN_HOST` | unset | Optional HTTP bind host used by the service, for example `127.0.0.1` or `0.0.0.0` |
-| `HUB_SOCKET_PATH` | `/tmp/hub-socks/hub-core.sock` | Meridian hub socket path used by hub-backed tools |
+| `HUB_SOCKET_PATH` | `/tmp/meridian-runtime/sockets/hub-core.sock` | Meridian hub socket path used by hub-backed tools |
 | `MERIDIAN_REPLY_CHANNEL` | unset | JSON reply channel for `notify` |
 | `MERIDIAN_REPLY_CHANNELS` | unset | JSON array of reply channels for `notify` |
 | `ROLES_SOCKET_PATH` | `/tmp/meridian-roles.sock` | Meridian-roles A2A socket path when starting the service locally |
@@ -96,7 +96,7 @@ Params:
 Example:
 
 ```bash
-meridian-roles spawn --agent-type codex --model-id gpt-5.4 --spawn-dir /Users/yzliu/work/Meridian --auto-approve true
+meridian-roles spawn --agent-type codex --model-id gpt-5.4 --spawn-dir /workspace/Meridian --auto-approve true
 ```
 
 Typical success payload:
@@ -123,7 +123,7 @@ Params:
 Example:
 
 ```bash
-meridian-roles run --thread-id codex_01 --command /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/agent_dispatch_command.md --worker N-07
+meridian-roles run --thread-id codex_01 --command /workspace/Meridian/docs/branch/feat-cli-external-integration/agent_dispatch_command.md --worker N-07
 ```
 
 ### `kill`
@@ -173,14 +173,14 @@ Params:
 Example:
 
 ```bash
-meridian-roles update-status --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --worker N-07 --status done
+meridian-roles update-status --plan /workspace/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --worker N-07 --status done
 ```
 
 Set a mid-workflow model + effort override:
 
 ```bash
 meridian-roles update-status \
-  --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md \
+  --plan /workspace/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md \
   --worker N-07 \
   --status in_progress \
   --thread-id worker-thread-456 \
@@ -206,9 +206,9 @@ Behavior:
 Examples:
 
 ```bash
-meridian-roles resume-worker --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --worker N-07
-meridian-roles resume-worker --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --worker N-07 --action skip
-meridian-roles resume-worker --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --worker N-07 --action force-complete --force true
+meridian-roles resume-worker --plan /workspace/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --worker N-07
+meridian-roles resume-worker --plan /workspace/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --worker N-07 --action skip
+meridian-roles resume-worker --plan /workspace/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --worker N-07 --action force-complete --force true
 ```
 
 The Meridian-roles GUI exposes the same retry/skip/force-complete actions for running workers and shows stale worker badges sourced from the same dispatch status data.
@@ -224,7 +224,7 @@ Params:
 Example:
 
 ```bash
-meridian-roles dispatch-status --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --stale-threshold 45
+meridian-roles dispatch-status --plan /workspace/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --stale-threshold 45
 ```
 
 Typical payload fields:
@@ -257,10 +257,10 @@ Rules:
 Examples:
 
 ```bash
-meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --model-map 'CODEX=codex:gpt-5.4,OPUS=claude:claude-opus-4-6'
-meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --model-map-file /tmp/model-map.json
-meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --repo-root /Users/yzliu/work/Meridian/Meridian-roles --docs-root /Users/yzliu/work/Docs/Projects/meridian-roles
-meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --pm-agent-type claude --pm-model-id claude-opus-4-7 --pm-reply-channels '[{"channel":"telegram","chat_id":"telegram:ops"}]'
+meridian-roles dispatch-start --plan /workspace/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --model-map 'CODEX=codex:gpt-5.4,OPUS=claude:claude-opus-4-6'
+meridian-roles dispatch-start --plan /workspace/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --model-map-file /tmp/model-map.json
+meridian-roles dispatch-start --plan /workspace/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --repo-root /workspace/Meridian/Meridian-roles --docs-root /workspace/Docs/Projects/meridian-roles
+meridian-roles dispatch-start --plan /workspace/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --pm-agent-type claude --pm-model-id claude-opus-4-7 --pm-reply-channels '[{"channel":"telegram","chat_id":"telegram:ops"}]'
 ```
 
 Model-effort aware dispatch plans support both `CODEX::high` inline suffix and a `Reasoning Effort` column.
@@ -303,8 +303,8 @@ Params:
 Examples:
 
 ```bash
-meridian-roles dispatch-schedule-set --plan /Users/yzliu/work/Docs/Projects/meridian-roles/feat/schedular/dispatch_plan.md --mode cron --cron '0 9 * * *' --report-dir /Users/yzliu/work/Docs/Projects/meridian-roles/reports/clawhub-scan --repo-root /Users/yzliu/work/Meridian/Meridian-roles --docs-root /Users/yzliu/work/Docs/Projects/meridian-roles
-meridian-roles dispatch-schedule-set --plan /Users/yzliu/work/Docs/Projects/meridian-roles/feat/schedular/dispatch_plan.md --mode loop --report-dir /Users/yzliu/work/Docs/Projects/meridian-roles/reports/clawhub-scan --delay-between-cycles-seconds 300 --scheduler-id scheduler-abcd1234
+meridian-roles dispatch-schedule-set --plan /workspace/Docs/Projects/meridian-roles/feat/schedular/dispatch_plan.md --mode cron --cron '0 9 * * *' --report-dir /workspace/Docs/Projects/meridian-roles/reports/clawhub-scan --repo-root /workspace/Meridian/Meridian-roles --docs-root /workspace/Docs/Projects/meridian-roles
+meridian-roles dispatch-schedule-set --plan /workspace/Docs/Projects/meridian-roles/feat/schedular/dispatch_plan.md --mode loop --report-dir /workspace/Docs/Projects/meridian-roles/reports/clawhub-scan --delay-between-cycles-seconds 300 --scheduler-id scheduler-abcd1234
 ```
 
 ### `pm-resolve`
@@ -388,14 +388,14 @@ meridian-roles list-roles
 Start and inspect a dispatch:
 
 ```bash
-meridian-roles dispatch-start --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --model-map 'CODEX=codex:gpt-5.4'
-meridian-roles dispatch-status --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md
+meridian-roles dispatch-start --plan /workspace/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --model-map 'CODEX=codex:gpt-5.4'
+meridian-roles dispatch-status --plan /workspace/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md
 ```
 
 Recover a stuck worker:
 
 ```bash
-meridian-roles resume-worker --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --worker N-07 --action retry
+meridian-roles resume-worker --plan /workspace/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md --worker N-07 --action retry
 ```
 
 ## Notes

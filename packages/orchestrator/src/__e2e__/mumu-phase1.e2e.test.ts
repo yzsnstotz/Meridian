@@ -30,8 +30,8 @@ import { loadCallerRegistry } from "../web/caller-registry";
 import type { ProjectPolicy } from "../web/project-policy-schema";
 
 const WORKTREE_ROOT = path.resolve(__dirname, "..", "..");
-const ADS_WORKTREE = "/Users/yzliu/work/projects/ADS/.worktrees/mumu-phase1";
-const MERIDIAN_ROOT = "/Users/yzliu/work/Meridian";
+const ADS_WORKTREE = "/workspace/projects/ADS/.worktrees/mumu-phase1";
+const MERIDIAN_ROOT = "/workspace/Meridian";
 const requireExternal = createRequire(__filename);
 const REAL_MUMU_CONFIG_ROOT = path.join(WORKTREE_ROOT, "config", "projects", "mumu");
 const REAL_MUMU_POLICY_PATH = path.join(WORKTREE_ROOT, "config", "projects", "mumu.json");

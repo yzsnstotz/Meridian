@@ -1,13 +1,16 @@
 import * as fs from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
+
+import { resolveMeridianPaths } from "@meridian/contracts";
 
 // meridian-roles runtime configuration
 // All values overridable via environment variables — no hard-coded production paths
 
-const ENV_FILENAMES = [".env", ".env.local", ".meridian_n02/.env"];
+const ENV_FILENAMES = [".env", ".env.local"];
 
-loadEnvFiles();
+const bootstrapPaths = resolveMeridianPaths();
+loadEnvFiles(bootstrapPaths.configDir);
+export const orchestratorPaths = resolveMeridianPaths();
 
 // State files placed under macOS /tmp survive only until the next reboot, so a
 // /tmp default silently dropped registered scheduler/dispatcher roles after
@@ -15,13 +18,13 @@ loadEnvFiles();
 // var when present and falls back to the standard user-level directory) so
 // fresh checkouts persist by default.
 export const DEFAULT_STATE_FILE_PATH = path.join(
-  resolveXdgStateHome(),
-  "meridian-roles",
-  "state.json"
+  orchestratorPaths.stateDir,
+  "orchestrator-state.json"
 );
 
-export const HUB_SOCKET_PATH = process.env.HUB_SOCKET_PATH ?? "/tmp/hub-socks/hub-core.sock";
-export const ROLES_SOCKET_PATH = process.env.ROLES_SOCKET_PATH ?? "/tmp/meridian-roles.sock";
+export const HUB_SOCKET_PATH = process.env.HUB_SOCKET_PATH ?? orchestratorPaths.hubSocketPath;
+export const ROLES_SOCKET_PATH = process.env.ROLES_SOCKET_PATH
+  ?? path.join(orchestratorPaths.socketDir, "orchestrator.sock");
 export const GUI_PORT = Number(process.env.GUI_PORT ?? 7701);
 export const GUI_LISTEN_HOST = normalizeOptionalEnvValue(process.env.GUI_LISTEN_HOST);
 export const STATE_FILE_PATH = process.env.STATE_FILE_PATH ?? DEFAULT_STATE_FILE_PATH;
@@ -48,11 +51,14 @@ if (IS_EPHEMERAL_STATE_FILE_PATH) {
 export const FALLBACK_HEURISTICS_ENABLED =
   (process.env.MERIDIAN_FALLBACK_HEURISTICS_ENABLED ?? "true").toLowerCase() !== "false";
 
-function loadEnvFiles(): void {
+function loadEnvFiles(configDir: string): void {
   const explicitEnvKeys = new Set(Object.keys(process.env));
+  const explicitEnvFile = normalizeOptionalEnvValue(process.env.MERIDIAN_ENV_FILE);
+  const envFilePaths = explicitEnvFile
+    ? [explicitEnvFile]
+    : ENV_FILENAMES.map((fileName) => path.join(configDir, fileName));
 
-  for (const fileName of ENV_FILENAMES) {
-    const envFilePath = path.resolve(process.cwd(), fileName);
+  for (const envFilePath of envFilePaths) {
     if (!fs.existsSync(envFilePath)) {
       continue;
     }
@@ -110,14 +116,6 @@ function normalizeEnvValue(rawValue: string): string {
 function normalizeOptionalEnvValue(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
-}
-
-function resolveXdgStateHome(): string {
-  const explicit = process.env.XDG_STATE_HOME?.trim();
-  if (explicit && path.isAbsolute(explicit)) {
-    return explicit;
-  }
-  return path.join(homedir(), ".local", "state");
 }
 
 function isEphemeralFilesystemPath(filePath: string): boolean {

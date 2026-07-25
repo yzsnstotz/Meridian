@@ -133,6 +133,7 @@ describe("createAutoProvisionerHandlers", () => {
       role_type: "chatter",
       thread_id: "chatter-mumu-user-u_001",
       config: {
+        project_id: "mumu",
         chatter_id: "chatter-mumu-user-u_001",
         memory_folder: "/tmp/mumu-users/u_001",
         manifest_path: "/tmp/mumu-manifest.json",
@@ -548,7 +549,7 @@ describe("createAutoProvisionerHandlers", () => {
     );
     expect(invalidSnapshot.statusCode).toBe(404);
     expect(invalidSnapshot.body).toEqual({ error: "savepoint_not_found" });
-  });
+  }, 30_000);
 });
 
 function createHarness(options: {

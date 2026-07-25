@@ -523,7 +523,7 @@ describe("scheduler config updates", () => {
       },
       workers: {
         "R-01": {
-          thread_id: "worker-thread-r01",
+          thread_id: "",
           trace_id: "22222222-2222-4222-8222-222222222222",
           started_at: "2026-04-27T01:01:00.000Z",
           last_seen_at: "2026-04-27T01:02:00.000Z",

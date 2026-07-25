@@ -616,7 +616,7 @@ async function loadBrowserApp(options: {
   elements: Record<string, FakeElement>;
   fetchImpl(url: string, init?: RequestInit): Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
 }): Promise<BrowserPage> {
-  const appPath = path.resolve("/Users/yzliu/work/Meridian/Meridian-roles/src/web/public/app.js");
+  const appPath = path.resolve(__dirname, "../../src/web/public/app.js");
   const source = await fs.readFile(appPath, "utf8");
   const documentListeners = new Map<string, Array<() => void>>();
   const location = {

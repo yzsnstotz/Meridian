@@ -1,12 +1,12 @@
 import * as fs from "node:fs";
 import path from "node:path";
 
+import { resolveMeridianPaths } from "@meridian/contracts";
+
 const DISPATCH_DOCS_ANCHOR = "/docs/branch/";
 const INTERNAL_DOCS_SEGMENT = "/docs";
 const DETACHED_DOCS_REPO_MARKERS = new Set(["project", "projects"]);
 const PROJECT_REPO_DIRECTORY_NAMES = ["projects", "Projects"];
-export const DEFAULT_AGENT_DISPATCHER_REPO_ROOT = "/Users/yzliu/work";
-export const DEFAULT_AGENT_DISPATCHER_DOCS_ROOT = path.join(DEFAULT_AGENT_DISPATCHER_REPO_ROOT, "Docs");
 
 export interface DispatchPathConfigLike {
   dispatch_plan_path?: string | null;
@@ -18,7 +18,7 @@ export interface DispatchPathConfigLike {
 export function resolveDispatchRepoRoot(paths: Array<string | null | undefined>): string {
   const resolved = resolveDispatchRepoRootOrNull(paths);
   if (!resolved) {
-    return process.cwd();
+    return resolveMeridianPaths().workRoot;
   }
 
   return resolved;
@@ -90,7 +90,19 @@ export function resolveConfiguredDocsRoot(config: DispatchPathConfigLike): strin
     return inferredDocsRoot;
   }
 
-  return resolveFallbackDocsRoot(resolveConfiguredDispatchRepoRoot(config));
+  const portablePaths = resolveMeridianPaths();
+  if (portablePaths.docsRoot) {
+    return portablePaths.docsRoot;
+  }
+
+  const taskSpecDocsRoot = resolveDispatchDocsRootOrNull([portablePaths.taskSpecRoot]);
+  if (taskSpecDocsRoot) {
+    return taskSpecDocsRoot;
+  }
+
+  throw new Error(
+    "docs_root_required: set docs_root or MERIDIAN_DOCS_ROOT, or provide a TaskSpec path under a Docs tree"
+  );
 }
 
 function resolveExistingDirectory(candidatePath: string): string {
@@ -275,18 +287,4 @@ function resolveCanonicalDirectory(candidatePath: string): string | null {
 function normalizeExplicitPath(candidatePath: string | null | undefined): string | null {
   const trimmed = candidatePath?.trim();
   return trimmed ? path.resolve(trimmed) : null;
-}
-
-function resolveFallbackDocsRoot(repoRoot: string): string {
-  const lowercaseDocs = resolveCanonicalDirectory(path.join(repoRoot, "docs"));
-  if (lowercaseDocs) {
-    return lowercaseDocs;
-  }
-
-  const uppercaseDocs = resolveCanonicalDirectory(path.join(repoRoot, "Docs"));
-  if (uppercaseDocs) {
-    return uppercaseDocs;
-  }
-
-  return path.join(repoRoot, "Docs");
 }

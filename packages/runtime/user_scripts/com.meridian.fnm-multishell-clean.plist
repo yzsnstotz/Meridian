@@ -2,7 +2,11 @@
 <!--
   launchd agent — prune ~/.local/state/fnm_multishells/ hourly.
   Install:
-    cp user_scripts/com.meridian.fnm-multishell-clean.plist ~/Library/LaunchAgents/
+    runtime_root="$(cd packages/runtime && pwd)"
+    sed -e "s|__MERIDIAN_RUNTIME_ROOT__|${runtime_root}|g" \
+        -e "s|__HOME__|${HOME}|g" \
+        packages/runtime/user_scripts/com.meridian.fnm-multishell-clean.plist \
+        > ~/Library/LaunchAgents/com.meridian.fnm-multishell-clean.plist
     launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.meridian.fnm-multishell-clean.plist
 
   Verify:
@@ -27,7 +31,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/yzliu/work/Meridian/user_scripts/clean_fnm_multishells.sh</string>
+        <string>__MERIDIAN_RUNTIME_ROOT__/user_scripts/clean_fnm_multishells.sh</string>
     </array>
 
     <key>StartInterval</key>
@@ -45,7 +49,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
-        <string>/Users/yzliu</string>
+        <string>__HOME__</string>
         <key>PATH</key>
         <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>

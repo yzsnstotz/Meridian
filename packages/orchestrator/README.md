@@ -1,6 +1,6 @@
-# meridian-roles
+# Meridian Orchestrator
 
-`meridian-roles` is the standalone role-layer service for Meridian. It owns dispatcher roles, prompt overrides, state persistence, and the role GUI, and it returns task results through Meridian's `reply_channel` socket callback instead of polling.
+The Orchestrator package owns dispatcher roles, prompt overrides, state persistence, and the role GUI inside the Meridian monorepo. It returns task results through Meridian's `reply_channel` socket callback instead of polling.
 
 ## What ships in v1.2
 
@@ -13,24 +13,24 @@
 ## Install and start
 
 ```bash
-cd /Users/yzliu/work/Meridian/Meridian-roles
-cp .env.example .env.local
-npm install
-npm run build
-npm start
+cd packages/orchestrator
+npm install --workspaces
+npm run build -w @meridian/orchestrator
+npm run start -w @meridian/orchestrator
 ```
 
-Starter local `.env.local` values:
+Optional environment overrides:
 
 ```bash
-HUB_SOCKET_PATH=/tmp/hub-socks/hub-core.sock
-ROLES_SOCKET_PATH=/tmp/meridian-roles.sock
+MERIDIAN_RUNTIME_DIR=/absolute/runtime/directory
+HUB_SOCKET_PATH=/absolute/runtime/directory/sockets/hub-core.sock
+ROLES_SOCKET_PATH=/absolute/runtime/directory/sockets/orchestrator.sock
 GUI_PORT=7701
 GUI_LISTEN_HOST=127.0.0.1
-# STATE_FILE_PATH defaults to ${XDG_STATE_HOME:-$HOME/.local/state}/meridian-roles/state.json
+# STATE_FILE_PATH defaults to <resolved-state-dir>/orchestrator-state.json
 ```
 
-If `STATE_FILE_PATH` is left unset, the service writes to `${XDG_STATE_HOME:-$HOME/.local/state}/meridian-roles/state.json`, which persists across reboot. Do **not** point `STATE_FILE_PATH` at `/tmp` or `/var/tmp` on macOS — those directories are wiped on restart and the registry of registered scheduler/dispatcher roles will silently disappear. Managed deployments may override to `/var/lib/meridian-roles/state.json`.
+If `STATE_FILE_PATH` is left unset, the service writes to the shared PathResolver state directory, which persists across reboot. Do **not** point `STATE_FILE_PATH` at an ephemeral directory.
 
 The service boot path is `src/index.ts`. Startup does three things:
 
@@ -48,14 +48,14 @@ Prerequisites:
 - The machine must allow writes to `ROLES_SOCKET_PATH` and `STATE_FILE_PATH`.
 - Meridian's GUI link patch from worker `N-09` must be present if you want the "Role Config" link inside Meridian.
 
-Recommended `.env.local`:
+Recommended explicit overrides for a managed deployment:
 
 ```bash
-HUB_SOCKET_PATH=/tmp/hub-socks/hub-core.sock
-ROLES_SOCKET_PATH=/tmp/meridian-roles.sock
+HUB_SOCKET_PATH=/run/meridian/sockets/hub-core.sock
+ROLES_SOCKET_PATH=/run/meridian/sockets/orchestrator.sock
 GUI_PORT=7701
 GUI_LISTEN_HOST=127.0.0.1
-# STATE_FILE_PATH defaults to ${XDG_STATE_HOME:-$HOME/.local/state}/meridian-roles/state.json
+# STATE_FILE_PATH defaults to <resolved-state-dir>/orchestrator-state.json
 ```
 
 Once the service is up, Meridian sees it as:
@@ -190,7 +190,7 @@ You can also persist a runtime override using `update-status` while a worker is 
 
 ```bash
 meridian-roles update-status \
-  --plan /Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md \
+  --plan /workspace/Meridian/docs/branch/feat-cli-external-integration/dispatch_plan.md \
   --worker N-07 \
   --status in_progress \
   --thread-id worker-thread-456 \

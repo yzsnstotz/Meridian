@@ -6,7 +6,7 @@
   <string>local.meridian.routine-job-hub</string>
 
   <key>WorkingDirectory</key>
-  <string>/Users/yzliu/work/meridian/meridian-roles</string>
+  <string>__ORCHESTRATOR_ROOT__</string>
 
   <key>ProgramArguments</key>
   <array>
@@ -21,7 +21,7 @@
     <key>ROUTINE_JOB_HUB_PORT</key>
     <string>8765</string>
     <key>ROUTINE_JOB_HUB_REGISTRY</key>
-    <string>/Users/yzliu/work/Docs/Projects/routine-job/hub.json</string>
+    <string>__ROUTINE_JOB_REGISTRY__</string>
   </dict>
 
   <key>KeepAlive</key>
@@ -31,9 +31,9 @@
   <true/>
 
   <key>StandardOutPath</key>
-  <string>/Users/yzliu/work/meridian/meridian-roles/logs/routine-job-hub.out.log</string>
+  <string>__MERIDIAN_LOG_DIR__/routine-job-hub.out.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/yzliu/work/meridian/meridian-roles/logs/routine-job-hub.err.log</string>
+  <string>__MERIDIAN_LOG_DIR__/routine-job-hub.err.log</string>
 </dict>
 </plist>

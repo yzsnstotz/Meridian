@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-cd /Users/yzliu/work/Meridian
+cd /path/to/Meridian
 npm install
 npm run build
 npm link
@@ -38,10 +38,10 @@ meridian --help
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `MERIDIAN_SOCKET` | `/tmp/hub-core.sock` | CLI socket fallback when HTTP is unavailable |
+| `MERIDIAN_SOCKET` | platform runtime directory | CLI socket fallback when HTTP is unavailable |
 | `MERIDIAN_HTTP` | `http://localhost:3000` | CLI HTTP endpoint for Meridian web API |
-| `AGENT_WORKDIR` | parent of repo root | Default workdir for spawned agents and initial root for GUI repo picking |
-| `HUB_SOCKET_PATH` | `/tmp/hub-core.sock` | Meridian hub socket path used by the service |
+| `AGENT_WORKDIR` | user home | Default workdir for spawned agents and initial root for GUI repo picking |
+| `HUB_SOCKET_PATH` | platform runtime directory | Meridian hub socket path used by the service |
 | `WEB_GUI_PORT` | `3000` | Web API / GUI port |
 | `WEB_GUI_HOST` | unset | Optional public GUI host |
 
@@ -70,10 +70,10 @@ Options:
 Examples:
 
 ```bash
-meridian spawn codex --model gpt-5.4 --workdir /Users/yzliu/work/Meridian --auto-approve
-meridian spawn claude --model claude-opus-4-6 --workdir /Users/yzliu/work/project --no-auto-approve
-meridian spawn gemini --mode bridge --workdir /Users/yzliu/work/sandbox
-meridian spawn codex --mode stateless_call --workdir /Users/yzliu/work/Meridian
+meridian spawn codex --model gpt-5.4 --workdir "$PWD" --auto-approve
+meridian spawn claude --model claude-opus-4-6 --workdir "$PWD" --no-auto-approve
+meridian spawn gemini --mode bridge --workdir "$PWD"
+meridian spawn codex --mode stateless_call --workdir "$PWD"
 ```
 
 ### `meridian models <provider>`
@@ -188,20 +188,20 @@ meridian health
 Start a worker with explicit provider + model:
 
 ```bash
-meridian spawn codex --model gpt-5.4 --workdir /Users/yzliu/work/Meridian --auto-approve
+meridian spawn codex --model gpt-5.4 --workdir "$PWD" --auto-approve
 ```
 
 Discover accounts and models before spawning:
 
 ```bash
 meridian runtime catalog
-meridian spawn codex --model gpt-5.4 --workdir /Users/yzliu/work/Meridian --auto-approve
+meridian spawn codex --model gpt-5.4 --workdir "$PWD" --auto-approve
 ```
 
 Run a fresh, non-resuming Codex call lane:
 
 ```bash
-meridian spawn codex --mode stateless_call --workdir /Users/yzliu/work/Meridian
+meridian spawn codex --mode stateless_call --workdir "$PWD"
 meridian send codex_01 "Summarize the public API surface."
 ```
 

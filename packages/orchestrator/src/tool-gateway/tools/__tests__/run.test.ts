@@ -1108,7 +1108,7 @@ describe("run tool", () => {
   });
 
   it("resolves dispatch-plan-relative delta repair artifacts under the plan directory", async () => {
-    const planDirectory = "/Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration";
+    const planDirectory = "/workspace/Meridian/docs/branch/feat-cli-external-integration";
     const hubResult = buildHubResult("Worker completed", "success");
     mockRun.mockResolvedValue(toApiResult(hubResult));
     readFileMock.mockImplementation(async (filePath) => {
@@ -1140,7 +1140,7 @@ describe("run tool", () => {
       "R-08",
       "thread-r08",
       "11111111-1111-4111-8111-111111111111",
-      ["/Users/yzliu/work/Meridian/docs/branch/feat-cli-external-integration/dev_history/v1_round/delta_check_report.md"],
+      ["/workspace/Meridian/docs/branch/feat-cli-external-integration/dev_history/v1_round/delta_check_report.md"],
       expect.any(String)
     );
   });

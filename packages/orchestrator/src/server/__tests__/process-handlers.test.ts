@@ -122,7 +122,7 @@ describe("/api/agentapi-processes — origin classification", () => {
       stateStore: { load: async () => emptyState() },
       listProcesses: (): ProcInfo[] => [
         { pid: 100, ppid: 1, etime: "10:00", command: "-zsh" },
-        { pid: 101, ppid: 100, etime: "01:00", command: "node /Users/yzliu/.local/state/fnm_multishells/x/bin/codex" }
+        { pid: 101, ppid: 100, etime: "01:00", command: "node /home/tester/.local/state/fnm_multishells/x/bin/codex" }
       ]
     });
     const { res, body } = makeResponse();
@@ -147,8 +147,8 @@ describe("/api/agentapi-processes — origin classification", () => {
       listProcesses: (): ProcInfo[] => [
         { pid: 81105, ppid: 1, etime: "10:00:00", command: "/Applications/iTerm.app/Contents/MacOS/iTerm2" },
         { pid: 81108, ppid: 81105, etime: "10:00:00", command: "-zsh" },
-        { pid: 8701, ppid: 81108, etime: "08:59", command: "node /Users/yzliu/.local/state/fnm_multishells/81113/bin/codex --dangerously-bypass-approvals-and-sandbox" },
-        { pid: 8702, ppid: 8701, etime: "08:59", command: "/Users/yzliu/.local/share/fnm/.../codex --dangerously-bypass-approvals-and-sandbox" }
+        { pid: 8701, ppid: 81108, etime: "08:59", command: "node /home/tester/.local/state/fnm_multishells/81113/bin/codex --dangerously-bypass-approvals-and-sandbox" },
+        { pid: 8702, ppid: 8701, etime: "08:59", command: "/home/tester/.local/share/fnm/.../codex --dangerously-bypass-approvals-and-sandbox" }
       ]
     });
     const { res, body } = makeResponse();
@@ -358,9 +358,9 @@ describe("/api/agentapi-processes — origin classification", () => {
     const handlers = createProcessHandlers({
       stateStore: { load: async () => emptyState() },
       listProcesses: (): ProcInfo[] => [
-        { pid: 90810, ppid: 1, etime: "01:00", command: "node /Users/yzliu/work/Meridian/dist/hub/index.js" },
-        { pid: 91163, ppid: 90810, etime: "00:15", command: "node /Users/yzliu/.local/share/fnm/aliases/default/bin/codex exec --json -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
-        { pid: 91170, ppid: 91163, etime: "00:15", command: "/Users/yzliu/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex exec --json -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" }
+        { pid: 90810, ppid: 1, etime: "01:00", command: "node /workspace/Meridian/dist/hub/index.js" },
+        { pid: 91163, ppid: 90810, etime: "00:15", command: "node /home/tester/.local/share/fnm/aliases/default/bin/codex exec --json -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
+        { pid: 91170, ppid: 91163, etime: "00:15", command: "/home/tester/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex exec --json -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" }
       ]
     });
     const { res, body } = makeResponse();
@@ -376,7 +376,7 @@ describe("/api/agentapi-processes — origin classification", () => {
   });
 
   it("classifies hub-spawned codex as MANAGED when hub argv is the relative `node dist/hub/index.js`", async () => {
-    // The live hub is launched from its own cwd (`/Users/yzliu/work/Meridian`),
+    // The live hub is launched from its own cwd (`/workspace/Meridian`),
     // so `ps` shows it without the absolute path — just `node dist/hub/index.js`.
     // Before MERIDIAN_HUB_RELATIVE_NODE_PATTERN, codex spawned by such a hub
     // failed the ancestor check and got tagged `orphan` (observed 2026-05-17
@@ -499,7 +499,7 @@ describe("/api/agentapi-processes — origin classification", () => {
       stateStore: { load: async () => appStateWithDispatcher(fixture) },
       fetchAgentapiInstanceIndex: async () => new Map(),
       listProcesses: (): ProcInfo[] => [
-        { pid: 38500, ppid: 1, etime: "30:00", command: "node /Users/yzliu/work/Meridian/dist/hub/index.js" },
+        { pid: 38500, ppid: 1, etime: "30:00", command: "node /workspace/Meridian/dist/hub/index.js" },
         { pid: 42283, ppid: 38500, etime: "12:00", command: "node /Users/y/.local/share/fnm/aliases/default/bin/codex exec --json --dangerously-bypass-approvals-and-sandbox" },
         { pid: 42284, ppid: 42283, etime: "12:00", command: "/Users/y/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex exec --json --dangerously-bypass-approvals-and-sandbox" },
         { pid: 14442, ppid: 38500, etime: "03:00", command: "node /Users/y/.local/share/fnm/aliases/default/bin/codex exec --json -c model_reasoning_effort=\"xhigh\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
@@ -648,7 +648,7 @@ describe("/api/agentapi-processes — origin classification", () => {
           agent_type: "codex",
           mode: "bridge",
           socket_path: null,
-          working_dir: "/Users/yzliu/work/Docs",
+          working_dir: "/workspace/Docs",
           pid: null,
           status: "running",
           created_at: "2026-05-23T10:14:05.881Z",
@@ -701,7 +701,7 @@ describe("/api/agentapi-processes — origin classification", () => {
       stateStore: { load: async () => emptyState() },
       tokenUsageCollector: stub as TokenUsageCollector,
       listProcesses: (): ProcInfo[] => [
-        { pid: 1100, ppid: 1, etime: "10:00", command: "node /Users/yzliu/work/Meridian/dist/hub/index.js" },
+        { pid: 1100, ppid: 1, etime: "10:00", command: "node /workspace/Meridian/dist/hub/index.js" },
         { pid: 1201, ppid: 1100, etime: "00:05", command: "node /Users/y/.local/share/fnm/aliases/default/bin/codex exec resume 019e3390-b9ef-70e2-a48c-96bb38c62574 --json --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
         { pid: 1202, ppid: 1201, etime: "00:05", command: "/Users/y/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex exec resume 019e3390-b9ef-70e2-a48c-96bb38c62574 --json --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" }
       ],
@@ -713,7 +713,7 @@ describe("/api/agentapi-processes — origin classification", () => {
           supportsStream: true,
           codexSessionId: "019e3390-b9ef-70e2-a48c-96bb38c62574",
           socket_path: null,
-          working_dir: "/Users/yzliu/work",
+          working_dir: "/workspace",
           pid: null,
           status: "running",
           created_at: "2026-05-23T10:00:00.000Z",
@@ -775,7 +775,7 @@ describe("/api/agentapi-processes — origin classification", () => {
     const handlers = createProcessHandlers({
       stateStore: { load: async () => emptyState() },
       listProcesses: (): ProcInfo[] => [
-        { pid: 91030, ppid: 1, etime: "00:17", command: "/Users/yzliu/work/Meridian/bin/agentapi server --type=codex --port=56616 -- codex -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
+        { pid: 91030, ppid: 1, etime: "00:17", command: "/workspace/Meridian/bin/agentapi server --type=codex --port=56616 -- codex -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
         { pid: 91031, ppid: 91030, etime: "00:17", command: "codex -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" }
       ],
       fetchAgentapiInstanceIndex: async () => new Map([[91030, "codex_42"]])
@@ -794,7 +794,7 @@ describe("/api/agentapi-processes — origin classification", () => {
     const handlers = createProcessHandlers({
       stateStore: { load: async () => emptyState() },
       listProcesses: (): ProcInfo[] => [
-        { pid: 91030, ppid: 1, etime: "00:17", command: "/Users/yzliu/work/Meridian/bin/agentapi server --type=codex --port=56616 -- codex --dangerously-bypass-approvals-and-sandbox" }
+        { pid: 91030, ppid: 1, etime: "00:17", command: "/workspace/Meridian/bin/agentapi server --type=codex --port=56616 -- codex --dangerously-bypass-approvals-and-sandbox" }
       ]
       // no fetchAgentapiInstanceIndex
     });
@@ -974,14 +974,14 @@ describe("/api/agentapi-processes — origin classification", () => {
     const handlers = createProcessHandlers({
       stateStore: { load: async () => emptyState() },
       listProcesses: (): ProcInfo[] => [
-        { pid: 54988, ppid: 1, etime: "20:00", command: "node /Users/yzliu/work/Meridian/dist/hub/index.js" },
+        { pid: 54988, ppid: 1, etime: "20:00", command: "node /workspace/Meridian/dist/hub/index.js" },
         // Hub-direct stateless codex (no thread_id, no binding) — was a leak pre-fix
-        { pid: 64893, ppid: 54988, etime: "03:07", command: "node /Users/yzliu/.local/share/fnm/aliases/default/bin/codex exec --json --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
-        { pid: 64894, ppid: 64893, etime: "03:07", command: "/Users/yzliu/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex exec --json --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
+        { pid: 64893, ppid: 54988, etime: "03:07", command: "node /home/tester/.local/share/fnm/aliases/default/bin/codex exec --json --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
+        { pid: 64894, ppid: 64893, etime: "03:07", command: "/home/tester/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex exec --json --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
         // Hub-direct stateless claude (no thread_id, no binding) — was a leak pre-fix
         { pid: 99659, ppid: 54988, etime: "08:01", command: "claude --print --output-format stream-json --verbose --include-partial-messages --allowedTools Bash Edit Replace --dangerously-skip-permissions" },
         // Unbindable agentapi (no socket marker, no fetchAgentapiInstanceIndex wired) — STILL a leak
-        { pid: 91030, ppid: 1, etime: "00:17", command: "/Users/yzliu/work/Meridian/bin/agentapi server --type=codex --port=56616 -- codex --dangerously-bypass-approvals-and-sandbox" }
+        { pid: 91030, ppid: 1, etime: "00:17", command: "/workspace/Meridian/bin/agentapi server --type=codex --port=56616 -- codex --dangerously-bypass-approvals-and-sandbox" }
       ]
     });
     const { res, body } = makeResponse();
@@ -1037,7 +1037,7 @@ describe("/api/agentapi-processes — origin classification", () => {
       stateStore: { load: async () => appStateWithDispatcher(fixture) },
       tokenUsageCollector: stub as TokenUsageCollector,
       listProcesses: (): ProcInfo[] => [
-        { pid: 54988, ppid: 1, etime: "20:00", command: "node /Users/yzliu/work/Meridian/dist/hub/index.js" },
+        { pid: 54988, ppid: 1, etime: "20:00", command: "node /workspace/Meridian/dist/hub/index.js" },
         { pid: 99655, ppid: 1, etime: "08:01", command: "agentapi server --socket=/tmp/agentapi-claude_02.sock --type=claude" },
         { pid: 99656, ppid: 99655, etime: "08:01", command: "claude --print --output-format stream-json --verbose --include-partial-messages" },
         // Hub-direct claude --print: NOT a child of the agentapi above
@@ -1166,10 +1166,10 @@ describe("/api/agentapi-processes — origin classification", () => {
       listProcesses: (): ProcInfo[] => [
         // meridian-hub parent (present in ps so the stateless calls have a
         // managed-origin classification path).
-        { pid: 91564, ppid: 1, etime: "30:00", command: "node /Users/yzliu/work/Meridian/dist/hub/index.js" },
+        { pid: 91564, ppid: 1, etime: "30:00", command: "node /workspace/Meridian/dist/hub/index.js" },
         // The stateless `codex exec --json` shim + its native binary child.
-        { pid: 90194, ppid: 91564, etime: "00:05", command: "node /Users/yzliu/.local/share/fnm/aliases/default/bin/codex exec --json -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
-        { pid: 90195, ppid: 90194, etime: "00:05", command: "/Users/yzliu/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex exec --json -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" }
+        { pid: 90194, ppid: 91564, etime: "00:05", command: "node /home/tester/.local/share/fnm/aliases/default/bin/codex exec --json -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" },
+        { pid: 90195, ppid: 90194, etime: "00:05", command: "/home/tester/.local/share/fnm/node-versions/v24.13.1/installation/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex/codex exec --json -c model_reasoning_effort=\"high\" --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox" }
       ]
     });
     const { res, body } = makeResponse();
@@ -1235,7 +1235,7 @@ describe("/api/agentapi-processes — origin classification", () => {
       stateStore: { load: async () => appStateWithDispatcher(fixture) },
       fetchAgentapiInstanceIndex: async () => new Map<number, string>(),
       listProcesses: (): ProcInfo[] => [
-        { pid: 91564, ppid: 1, etime: "30:00", command: "node /Users/yzliu/work/Meridian/dist/hub/index.js" },
+        { pid: 91564, ppid: 1, etime: "30:00", command: "node /workspace/Meridian/dist/hub/index.js" },
         // Two distinct stateless `codex exec --json` roots.
         { pid: 90194, ppid: 91564, etime: "00:05", command: "node /usr/local/bin/codex exec --json --model gpt-5.5" },
         { pid: 90195, ppid: 90194, etime: "00:05", command: "/usr/local/lib/codex/codex exec --json --model gpt-5.5" },

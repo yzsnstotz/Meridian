@@ -1,4 +1,4 @@
-# Meridian Phase 0
+# Meridian
 
 ## Meridian Gateway Service
 
@@ -16,7 +16,7 @@ Gateway can actually advertise.
 Start it locally:
 
 ```bash
-MERIDIAN_GATEWAY_PORT=8789 npx tsx src/web/v1-gateway.ts
+MERIDIAN_GATEWAY_PORT=8789 npm run start:gateway
 ```
 
 On first start it creates an API key at
@@ -44,10 +44,10 @@ curl http://127.0.0.1:8789/v1/chat/completions \
 
 ## Telegram Bot Registration (T-03)
 1. Open `@BotFather` in Telegram and run `/newbot`.
-1. Save the generated token and set `TELEGRAM_BOT_TOKEN` in `.env`.
+1. Save the generated token and set `TELEGRAM_BOT_TOKEN` in the environment or Meridian config `.env`.
 1. Optional multi-bot: set `TELEGRAM_BOT_TOKENS` as a comma-separated list of additional bot tokens.
 1. Set your Telegram user id in `ALLOWED_USER_IDS`.
-1. `/spawn` defaults to the parent of the Meridian repo. In this checkout that is `/Users/yzliu/work`. Optional: set `AGENT_WORKDIR` in `.env` to override the default repo directory.
+1. `/spawn` defaults to the resolved work root (normally the user home). Set `MERIDIAN_WORK_ROOT` or `AGENT_WORKDIR` to select a different root.
 1. Configure slash commands in `@BotFather` with `/setcommands`:
 
 ```text
@@ -264,8 +264,15 @@ npm run start:monitor
 ## Deployment (T-11)
 
 ### Runtime Directory Structure
+
+Meridian resolves paths independently of the checkout:
+
+- macOS: config/data/state under `~/Library/Application Support/Meridian`; runtime sockets and descriptors under `$TMPDIR/meridian-<uid>`.
+- Linux: config/data/state under the XDG directories; runtime under `$XDG_RUNTIME_DIR/meridian` or `${TMPDIR:-/tmp}/meridian-<uid>`.
+- Explicit `MERIDIAN_CONFIG_DIR`, `MERIDIAN_DATA_DIR`, `MERIDIAN_STATE_DIR`, `MERIDIAN_RUNTIME_DIR`, `MERIDIAN_LOG_DIR`, and `MERIDIAN_SOCKET_DIR` values override platform defaults.
+
 ```text
-/var/log/hub/
+<state-dir>/logs/
   hub.log
   hub-error.log
   interface.log
@@ -273,8 +280,10 @@ npm run start:monitor
   monitor.log
   monitor-error.log
   instance.log
-/tmp/hub-socks/
+<runtime-dir>/sockets/
   hub-core.sock
+<runtime-dir>/services/
+  *.json
 ```
 
 ### 1) Initialize Host Directories
@@ -336,8 +345,8 @@ docker compose logs -f
 ```
 
 Notes:
-- Unix socket directory is bind-mounted: `/tmp/hub-socks:/tmp/hub-socks`.
-- Log directory is bind-mounted: `/var/log/hub:/var/log/hub`.
+- Container deployments must set explicit Meridian state/runtime paths and mount those exact directories.
+- Static declarations never override a live runtime endpoint.
 
 ### 5) Install logrotate
 ```bash

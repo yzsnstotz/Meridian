@@ -632,16 +632,16 @@ describe("routine job hub server", () => {
     await fs.rm(outside, { recursive: true, force: true });
   });
 
-  it("allowlists Meridian user scripts for direct maintenance registration", () => {
+  it("denies maintenance scripts until restart roots are explicitly configured", () => {
     const scripts = [
-      "/Users/yzliu/work/projects/ADS/user_scripts/terminate.sh",
-      "/Users/yzliu/work/Meridian/user_scripts/terminate.sh",
-      "/Users/yzliu/work/Meridian/Meridian-roles/user_scripts/terminate.sh"
+      "/workspace/ads/user_scripts/terminate.sh",
+      "/workspace/meridian/user_scripts/terminate.sh",
+      "/workspace/orchestrator/user_scripts/terminate.sh"
     ];
 
     for (const script of scripts) {
       const validation = validateRestartScript(script, DEFAULT_RESTART_SCRIPT_ROOTS);
-      expect("error" in validation && validation.error).toBeFalsy();
+      expect("error" in validation && validation.error).toMatch(/outside the allowed roots/);
     }
   });
 

@@ -96,8 +96,8 @@ const claudeJsonl = (sessionId: string, turns: Array<{ in: number; out: number; 
 
 describe("encodeClaudeProjectPath", () => {
   it("turns / into -", () => {
-    expect(encodeClaudeProjectPath("/Users/yzliu/work/Meridian/Meridian-roles"))
-      .toBe("-Users-yzliu-work-Meridian-Meridian-roles");
+    expect(encodeClaudeProjectPath("/workspace/Meridian/Meridian-roles"))
+      .toBe("-workspace-Meridian-Meridian-roles");
   });
 });
 
@@ -209,7 +209,7 @@ describe("TokenUsageCollector — codex", () => {
   function setup() {
     const sessionId = "019e3390-b9ef-70e2-a48c-96bb38c62574";
     const startIso = "2026-05-17T10:33:14Z";
-    const cwd = "/Users/yzliu/work";
+    const cwd = "/workspace";
     const rolloutPath = path.join(
       CODEX_ROOT, "2026", "05", "17",
       `rollout-2026-05-17T10-33-14-${sessionId}.jsonl`
@@ -329,7 +329,7 @@ describe("TokenUsageCollector — codex", () => {
     // re-running ps/lsof/rollout-scan; lookups after the window re-resolve.
     const sessionId = "019e3442-8352-7282-bc7f-31ea41f2a0fa";
     const startIso = "2026-05-17T13:47:14Z";
-    const cwd = "/Users/yzliu/work";
+    const cwd = "/workspace";
     const startMs = Date.parse(startIso) - 14_000; // pid started 14s before session_meta
     const rolloutPath = path.join(
       CODEX_ROOT, "2026", "05", "17",
@@ -371,10 +371,10 @@ describe("TokenUsageCollector — codex", () => {
 
   it("picks the CLOSEST start-time match when multiple rollouts share cwd in-window", () => {
     // Concurrent codex sessions in the same cwd (Meridian hub forks all codex
-    // from `/Users/yzliu/work`): the resolver must pick the rollout whose
+    // from `/workspace`): the resolver must pick the rollout whose
     // session_meta.timestamp is closest to the pid's start, not just the
     // first one in readdir order.
-    const cwd = "/Users/yzliu/work";
+    const cwd = "/workspace";
     const pidStartIso = "2026-05-17T13:50:00Z";
     const farSessionIso = "2026-05-17T13:47:14Z"; // 2m46s before pid start — rejected: before pid_start - 1s
     const nearSessionIso = "2026-05-17T13:50:08Z"; // 8s after pid start — kept
@@ -407,7 +407,7 @@ describe("TokenUsageCollector — codex", () => {
     // in the same cwd 16s after its start. Without source filtering, 77365
     // mis-attributed the stateless call's 92.6k totals as its own — every
     // shim in the cwd showed identical tokens.
-    const cwd = "/Users/yzliu/work";
+    const cwd = "/workspace";
     const startMs = Date.parse("2026-05-17T14:47:53Z");
     const execMetaIso = "2026-05-17T14:48:09Z"; // 16s after pid start, in window
     const execPath = path.join(
@@ -436,7 +436,7 @@ describe("TokenUsageCollector — codex", () => {
   it("stateless exec codex skips a source=cli rollout in the same cwd/time window", () => {
     // Mirror of the above: when a cli rollout exists but the live process
     // is `codex exec --json`, we must skip the cli rollout.
-    const cwd = "/Users/yzliu/work";
+    const cwd = "/workspace";
     const startMs = Date.parse("2026-05-17T14:50:00Z");
     const cliMetaIso = "2026-05-17T14:50:05Z";
     const cliPath = path.join(
@@ -463,7 +463,7 @@ describe("TokenUsageCollector — codex", () => {
     const { files, rolloutPath, startMs, cwd } = (() => {
       const sessionId = "legacy";
       const startIso = "2026-05-17T16:00:00Z";
-      const cwd = "/Users/yzliu/work";
+      const cwd = "/workspace";
       const rolloutPath = path.join(CODEX_ROOT, "2026", "05", "17", `rollout-2026-05-17T16-00-00-${sessionId}.jsonl`);
       const files = new Map<string, string>([[rolloutPath, codexRollout(sessionId, startIso, cwd)]]);
       return { files, rolloutPath, startMs: Date.parse(startIso) - 5_000, cwd };
@@ -481,7 +481,7 @@ describe("TokenUsageCollector — codex", () => {
   it("closest-match still applies when both candidates are after pid_start", () => {
     // Stricter version of the previous test: both candidates inside the
     // window, but one is closer than the other.
-    const cwd = "/Users/yzliu/work";
+    const cwd = "/workspace";
     const pidStartIso = "2026-05-17T13:50:00Z";
     const closeIso = "2026-05-17T13:50:05Z"; // +5s
     const farIso = "2026-05-17T13:53:00Z";   // +3min, still in 5-min window
@@ -510,7 +510,7 @@ describe("TokenUsageCollector — codex", () => {
 
 describe("TokenUsageCollector — claude", () => {
   it("resolves a live claude pid to its project jsonl and sums usage", () => {
-    const cwd = "/Users/yzliu/work/Meridian/Meridian-roles";
+    const cwd = "/workspace/Meridian/Meridian-roles";
     const startMs = Date.parse("2026-05-17T10:00:00Z");
     const sessionId = "29419cbb-4356-45c1-9c07-8711617e00d1";
     const projectDir = path.join(CLAUDE_ROOT, encodeClaudeProjectPath(cwd));
@@ -545,14 +545,14 @@ describe("TokenUsageCollector — claude", () => {
   });
 
   it("resolves a long-running claude session whose mtime drifted far past startMs (birthtime stays near startMs)", () => {
-    // Live obs 2026-05-17: 6 claude CLIs in /Users/yzliu/work/projects/clawso-v3-build,
+    // Live obs 2026-05-17: 6 claude CLIs in /workspace/projects/clawso-v3-build,
     // most started 23h+ ago and still active. Old code keyed the open-window
     // check off mtime, which an active session pushes forward on every turn:
     // mtime - startMs grew to ~23h, far past the 5-min window, so resolver
     // returned null and only 1 of 6 rows ever showed token totals.
     // New code keys off birthtime (created when session begins), which stays
     // constant — so all 6 resolve correctly.
-    const cwd = "/Users/yzliu/work/projects/clawso-v3-build";
+    const cwd = "/workspace/projects/clawso-v3-build";
     const startMs = Date.parse("2026-05-16T14:00:00Z"); // pid started 23h ago
     const sessionId = "long-running-1234-5678-aaaaaaaaaaaa";
     const projectDir = path.join(CLAUDE_ROOT, encodeClaudeProjectPath(cwd));
@@ -588,7 +588,7 @@ describe("TokenUsageCollector — claude", () => {
     // Multiple concurrent claude CLIs in the same project dir. Each creates
     // its own session jsonl. Active sessions all have mtime ≈ now; only
     // birthtime distinguishes them.
-    const cwd = "/Users/yzliu/work/projects/clawso-v3-build";
+    const cwd = "/workspace/projects/clawso-v3-build";
     const startMs = Date.parse("2026-05-17T13:50:00Z");
     const projectDir = path.join(CLAUDE_ROOT, encodeClaudeProjectPath(cwd));
     const nearPath = path.join(projectDir, "near.jsonl");
@@ -620,7 +620,7 @@ describe("TokenUsageCollector — claude", () => {
   });
 
   it("returns null when the project directory has no jsonl", () => {
-    const cwd = "/Users/yzliu/work/nothing-here";
+    const cwd = "/workspace/nothing-here";
     const startMs = Date.now();
     const collector = new TokenUsageCollector({
       listDir: () => { throw new Error("ENOENT"); },

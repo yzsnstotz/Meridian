@@ -2,7 +2,7 @@
  * Role-independence invariant regression test.
  *
  * Binding spec:
- *   /Users/yzliu/work/Docs/Projects/Meridian-roles/learnings/role-independence-invariant.md
+ *   /workspace/Docs/Projects/Meridian-roles/learnings/role-independence-invariant.md
  *
  * What this test enforces (machine-checkable subset):
  *   1. RoleTypeSchema contains EXACTLY the four supported role types. Adding
@@ -119,7 +119,7 @@ describe("role-independence invariant", () => {
       // and structurally valid so future contributors know to update it.
       const fs = await import("node:fs/promises");
       const snapshotPath =
-        "/Users/yzliu/work/Docs/Projects/meridian-roles/feat/chatter/prd/baseline-failures-snapshot.json";
+        "/workspace/Docs/Projects/meridian-roles/feat/chatter/prd/baseline-failures-snapshot.json";
       let raw: string;
       try {
         raw = await fs.readFile(snapshotPath, "utf8");

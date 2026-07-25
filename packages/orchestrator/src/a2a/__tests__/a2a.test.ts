@@ -3,9 +3,10 @@ import * as fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentInstance, HubMessage, HubResult, ReplyChannel } from "../../types";
+import { resetCallerIdentityCache } from "../../shared/caller-identity";
 import { A2AClient } from "../client";
 import { A2AServer } from "../server";
 
@@ -45,7 +46,14 @@ const listedReplyChannels: ReplyChannel[] = [
   }
 ];
 
+beforeEach(() => {
+  vi.stubEnv("MERIDIAN_INTERNAL_BOOTSTRAP_KEY", "test-bootstrap-key");
+  resetCallerIdentityCache();
+});
+
 afterEach(async () => {
+  resetCallerIdentityCache();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 
   await Promise.all(Array.from(clients, (client) => client.stop()));
@@ -211,11 +219,11 @@ describe("A2AClient", () => {
 
   it("uses only the configured hub socket path unless extra candidates are provided", () => {
     const client = new A2AClient({
-      hubSocketPath: "/tmp/hub-socks/hub-core.sock"
+      hubSocketPath: "/tmp/meridian-runtime/sockets/hub-core.sock"
     });
 
     expect((client as unknown as { hubSocketPaths: string[] }).hubSocketPaths).toEqual([
-      "/tmp/hub-socks/hub-core.sock"
+      "/tmp/meridian-runtime/sockets/hub-core.sock"
     ]);
   });
 
@@ -348,7 +356,8 @@ async function startHubServer(
     });
 
     socket.on("end", () => {
-      const message = JSON.parse(raw) as Record<string, unknown>;
+      const frame = JSON.parse(raw) as Record<string, unknown>;
+      const message = unwrapHubMessage(frame);
       messages.push(message);
       const content = message.intent === "list"
         ? JSON.stringify(isReplyChannelListRequest(message) ? (options.listReplyChannels ?? []) : (options.listInstances ?? []))
@@ -385,6 +394,15 @@ async function startHubServer(
       await fs.unlink(socketPath).catch(() => undefined);
     }
   };
+}
+
+function unwrapHubMessage(frame: Record<string, unknown>): Record<string, unknown> {
+  const message = frame.message;
+  if (!message || typeof message !== "object" || Array.isArray(message)) {
+    throw new Error("authenticated hub frame is missing message");
+  }
+
+  return message as Record<string, unknown>;
 }
 
 function isReplyChannelListRequest(message: Record<string, unknown>): boolean {

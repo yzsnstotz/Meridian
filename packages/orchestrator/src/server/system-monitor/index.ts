@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 
-import { HUB_SOCKET_PATH } from "../../config";
+import { HUB_SOCKET_PATH, orchestratorPaths } from "../../config";
 import type { Logger } from "../../roles/base-role";
 import { buildProcessSnapshot, type ProcessSnapshotEntry, type ProcessHandlersOptions } from "../process-handlers";
 import { probeHubSocket, type HubProbeResult } from "./hub-probe";
@@ -85,18 +85,18 @@ interface ProcessLoadResult {
 }
 
 const DEFAULT_HUB_STATE_PATH = process.env.MERIDIAN_HUB_STATE_PATH
-  ?? "/Users/yzliu/work/Meridian/.meridian/state.json";
+  ?? orchestratorPaths.hubStatePath;
 const DEFAULT_ROLES_LOG_PATH = process.env.MERIDIAN_ROLES_LOG_PATH
-  ?? path.resolve(process.cwd(), "logs/meridian-roles.out.log");
+  ?? path.join(orchestratorPaths.logDir, "orchestrator.log");
 const DEFAULT_HUB_LOG_PATH = process.env.MERIDIAN_HUB_LOG_PATH
-  ?? path.join(process.env.LOG_DIR ?? "/var/log/hub", "hub.log");
+  ?? path.join(orchestratorPaths.logDir, "hub.log");
 // fnm caches a per-shell symlink dir under ~/.local/state/fnm_multishells/.
 // Every codex/agentapi spawn through fnm adds an entry. Without rotation it
 // saturates at 65535 (the macOS APFS link-count cap) and shell init (`eval
 // "$(fnm env)"`) hangs 10–30s on every new terminal. D6 stat-monitors the
 // directory inode size as a fast proxy for entry count — no enumeration.
 const DEFAULT_FNM_MULTISHELLS_PATH = process.env.MERIDIAN_FNM_MULTISHELLS_PATH
-  ?? path.join(process.env.HOME ?? "/Users/yzliu", ".local/state/fnm_multishells");
+  ?? path.join(orchestratorPaths.stateDir, "fnm_multishells");
 
 const defaultLogCounter = new LogPatternCounter();
 

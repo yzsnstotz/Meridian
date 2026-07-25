@@ -60,7 +60,7 @@ describe("ChatterStateStore error fields", () => {
     const registry = await loadCallerRegistry({ repoRoot });
     const createRole = vi
       .fn()
-      .mockRejectedValueOnce(new Error("activation failed at /Users/yzliu/private-token/file.ts"))
+      .mockRejectedValueOnce(new Error("activation failed at /home/tester/private-token/file.ts"))
       .mockResolvedValueOnce({ ok: true, thread_id: "chatter-mumu-user-u_001" });
     const handlers = createAutoProvisionerHandlers({
       repoRoot,
@@ -85,7 +85,7 @@ describe("ChatterStateStore error fields", () => {
       message: "activation failed at [path]"
     });
     expect(failedState.last_provision_error?.ts).toEqual(expect.any(String));
-    expect(failedState.last_provision_error?.message).not.toContain("/Users/yzliu");
+    expect(failedState.last_provision_error?.message).not.toContain("/home/tester");
 
     const created = await invokeSigned(
       handlers.handle,
@@ -109,7 +109,7 @@ describe("ChatterStateStore error fields", () => {
       sendToHub: async (msg) => {
         const hubMessage = msg as HubMessage;
         if (failRunDispatch && hubMessage.intent === "run" && hubMessage.target !== "global") {
-          throw new Error("agent dispatch failed at /Users/yzliu/private-token/run.ts");
+          throw new Error("agent dispatch failed at /home/tester/private-token/run.ts");
         }
         sent.push(hubMessage);
       },
@@ -133,7 +133,7 @@ describe("ChatterStateStore error fields", () => {
       message: "agent dispatch failed at [path]"
     });
     expect(failedState.last_turn_error?.ts).toEqual(expect.any(String));
-    expect(failedState.last_turn_error?.message).not.toContain("/Users/yzliu");
+    expect(failedState.last_turn_error?.message).not.toContain("/home/tester");
 
     const recoverySpawn = sent.find((message) => message.intent === "spawn")!;
     expect(recoverySpawn).toBeDefined();

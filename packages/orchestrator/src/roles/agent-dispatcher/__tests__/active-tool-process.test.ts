@@ -9,8 +9,8 @@ describe("isWorkerToolProcessRunning", () => {
       task: "`github-ai-automation-scan classify` runs structured classification"
     });
     const activeProcessCommands = [
-      "/Users/yzliu/work/tools/github-ai-automation-scan/.venv/bin/python "
-        + "/Users/yzliu/work/tools/github-ai-automation-scan/.venv/bin/github-ai-automation-scan "
+      "/workspace/tools/github-ai-automation-scan/.venv/bin/python "
+        + "/workspace/tools/github-ai-automation-scan/.venv/bin/github-ai-automation-scan "
         + "classify --scan-run-id daily-2026-05-02 --format json"
     ];
 

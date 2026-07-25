@@ -21,11 +21,11 @@ test("parseSlashCommand parses /spawn stateless_call mode", () => {
 });
 
 test("parseSlashCommand parses /spawn with explicit dir", () => {
-  const parsed = parseSlashCommand("/spawn type=codex mode=bridge dir=/Users/yzliu/work/project-a");
+  const parsed = parseSlashCommand("/spawn type=codex mode=bridge dir=/workspace/project-a");
   assert.equal(parsed.intent, "spawn");
   assert.equal(parsed.target, "codex");
   assert.equal(parsed.mode, "bridge");
-  assert.equal(parsed.spawnDir, "/Users/yzliu/work/project-a");
+  assert.equal(parsed.spawnDir, "/workspace/project-a");
   assert.equal(parsed.picker, null);
 });
 

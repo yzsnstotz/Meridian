@@ -25,7 +25,7 @@ afterEach(async () => {
 });
 
 describe("config", () => {
-  it("loads defaults from local env files in the current working directory", async () => {
+  it("loads defaults from env files in the resolved config directory", async () => {
     const directory = await createTempDirectory();
     await fs.writeFile(
       path.join(directory, ".env"),
@@ -37,6 +37,7 @@ describe("config", () => {
     delete process.env.HUB_SOCKET_PATH;
     delete process.env.GUI_PORT;
     delete process.env.GUI_LISTEN_HOST;
+    process.env.MERIDIAN_CONFIG_DIR = directory;
     process.chdir(directory);
 
     const config = await import("./config");
@@ -51,6 +52,7 @@ describe("config", () => {
     await fs.writeFile(path.join(directory, ".env.local"), "HUB_SOCKET_PATH=/tmp/from-dot-env-local.sock\n", "utf8");
 
     process.env.HUB_SOCKET_PATH = "/tmp/from-process-env.sock";
+    process.env.MERIDIAN_CONFIG_DIR = directory;
     process.chdir(directory);
 
     const config = await import("./config");
@@ -58,18 +60,18 @@ describe("config", () => {
     expect(config.HUB_SOCKET_PATH).toBe("/tmp/from-process-env.sock");
   });
 
-  it("defaults STATE_FILE_PATH to a persistent XDG state location and does not warn", async () => {
+  it("defaults STATE_FILE_PATH to the resolved persistent state directory and does not warn", async () => {
     const directory = await createTempDirectory();
-    const xdgStateHome = path.join(directory, "xdg-state");
+    const stateDir = path.join(os.homedir(), ".meridian-test-state", path.basename(directory));
 
     delete process.env.STATE_FILE_PATH;
-    process.env.XDG_STATE_HOME = xdgStateHome;
+    process.env.MERIDIAN_STATE_DIR = stateDir;
     process.chdir(directory);
 
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
       const config = await import("./config");
-      expect(config.STATE_FILE_PATH).toBe(path.join(xdgStateHome, "meridian-roles", "state.json"));
+      expect(config.STATE_FILE_PATH).toBe(path.join(stateDir, "orchestrator-state.json"));
       expect(config.DEFAULT_STATE_FILE_PATH).toBe(config.STATE_FILE_PATH);
       expect(config.IS_EPHEMERAL_STATE_FILE_PATH).toBe(false);
       expect(warn).not.toHaveBeenCalled();

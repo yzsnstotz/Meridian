@@ -1109,18 +1109,21 @@ test("Web Interface Server returns not found for provider capabilities that are 
 });
 
 test("Web Interface Server lists spawn repo choices under AGENT_WORKDIR", async () => {
-  const subDir = path.join(config.AGENT_WORKDIR, `meridian-web-spawn-list-${Date.now()}`);
+  const workRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-work-root-"));
+  const subDir = path.join(workRoot, `meridian-web-spawn-list-${Date.now()}`);
   await fs.promises.mkdir(subDir, { recursive: true });
   try {
     await withServer(async ({ baseUrl }) => {
       const response = await fetch(`${baseUrl}/api/spawn_repos?token=secret-token`);
       assert.equal(response.status, 200);
       const payload = (await response.json()) as { root: string; repos: Array<{ name: string }> };
-      assert.equal(payload.root, path.resolve(config.AGENT_WORKDIR));
+      assert.equal(payload.root, workRoot);
       assert.ok(payload.repos.some((r) => r.name === path.basename(subDir)));
+    }, {
+      workRoot
     });
   } finally {
-    await fs.promises.rm(subDir, { recursive: true, force: true });
+    await fs.promises.rm(workRoot, { recursive: true, force: true });
   }
 });
 

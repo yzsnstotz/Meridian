@@ -415,6 +415,7 @@ function createHarness(options: {
   const role = new AgentDispatcherRole("agent-dispatcher-role", {
     dispatch_plan_path: "/tmp/dispatch_plan.md",
     command_file_path: "/tmp/agent_dispatch_command.md",
+    docs_root: "/tmp/Docs",
     user_reply_channels: [
       {
         channel: "telegram",

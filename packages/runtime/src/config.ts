@@ -2,11 +2,20 @@ import path from "node:path";
 import dotenv from "dotenv";
 import { z } from "zod";
 
-dotenv.config({ override: true, quiet: true });
+import { resolveMeridianPaths } from "@meridian/contracts";
 
-export const DEFAULT_AGENT_WORKDIR = path.resolve(process.cwd(), "..");
-export const DEFAULT_MERIDIAN_STATE_PATH = path.resolve(process.cwd(), ".meridian/state/hub-state.json");
 export const LEGACY_TMP_MERIDIAN_STATE_PATH = "/tmp/meridian-state.json";
+
+const bootstrapPaths = resolveRuntimePaths(process.env);
+dotenv.config({
+  path: process.env.MERIDIAN_ENV_FILE ?? path.join(bootstrapPaths.configDir, ".env"),
+  override: true,
+  quiet: true
+});
+
+export const runtimePaths = resolveRuntimePaths(process.env);
+export const DEFAULT_AGENT_WORKDIR = runtimePaths.workRoot;
+export const DEFAULT_MERIDIAN_STATE_PATH = runtimePaths.hubStatePath;
 
 const optionalEnvString = () => z.string().default("");
 const optionalPathWithDefault = (defaultValue: string) =>
@@ -81,7 +90,7 @@ const envSchema = z
       .refine((values) => values.length > 0 && values.every((id) => Number.isInteger(id) && id > 0), {
         message: "ALLOWED_USER_IDS must be a comma-separated list of positive integers"
       }),
-    HUB_SOCKET_PATH: z.string().default("/tmp/hub-core.sock"),
+    HUB_SOCKET_PATH: z.string().default(runtimePaths.hubSocketPath),
     HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(10000),
     HEARTBEAT_MISSED_THRESHOLD: z.coerce.number().int().positive().default(3),
     MONITOR_SYNC_INTERVAL_MS: z.coerce.number().int().positive().default(1000),
@@ -91,7 +100,7 @@ const envSchema = z
     MONITOR_UPDATE_MAX_INTERVAL_SEC: z.coerce.number().int().positive().default(600),
     PANE_CAPTURE_INTERVAL_MS: z.coerce.number().int().positive().default(7000),
     PANE_BROADCAST_THROTTLE_MS: z.coerce.number().int().positive().default(1000),
-    LOG_DIR: z.string().default("/var/log/hub"),
+    LOG_DIR: z.string().default(runtimePaths.logDir),
     LOG_RETENTION_ENABLED: envBoolean(true),
     LOG_RETENTION_INTERVAL_MS: z.coerce.number().int().positive().default(300000),
     LOG_ACTIVE_FILE_MAX_BYTES: z.coerce.number().int().positive().default(50 * 1024 * 1024),
@@ -160,7 +169,14 @@ const envSchema = z
   });
 
 export function parseConfig(env: NodeJS.ProcessEnv = process.env) {
-  const parsed = envSchema.safeParse(normalizeTelegramTokenEnv(env));
+  const paths = resolveRuntimePaths(env);
+  const parsed = envSchema.safeParse({
+    HUB_SOCKET_PATH: paths.hubSocketPath,
+    LOG_DIR: paths.logDir,
+    MERIDIAN_STATE_PATH: paths.hubStatePath,
+    AGENT_WORKDIR: paths.workRoot,
+    ...normalizeTelegramTokenEnv(env)
+  });
 
   if (!parsed.success) {
     const issueSummary = parsed.error.issues
@@ -174,3 +190,12 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env) {
 
 export const config = parseConfig();
 export type AppConfig = ReturnType<typeof parseConfig>;
+
+function resolveRuntimePaths(env: NodeJS.ProcessEnv) {
+  const normalizedEnv = { ...env };
+  const statePath = normalizedEnv.MERIDIAN_STATE_PATH?.trim();
+  if (!statePath || statePath === LEGACY_TMP_MERIDIAN_STATE_PATH) {
+    delete normalizedEnv.MERIDIAN_STATE_PATH;
+  }
+  return resolveMeridianPaths({ env: normalizedEnv });
+}

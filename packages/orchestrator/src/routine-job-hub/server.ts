@@ -4,6 +4,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { resolveMeridianPaths } from "@meridian/contracts";
+
 import type {
   HubEntry,
   HubProbeStatus,
@@ -23,14 +25,16 @@ export type {
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8765;
 const DEFAULT_PROBE_TIMEOUT_MS = 2_000;
-const DEFAULT_REGISTRY_PATH = "/Users/yzliu/work/Docs/Projects/routine-job/hub.json";
-const DEFAULT_CLAWSO_REPO_ROOT = "/Users/yzliu/work/projects/clawso-v3-build";
-export const DEFAULT_RESTART_SCRIPT_ROOTS: readonly string[] = [
-  "/Users/yzliu/work/tools/",
-  "/Users/yzliu/work/projects/ADS/user_scripts/",
-  "/Users/yzliu/work/Meridian/user_scripts/",
-  "/Users/yzliu/work/Meridian/Meridian-roles/user_scripts/"
-];
+const routineJobPaths = resolveMeridianPaths();
+const DEFAULT_REGISTRY_PATH = path.join(routineJobPaths.configDir, "routine-job-hub.json");
+const DEFAULT_CLAWSO_REPO_ROOT = process.env.CLAWSO_REPO_ROOT ?? routineJobPaths.workRoot;
+export const DEFAULT_RESTART_SCRIPT_ROOTS: readonly string[] = (
+  process.env.MERIDIAN_RESTART_SCRIPT_ROOTS ?? ""
+)
+  .split(path.delimiter)
+  .map((entry) => entry.trim())
+  .filter(Boolean)
+  .map((entry) => path.resolve(entry));
 const DEFAULT_RESTART_TIMEOUT_MS = 180_000;
 const DEFAULT_CLAWSO_SCRIPT_TIMEOUT_MS = 45 * 60_000;
 const RESTART_OUTPUT_MAX_BYTES = 64 * 1024;

@@ -175,7 +175,7 @@ describe("runValidateManifestCli", () => {
 
     expect(exitCode).toBe(0);
     expect(io.stderr()).toBe("");
-    expect(io.stdout()).toContain("system_prompts=20");
+    expect(io.stdout()).toContain("system_prompts=21");
 
     const manifest = JSON.parse(readFileSync(MUMU2_MANIFEST, "utf8")) as {
       system_prompts: Record<string, { prompt_path: string }>;
@@ -229,7 +229,7 @@ describe("runValidateManifestCli", () => {
     expect(chatScenesPrompt).toContain("笔记本观察提案");
 
     const promoteScenesPrompt = readFileSync(path.join(MUMU2_PROMPTS, "mumu2_promote_scenes.md"), "utf8");
-    expect(promoteScenesPrompt).toContain('"active_slot"');
+    expect(promoteScenesPrompt).toContain("active_slot");
     expect(promoteScenesPrompt).toContain('"scenes"');
     expect(promoteScenesPrompt).toContain('"add_scene"');
     expect(promoteScenesPrompt).not.toContain('"update_scene"');
@@ -251,7 +251,7 @@ describe("runValidateManifestCli", () => {
     expect(chatScriptPrompt).toContain("笔记本观察提案");
 
     const promoteScriptPrompt = readFileSync(path.join(MUMU2_PROMPTS, "mumu2_promote_script.md"), "utf8");
-    expect(promoteScriptPrompt).toContain('"active_slot"');
+    expect(promoteScriptPrompt).toContain("active_slot");
     expect(promoteScriptPrompt).toContain('"script"');
     expect(promoteScriptPrompt).toContain('"set_script"');
     expect(promoteScriptPrompt).not.toContain('"patch_script"');

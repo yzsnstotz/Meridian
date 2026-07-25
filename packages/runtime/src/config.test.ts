@@ -1,4 +1,5 @@
 import path from "node:path";
+import { homedir } from "node:os";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -55,12 +56,12 @@ async function withProcessEnv(overrides: Record<string, string>, fn: () => Promi
 
 test("parseConfig applies v2 defaults for webhook and web GUI fields", async () => {
   await withProcessEnv({}, async () => {
-    const { DEFAULT_AGENT_WORKDIR, parseConfig } = await import("./config");
+    const { DEFAULT_AGENT_WORKDIR, DEFAULT_MERIDIAN_STATE_PATH, parseConfig } = await import("./config");
     const config = parseConfig(REQUIRED_ENV);
 
-    assert.equal(DEFAULT_AGENT_WORKDIR, path.resolve(process.cwd(), ".."));
+    assert.equal(DEFAULT_AGENT_WORKDIR, homedir());
     assert.equal(config.AGENT_WORKDIR, DEFAULT_AGENT_WORKDIR);
-    assert.equal(config.MERIDIAN_STATE_PATH, path.resolve(process.cwd(), ".meridian/state/hub-state.json"));
+    assert.equal(config.MERIDIAN_STATE_PATH, DEFAULT_MERIDIAN_STATE_PATH);
     assert.equal(config.COORDINATOR_SOCKET_PATH, "");
     assert.deepEqual(config.COORDINATOR_INTENTS, []);
     assert.equal(config.WEBHOOK_URL, "");
@@ -120,25 +121,27 @@ test("parseConfig parses v2 webhook and web GUI overrides", async () => {
 
 test("parseConfig maps the legacy tmp hub state path to the durable default", async () => {
   await withProcessEnv({}, async () => {
-    const { parseConfig } = await import("./config");
+    const { DEFAULT_MERIDIAN_STATE_PATH, parseConfig } = await import("./config");
     const config = parseConfig({
       ...REQUIRED_ENV,
       MERIDIAN_STATE_PATH: "/tmp/meridian-state.json"
     });
 
-    assert.equal(config.MERIDIAN_STATE_PATH, path.resolve(process.cwd(), ".meridian/state/hub-state.json"));
+    assert.equal(config.MERIDIAN_STATE_PATH, DEFAULT_MERIDIAN_STATE_PATH);
   });
 });
 
-test("parseConfig resolves relative hub state paths from the process cwd", async () => {
+test("parseConfig rejects relative hub state paths", async () => {
   await withProcessEnv({}, async () => {
     const { parseConfig } = await import("./config");
-    const config = parseConfig({
-      ...REQUIRED_ENV,
-      MERIDIAN_STATE_PATH: ".meridian/state/hub-state.json"
-    });
-
-    assert.equal(config.MERIDIAN_STATE_PATH, path.resolve(process.cwd(), ".meridian/state/hub-state.json"));
+    assert.throws(
+      () =>
+        parseConfig({
+          ...REQUIRED_ENV,
+          MERIDIAN_STATE_PATH: ".meridian/state/hub-state.json"
+        }),
+      /MERIDIAN_STATE_PATH must be an absolute path/
+    );
   });
 });
 

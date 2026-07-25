@@ -229,6 +229,7 @@ export interface WebInterfaceServerOptions {
   listenHost?: string;
   token?: string;
   logDir?: string;
+  workRoot?: string;
   hubSocketPath?: string;
   httpsEnabled?: boolean;
   tlsCertPath?: string;
@@ -574,6 +575,7 @@ export class WebInterfaceServer {
   private readonly token: string;
   private readonly hubSocketPath: string;
   private readonly logDir: string;
+  private readonly workRoot: string;
   private readonly httpsEnabled: boolean;
   private readonly tlsCertPath: string;
   private readonly tlsKeyPath: string;
@@ -600,6 +602,7 @@ export class WebInterfaceServer {
     this.token = (options.token ?? config.WEB_GUI_TOKEN).trim();
     this.hubSocketPath = options.hubSocketPath ?? config.HUB_SOCKET_PATH;
     this.logDir = options.logDir ?? config.LOG_DIR;
+    this.workRoot = path.resolve(options.workRoot ?? config.AGENT_WORKDIR);
     this.httpsEnabled = options.httpsEnabled ?? config.WEB_GUI_HTTPS;
     this.tlsCertPath = options.tlsCertPath ?? config.TLS_CERT_PATH;
     this.tlsKeyPath = options.tlsKeyPath ?? config.TLS_KEY_PATH;
@@ -1433,7 +1436,7 @@ export class WebInterfaceServer {
   }
 
   private async handleSpawnReposRequest(response: http.ServerResponse): Promise<void> {
-    const root = path.resolve(config.AGENT_WORKDIR);
+    const root = this.workRoot;
     let repos: Array<{ name: string }> = [];
     try {
       const entries = await fs.promises.readdir(root, { withFileTypes: true });
@@ -1506,7 +1509,7 @@ export class WebInterfaceServer {
   private async resolveSpawnDirectoryForSpawnRequest(
     body: { repo?: string; spawn_dir?: string }
   ): Promise<string | undefined> {
-    const root = path.resolve(config.AGENT_WORKDIR);
+    const root = this.workRoot;
     const rawSpawnDir = body.spawn_dir?.trim();
     const rawRepo = body.repo?.trim();
     if (rawSpawnDir && rawRepo) {
@@ -1533,7 +1536,7 @@ export class WebInterfaceServer {
   ): Promise<void> {
     const requestUrl = this.getRequestUrl(request);
     const rawParam = requestUrl.searchParams.get("relative") ?? "";
-    const root = path.resolve(config.AGENT_WORKDIR);
+    const root = this.workRoot;
     const trimmedParam = rawParam.trim();
     let browsePath = "";
     let resolvedDir = root;
