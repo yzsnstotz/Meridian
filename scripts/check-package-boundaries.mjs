@@ -8,9 +8,9 @@ const ALLOWED_INTERNAL_DEPENDENCIES = {
   contracts: new Set(),
   runtime: new Set(["contracts"]),
   orchestrator: new Set(["contracts"]),
-  gateway: new Set(["contracts"]),
+  gateway: new Set(["contracts", "runtime"]),
   supervisor: new Set(["contracts"]),
-  cli: new Set(["contracts", "supervisor"]),
+  cli: new Set(["contracts", "runtime", "supervisor"]),
 };
 
 async function sourceFiles(directory) {

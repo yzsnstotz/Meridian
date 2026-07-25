@@ -1,5 +1,5 @@
 {
-  "name": "meridian-roles",
+  "name": "@meridian/orchestrator",
   "version": "1.2.0",
   "private": true,
   "bin": {
@@ -7,7 +7,7 @@
   },
   "description": "Meridian role-layer service — BaseRole framework, Dispatcher, prompt hot-reload, and independent GUI",
   "engines": {
-    "node": "^20.0.0"
+    "node": "^22.0.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -20,6 +20,7 @@
     "lint": "eslint src tests/e2e/scenario-*.ts vitest.config.ts --ext .ts"
   },
   "dependencies": {
+    "@meridian/contracts": "1.0.0",
     "ajv": "^8.20.0",
     "zod": "^4.1.11"
   },

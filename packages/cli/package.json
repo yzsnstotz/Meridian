@@ -1,0 +1,21 @@
+{
+  "name": "@meridian/cli",
+  "version": "1.0.0",
+  "private": true,
+  "bin": {
+    "meridian": "./dist/meridian-cli.js"
+  },
+  "engines": {
+    "node": "^22.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test --import tsx src/**/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@meridian/contracts": "1.0.0",
+    "@meridian/runtime": "1.0.0",
+    "@meridian/supervisor": "1.0.0"
+  }
+}

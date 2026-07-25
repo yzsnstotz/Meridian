@@ -1,0 +1,1 @@
+export const MERIDIAN_SUPERVISOR_VERSION = "1.0.0";

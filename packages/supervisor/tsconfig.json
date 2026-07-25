@@ -3,10 +3,8 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "baseUrl": ".",
-    "declaration": true,
-    "resolveJsonModule": true
+    "declaration": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["dist", "node_modules", "tests"]
+  "exclude": ["dist", "node_modules"]
 }
