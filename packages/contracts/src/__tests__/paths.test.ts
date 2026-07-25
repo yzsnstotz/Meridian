@@ -23,6 +23,10 @@ test("resolves macOS paths without depending on the repository cwd", () => {
   assert.equal(paths.runtimeDir, "/private/tmp/meridian-501");
   assert.equal(paths.socketDir, "/private/tmp/meridian-501/sockets");
   assert.equal(paths.runtimeDescriptorDir, "/private/tmp/meridian-501/services");
+  assert.equal(
+    paths.serviceDeclarationDir,
+    "/Users/tester/Library/Application Support/Meridian/data/services/declarations"
+  );
   assert.equal(paths.workRoot, "/Users/tester");
   assert.equal(paths.taskSpecRoot, undefined);
   assert.equal(paths.docsRoot, undefined);
@@ -77,6 +81,7 @@ test("explicit Meridian environment paths override all platform defaults", () =>
       MERIDIAN_LOG_DIR: "/var/log/meridian",
       MERIDIAN_SOCKET_DIR: "/run/meridian-sockets",
       MERIDIAN_RUNTIME_DESCRIPTOR_DIR: "/run/meridian-services",
+      MERIDIAN_SERVICE_DECLARATION_DIR: "/opt/meridian/declarations",
       MERIDIAN_WORK_ROOT: "/work",
       MERIDIAN_TASKSPEC_ROOT: "/specs",
       MERIDIAN_DOCS_ROOT: "/docs",
@@ -93,6 +98,7 @@ test("explicit Meridian environment paths override all platform defaults", () =>
     logDir: "/var/log/meridian",
     socketDir: "/run/meridian-sockets",
     runtimeDescriptorDir: "/run/meridian-services",
+    serviceDeclarationDir: "/opt/meridian/declarations",
     workRoot: "/work",
     taskSpecRoot: "/specs",
     docsRoot: "/docs",

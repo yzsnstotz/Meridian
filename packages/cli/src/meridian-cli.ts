@@ -16,6 +16,7 @@ import {
 } from "@meridian/runtime/types";
 import { parseModelReference } from "@meridian/runtime/shared/model-reference";
 import { connectToHub, hubHttpRequest, setCallerIdentity, type HubConnection, type HubHttpResponse } from "./hub-connection";
+import { runServiceCommand } from "./commands/service";
 
 const EXIT_SUCCESS = 0;
 const EXIT_ERROR = 1;
@@ -38,6 +39,7 @@ const COMMANDS: Record<string, string> = {
   history: "Retrieve conversation history entries with caller info",
   autoapprove: "Get or set auto-approve state",
   health: "Check Meridian API health",
+  service: "Discover and diagnose portable services",
   caller: "Manage caller identities (list/mint/rotate/revoke)"
 };
 
@@ -54,6 +56,7 @@ export interface CliDependencies {
   connectToHub: () => Promise<HubConnection>;
   hubHttpRequest: (method: string, route: string, body?: unknown) => Promise<HubHttpResponse>;
   listProviderModels: (provider: AgentType) => Promise<ProviderModelCatalogResult>;
+  serviceCommand: (args: string[]) => Promise<JsonRecord>;
   now: () => Date;
   stdout: WriteFn;
   stderr: WriteFn;
@@ -75,6 +78,7 @@ export const defaultCliDependencies: CliDependencies = {
   connectToHub,
   hubHttpRequest,
   listProviderModels: async (provider: AgentType) => defaultProviderModelCatalog.listModels(provider),
+  serviceCommand: runServiceCommand,
   now: () => new Date(),
   stdout: (text: string) => {
     process.stdout.write(text);
@@ -175,6 +179,10 @@ function showCommandHelp(deps: CliDependencies, command: string): void {
       return;
     case "health":
       hint(deps, "Usage: meridian health");
+      return;
+    case "service":
+      hint(deps, "Usage: meridian service <list|resolve|describe|doctor> [options]");
+      hint(deps, "  resolve <service-id> [--url <url>] [--instance <instance-id>]");
       return;
     case "list":
       hint(deps, "Usage: meridian list [--json]");
@@ -733,6 +741,10 @@ async function handleHealth(deps: CliDependencies): Promise<void> {
   );
 }
 
+async function handleService(args: string[], deps: CliDependencies): Promise<void> {
+  jsonOut(deps, await deps.serviceCommand(args));
+}
+
 function parseOAuthMode(raw: string | undefined): "browser" | "device" | undefined {
   if (raw === undefined) {
     return undefined;
@@ -1164,6 +1176,11 @@ export async function runCli(args: string[], deps: CliDependencies = defaultCliD
     return EXIT_SUCCESS;
   }
 
+  if (command === "service") {
+    await handleService(commandArgs, deps);
+    return EXIT_SUCCESS;
+  }
+
   await ensureHubReachable(deps);
 
   switch (command) {
@@ -1207,6 +1224,8 @@ export async function runCli(args: string[], deps: CliDependencies = defaultCliD
     case "health":
       await handleHealth(deps);
       return EXIT_SUCCESS;
+    case "service":
+      throw new CliError(EXIT_ERROR, "service command routing invariant violated");
     case "caller":
       await handleCaller(commandArgs, deps);
       return EXIT_SUCCESS;

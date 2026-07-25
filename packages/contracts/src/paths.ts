@@ -10,6 +10,7 @@ export interface MeridianPaths {
   logDir: string;
   socketDir: string;
   runtimeDescriptorDir: string;
+  serviceDeclarationDir: string;
   workRoot: string;
   taskSpecRoot?: string;
   docsRoot?: string;
@@ -40,6 +41,7 @@ const ENV_BY_KEY: Record<keyof MeridianPaths, string> = {
   logDir: "MERIDIAN_LOG_DIR",
   socketDir: "MERIDIAN_SOCKET_DIR",
   runtimeDescriptorDir: "MERIDIAN_RUNTIME_DESCRIPTOR_DIR",
+  serviceDeclarationDir: "MERIDIAN_SERVICE_DECLARATION_DIR",
   workRoot: "MERIDIAN_WORK_ROOT",
   taskSpecRoot: "MERIDIAN_TASKSPEC_ROOT",
   docsRoot: "MERIDIAN_DOCS_ROOT",
@@ -83,6 +85,10 @@ export class PathResolver {
       "runtimeDescriptorDir",
       path.join(runtimeDir, "services")
     );
+    const serviceDeclarationDir = this.required(
+      "serviceDeclarationDir",
+      path.join(dataDir, "services", "declarations")
+    );
     const workRoot = this.required("workRoot", this.homeDir);
     const taskSpecRoot = this.optional("taskSpecRoot");
     const docsRoot = this.optional("docsRoot");
@@ -100,6 +106,7 @@ export class PathResolver {
       logDir,
       socketDir,
       runtimeDescriptorDir,
+      serviceDeclarationDir,
       workRoot,
       ...(taskSpecRoot ? { taskSpecRoot } : {}),
       ...(docsRoot ? { docsRoot } : {}),
@@ -116,7 +123,8 @@ export class PathResolver {
       paths.runtimeDir,
       paths.logDir,
       paths.socketDir,
-      paths.runtimeDescriptorDir
+      paths.runtimeDescriptorDir,
+      paths.serviceDeclarationDir
     ];
     for (const directory of directories) {
       fs.mkdirSync(directory, { recursive: true, mode: 0o700 });

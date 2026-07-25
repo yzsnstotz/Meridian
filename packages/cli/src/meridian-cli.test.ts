@@ -55,6 +55,7 @@ function createCliDeps(overrides: Partial<CliDependencies> = {}) {
         { id: `${provider}-model-2`, label: `${provider} model 2` }
       ]
     }),
+    serviceCommand: async () => ({ ok: true, services: [] }),
     now: () => new Date("2026-04-05T01:00:00.000Z"),
     stdout: (chunk: string) => {
       stdout += chunk;
@@ -73,6 +74,32 @@ function createCliDeps(overrides: Partial<CliDependencies> = {}) {
     stderr: () => stderr
   };
 }
+
+test("runCli service list bypasses Hub reachability and emits discovery JSON", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  let connectCalls = 0;
+  const harness = createCliDeps({
+    connectToHub: async () => {
+      connectCalls += 1;
+      throw new Error("Hub must not be required for service discovery");
+    },
+    serviceCommand: async (args) => ({
+      ok: true,
+      commandArgs: args,
+      services: [{ instanceId: "orchestrator-local" }]
+    })
+  });
+
+  const exitCode = await runCli(["service", "list"], harness.deps);
+
+  assert.equal(exitCode, 0);
+  assert.equal(connectCalls, 0);
+  assert.deepEqual(JSON.parse(harness.stdout()), {
+    ok: true,
+    commandArgs: ["list"],
+    services: [{ instanceId: "orchestrator-local" }]
+  });
+});
 
 async function expectCliError(
   promise: Promise<number>,
