@@ -4,8 +4,10 @@ const eslintConfigPrettier = require("eslint-config-prettier");
 
 module.exports = [
   {
+    ignores: ["**/dist/**", "**/node_modules/**"]
+  },
+  {
     files: ["**/*.ts"],
-    ignores: ["dist/**", "node_modules/**"],
     languageOptions: {
       parser: tsParser,
       parserOptions: {
@@ -18,7 +20,14 @@ module.exports = [
     },
     rules: {
       ...tsPlugin.configs.recommended.rules,
-      "@typescript-eslint/no-explicit-any": "off"
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          "argsIgnorePattern": "^_",
+          "varsIgnorePattern": "^_"
+        }
+      ]
     }
   },
   eslintConfigPrettier

@@ -1,5 +1,41 @@
 # Meridian
 
+Meridian is one orchestration product in one repository. It keeps execution
+responsibilities separated at runtime:
+
+- Runtime owns the Hub, provider processes, channels, and authenticated Web API.
+- Orchestrator owns roles, TaskSpec dispatch, scheduling, and routine jobs.
+- Supervisor starts Runtime and Orchestrator independently, waits for real
+  readiness, publishes native service descriptors, and applies bounded restart.
+- CLI is the JSON-first user and automation control surface.
+- Gateway is an independent OpenAI/Anthropic-compatible ingress product. It is
+  built in this workspace but is never a required Meridian child.
+
+```bash
+npm install
+npm run build
+npm link
+
+meridian start
+meridian status
+meridian doctor
+meridian service list
+```
+
+`meridian stop` stops the native Runtime and Orchestrator. The legacy
+`meridian stop <thread-id>` form remains a non-destructive alias for interrupting
+one agent thread; `meridian status --agents` lists agent instances.
+
+Native discovery does not require Clawso. When Clawso is present, Meridian can
+also consume Foundation-admitted declaration and runtime-descriptor exports by
+setting `CLAWSO_SERVICE_DECLARATION_DIR` and
+`CLAWSO_RUNTIME_DESCRIPTOR_DIR`. Static declarations describe compatibility;
+live native or admitted runtime descriptors remain endpoint authority.
+
+See [the system index](docs/system/SYSTEM_INDEX.md) for package ownership and
+[the Roles migration guide](docs/migration/roles-to-meridian.md) before retiring
+a standalone Meridian-Roles installation.
+
 ## Meridian Gateway Service
 
 `meridian-gateway` is Meridian's OpenAI-compatible HTTP front door for logged-in
@@ -52,7 +88,7 @@ curl http://127.0.0.1:8789/v1/chat/completions \
 
 ```text
 spawn - Spawn a new agent instance
-restart - Restart Meridian, meridian-roles, or ADS
+restart - Restart Meridian Runtime, Orchestrator, or ADS
 browse - Browse repo and return exact file/folder path
 kill - Kill an existing instance
 status - Get current instance status

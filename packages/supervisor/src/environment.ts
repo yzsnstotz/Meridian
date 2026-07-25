@@ -4,6 +4,7 @@ import path from "node:path";
 
 const ENV_FILES = [".env", ".env.local"];
 export const INTERNAL_BOOTSTRAP_KEY = "MERIDIAN_INTERNAL_BOOTSTRAP_KEY";
+export const WEB_GUI_TOKEN = "WEB_GUI_TOKEN";
 
 /**
  * Loads Meridian user configuration without overriding values explicitly
@@ -34,21 +35,36 @@ export function ensureSharedBootstrapKey(
   configDir: string,
   env: NodeJS.ProcessEnv = process.env
 ): string {
-  const existing = env[INTERNAL_BOOTSTRAP_KEY]?.trim();
+  return ensurePrivateSecret(configDir, env, INTERNAL_BOOTSTRAP_KEY);
+}
+
+export function ensureWebGuiToken(
+  configDir: string,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  return ensurePrivateSecret(configDir, env, WEB_GUI_TOKEN);
+}
+
+function ensurePrivateSecret(
+  configDir: string,
+  env: NodeJS.ProcessEnv,
+  key: typeof INTERNAL_BOOTSTRAP_KEY | typeof WEB_GUI_TOKEN
+): string {
+  const existing = env[key]?.trim();
   if (existing) {
     return existing;
   }
   fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
   const value = crypto.randomBytes(32).toString("hex");
   const envPath = path.join(configDir, ".env");
-  fs.appendFileSync(envPath, `\n${INTERNAL_BOOTSTRAP_KEY}=${value}\n`, {
+  fs.appendFileSync(envPath, `\n${key}=${value}\n`, {
     encoding: "utf8",
     mode: 0o600
   });
   if (process.platform !== "win32") {
     fs.chmodSync(envPath, 0o600);
   }
-  env[INTERNAL_BOOTSTRAP_KEY] = value;
+  env[key] = value;
   return value;
 }
 

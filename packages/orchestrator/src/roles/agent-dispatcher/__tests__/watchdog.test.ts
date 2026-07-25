@@ -1921,9 +1921,11 @@ describe("ReconciliationWatchdog", () => {
     await watchdog.sweep();
     expect(killThread).toHaveBeenCalledTimes(1);
 
-    // Multiple sweeps within the cooldown must NOT re-attempt the kill.
-    for (let tick = 0; tick < 50; tick++) {
-      nowMs += 1_000; // 50 seconds total — still under the 60s window
+    // Multiple sweeps at representative points within the cooldown must NOT
+    // re-attempt the kill. Advancing the injected clock directly keeps this
+    // behavior test independent of the cost of a full reconciliation sweep.
+    for (const advanceMs of [1_000, 24_000, 25_000]) {
+      nowMs += advanceMs; // 50 seconds total — still under the 60s window
       await watchdog.sweep();
     }
     expect(killThread).toHaveBeenCalledTimes(1);

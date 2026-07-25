@@ -13,6 +13,8 @@ process.env.ALLOWED_USER_IDS ??= "123456789";
 process.env.MERIDIAN_DISABLE_WEB_AUTOSTART = "true";
 
 const webServerModulePromise = import("./server");
+// Config must load only after the test environment above is installed.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { config } = require("../config") as typeof import("../config");
 
 class FakeHubSocket extends Duplex {

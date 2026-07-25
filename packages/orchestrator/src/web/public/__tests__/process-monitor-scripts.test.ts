@@ -196,7 +196,6 @@ describe("processes tab — token flash + history", () => {
     // Sanity-evaluate the helper in isolation by extracting and Function-eval.
     const match = js.match(/function truncateMiddle\([\s\S]*?\n\}/);
     expect(match).not.toBeNull();
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
     const fn = new Function(`${match![0]}; return truncateMiddle;`)() as (s: string, n: number) => string;
     expect(fn("short", 60)).toBe("short");
     expect(fn("abcdefghijklmnop", 8)).toMatch(/^[a-z]+…[a-z]+$/);

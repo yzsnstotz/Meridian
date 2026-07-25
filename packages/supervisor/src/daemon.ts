@@ -2,7 +2,11 @@ import path from "node:path";
 
 import { PathResolver } from "@meridian/contracts";
 
-import { ensureSharedBootstrapKey, loadSupervisorEnvironment } from "./environment";
+import {
+  ensureSharedBootstrapKey,
+  ensureWebGuiToken,
+  loadSupervisorEnvironment
+} from "./environment";
 import { createDefaultProcessSpecs } from "./process-spec";
 import { NodeSupervisorAdapter } from "./node-adapter";
 import { JsonSupervisorStateStore, MeridianSupervisor } from "./supervisor";
@@ -13,6 +17,7 @@ async function main(): Promise<void> {
   resolver.ensurePrivateDirectories(paths);
   loadSupervisorEnvironment(paths.configDir);
   ensureSharedBootstrapKey(paths.configDir);
+  ensureWebGuiToken(paths.configDir);
   const stateStore = new JsonSupervisorStateStore(path.join(paths.stateDir, "supervisor.json"));
   const previous = stateStore.load();
   if (previous && processAlive(previous.supervisorPid)) {

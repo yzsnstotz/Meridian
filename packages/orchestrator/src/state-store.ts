@@ -12,7 +12,8 @@ const WRITABLE_STATE_FILE_EXAMPLE = DEFAULT_STATE_FILE_PATH;
 // example and as the path baked into local .env files. macOS purges /tmp on
 // reboot, so any operator upgrading to a persistent STATE_FILE_PATH would
 // otherwise see their registered roles vanish on the next service restart.
-// load() transparently migrates this file forward exactly once.
+// load() transparently copies this file forward exactly once. The legacy
+// source remains untouched so rollback and operator inspection stay possible.
 export const LEGACY_EPHEMERAL_STATE_FILE_PATH = "/tmp/meridian-roles/state.json";
 export const ACTIVE_ROLE_STATUS = "active";
 export const PAUSED_ROLE_STATUS = "paused";
@@ -115,19 +116,9 @@ export class StateStore {
     const state = normalizePersistedAppState(AppStateSchema.parse(JSON.parse(raw)));
     await this.save(state);
 
-    const archivedLegacyPath = `${legacyPath}.migrated-${Date.now()}`;
-    try {
-      await this.fileSystem.rename(legacyPath, archivedLegacyPath);
-    } catch {
-      // Best-effort archival — leaving the legacy file in place is harmless
-      // because the next load reads from this.filePath first and only falls
-      // through to the legacy reader when the persistent file is missing.
-    }
-
     console.warn(
-      `[meridian-roles] Migrated ${state.roles.length} role(s) from legacy ephemeral state file ` +
-        `"${legacyPath}" to "${this.filePath}". ` +
-        `Original archived at "${archivedLegacyPath}".`
+      `[meridian] Imported ${state.roles.length} role(s) from legacy state file ` +
+        `"${legacyPath}" to "${this.filePath}". The original file was preserved.`
     );
 
     return state;

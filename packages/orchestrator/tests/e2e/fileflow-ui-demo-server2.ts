@@ -88,6 +88,7 @@ async function main(): Promise<void> {
     auditPath,
     HubMessageSchema
   });
+  void hub;
 
   const client = new A2AClient({
     hubSocketPath,
@@ -462,3 +463,9 @@ async function getFreePort(): Promise<number> {
   });
 }
 
+if (require.main === module) {
+  void main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

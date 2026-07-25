@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import {
   ensureSharedBootstrapKey,
+  ensureWebGuiToken,
   loadSupervisorEnvironment
 } from "../environment";
 import { createDefaultProcessSpecs, type ManagedProcessSpec } from "../process-spec";
@@ -90,7 +91,7 @@ test("default process graph contains Runtime and Orchestrator but never Gateway"
   assert.equal(specs[1]?.readinessUrl, "http://127.0.0.1:4200/api/health");
 });
 
-test("supervisor config preserves explicit env and creates one shared bootstrap key", () => {
+test("supervisor config preserves explicit env and creates required secrets once", () => {
   const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "meridian-supervisor-env-"));
   const env: NodeJS.ProcessEnv = { WEB_GUI_PORT: "5100" };
   try {
@@ -101,9 +102,12 @@ test("supervisor config preserves explicit env and creates one shared bootstrap 
     loadSupervisorEnvironment(configDir, env);
     const first = ensureSharedBootstrapKey(configDir, env);
     const second = ensureSharedBootstrapKey(configDir, env);
+    const firstWebToken = ensureWebGuiToken(configDir, env);
+    const secondWebToken = ensureWebGuiToken(configDir, env);
 
     assert.equal(env.WEB_GUI_PORT, "5100");
-    assert.equal(env.WEB_GUI_TOKEN, "local-token");
+    assert.equal(firstWebToken, "local-token");
+    assert.equal(secondWebToken, "local-token");
     assert.equal(first, second);
     assert.match(first, /^[a-f0-9]{64}$/);
     assert.equal(
@@ -111,6 +115,29 @@ test("supervisor config preserves explicit env and creates one shared bootstrap 
         .match(/MERIDIAN_INTERNAL_BOOTSTRAP_KEY=/g)?.length,
       1
     );
+    assert.equal(
+      fs.readFileSync(path.join(configDir, ".env"), "utf8")
+        .match(/WEB_GUI_TOKEN=/g)?.length,
+      1
+    );
+  } finally {
+    fs.rmSync(configDir, { recursive: true, force: true });
+  }
+});
+
+test("supervisor creates and persists a private Web token for a clean config", () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "meridian-supervisor-env-"));
+  const env: NodeJS.ProcessEnv = {};
+  try {
+    const token = ensureWebGuiToken(configDir, env);
+
+    assert.equal(env.WEB_GUI_TOKEN, token);
+    assert.match(token, /^[a-f0-9]{64}$/);
+    assert.match(
+      fs.readFileSync(path.join(configDir, ".env"), "utf8"),
+      new RegExp(`WEB_GUI_TOKEN=${token}`)
+    );
+    assert.equal(fs.statSync(path.join(configDir, ".env")).mode & 0o777, 0o600);
   } finally {
     fs.rmSync(configDir, { recursive: true, force: true });
   }

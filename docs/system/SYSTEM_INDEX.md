@@ -88,6 +88,10 @@ Their source roots are now under `packages/runtime/src/`:
 - [web](./modules/web.md)
 - [bin](./modules/bin.md)
 - [root](./modules/root.md)
+- [package ownership](./modules/packages.md)
+- [service discovery](./modules/service-discovery.md)
+- [supervisor](./modules/supervisor.md)
+- [orchestrator](./modules/orchestrator.md)
 
 Orchestrator package documentation currently lives with the package in
 `packages/orchestrator/README.md` and its source-local READMEs. The migration
@@ -100,4 +104,6 @@ Meridian-Roles repository layout.
 2. Read that package's `README.md` and `package.json`.
 3. For Runtime internals, open only the relevant module document listed above.
 4. Follow imports toward Contracts, not across package-private boundaries.
-5. Run the root build and boundary tests before committing package changes.
+5. Read [the Roles migration guide](../migration/roles-to-meridian.md) before
+   changing standalone state ownership.
+6. Run the root build and boundary tests before committing package changes.

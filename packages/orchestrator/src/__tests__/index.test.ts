@@ -552,6 +552,7 @@ describe("maybeStartPmResolverForWatchdogRecovery cache eviction", () => {
     const dispatchThreadsPath = path.join(tempDir, "dispatch_threads.json");
     const workerId = "BATCH-5-GATE";
     const workerStartedAt = "2026-05-15T03:00:00.000Z";
+    const pmLastSeenAt = new Date().toISOString();
 
     const lifecycle: DispatchThreadStateV2 = {
       version: 2,
@@ -578,7 +579,7 @@ describe("maybeStartPmResolverForWatchdogRecovery cache eviction", () => {
           thread_id: "codex_13",
           status: "running",
           started_at: "2026-05-15T03:42:59.927Z",
-          last_seen_at: "2026-05-15T03:45:00.000Z",
+          last_seen_at: pmLastSeenAt,
           agent_type: "codex",
           model_id: "gpt-5.5 xhigh",
           mode: "bridge",
@@ -597,7 +598,7 @@ describe("maybeStartPmResolverForWatchdogRecovery cache eviction", () => {
           marker_pm_action: null
         }
       ],
-      last_reconciled_at: "2026-05-15T03:45:00.000Z"
+      last_reconciled_at: pmLastSeenAt
     };
     await fs.writeFile(dispatchThreadsPath, JSON.stringify(lifecycle, null, 2), "utf8");
 

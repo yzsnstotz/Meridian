@@ -1018,7 +1018,7 @@ describe("/api/agentapi-processes — origin classification", () => {
       output_tokens: 200,
       reasoning_output_tokens: 0,
       total_tokens: 300,
-      session_file: "/Users/y/.claude/projects/-Users-yzliu-work/abc.jsonl",
+      session_file: "/Users/operator/.claude/projects/-Users-operator-work/abc.jsonl",
       session_id: "claude-sess-abc"
     };
     const fixture = await createSidecarFixture({

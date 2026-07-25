@@ -261,7 +261,7 @@ describe("StateStore", () => {
     await expect(fs.access(tempFilePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("migrates state from the legacy ephemeral path when the persistent file is missing", async () => {
+  it("imports state from the legacy ephemeral path without moving the source", async () => {
     const directory = await createTempDirectory();
     const persistentStatePath = path.join(directory, "state.json");
     const legacyPayload = `${JSON.stringify(sampleState, null, 2)}\n`;
@@ -299,14 +299,10 @@ describe("StateStore", () => {
     try {
       await expect(store.load()).resolves.toEqual(sampleState);
       await expect(fs.readFile(persistentStatePath, "utf8")).resolves.toContain('"dispatcher-1"');
-      expect(
-        renames.some(
-          ({ from, to }) =>
-            from === LEGACY_EPHEMERAL_STATE_FILE_PATH && to.startsWith(`${LEGACY_EPHEMERAL_STATE_FILE_PATH}.migrated-`)
-        )
-      ).toBe(true);
+      expect(renames.some(({ from }) => from === LEGACY_EPHEMERAL_STATE_FILE_PATH)).toBe(false);
       expect(warn).toHaveBeenCalledTimes(1);
-      expect(warn.mock.calls[0]?.[0]).toContain("Migrated 1 role(s) from legacy ephemeral state file");
+      expect(warn.mock.calls[0]?.[0]).toContain("Imported 1 role(s) from legacy state file");
+      expect(warn.mock.calls[0]?.[0]).toContain("original file was preserved");
     } finally {
       warn.mockRestore();
     }

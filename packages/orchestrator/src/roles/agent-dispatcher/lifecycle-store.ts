@@ -2579,8 +2579,15 @@ function formatTableRow(cells: string[]): string {
 }
 
 function resolveDisplayStatus(worker: DispatchWorkerState): string {
-  if (worker.status === "completed" || worker.status === "skipped") {
-    return PLAN_STATUS_SYMBOLS[worker.status];
+  if (worker.status === "skipped") {
+    return PLAN_STATUS_SYMBOLS.skipped;
+  }
+
+  // A validator transition is an explicit post-result verdict. Once it has
+  // promoted the worker to completed, stale failure/block text from the
+  // original worker reply must not overwrite that newer authority.
+  if (worker.status === "completed" && worker.validation) {
+    return PLAN_STATUS_SYMBOLS.completed;
   }
 
   if (worker.status !== "blocked" && worker.hub_result && hubResultContainsBlockSignal(worker.hub_result)) {
@@ -2594,6 +2601,10 @@ function resolveDisplayStatus(worker: DispatchWorkerState): string {
     && hubResultContainsFailureSignal(worker.hub_result)
   ) {
     return PLAN_STATUS_SYMBOLS.failed;
+  }
+
+  if (worker.status === "completed") {
+    return PLAN_STATUS_SYMBOLS.completed;
   }
 
   if (worker.status === "fix_requested" && worker.validation) {

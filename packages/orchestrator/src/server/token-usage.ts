@@ -311,7 +311,8 @@ export class TokenUsageCollector {
 
 export function encodeClaudeProjectPath(cwd: string): string {
   // Claude Code encoder: replace `/` with `-`, keep everything else.
-  // Examples in ~/.claude/projects/ confirm this scheme (e.g. -Users-yzliu-work-Meridian-Meridian-roles).
+  // Examples in ~/.claude/projects/ confirm this scheme (for example,
+  // -Users-operator-work-project).
   return cwd.replace(/\//g, "-");
 }
 

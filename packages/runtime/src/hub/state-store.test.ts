@@ -4,7 +4,6 @@ import fs from "node:fs";
 import { test } from "node:test";
 
 import {
-  buildPersistedHubState,
   loadPersistedHubState,
   migrateLegacyConversationHistoryV2ToV3,
   PersistedHubStateV3Schema,

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { CallerIdentitySchema, HubMessageSchema, type CallerIdentity, type HubMessage } from "../types";
+import { HubMessageSchema, type CallerIdentity, type HubMessage } from "../types";
 
 export const CALLER_HTTP_HEADERS = {
   id: "X-Meridian-Caller-Id",

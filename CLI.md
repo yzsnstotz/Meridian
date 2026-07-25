@@ -1,6 +1,9 @@
 # Meridian CLI
 
-`meridian` is the external CLI for the Meridian hub. It emits machine-readable JSON on stdout and reserves stderr for usage text and operator hints.
+`meridian` is the external CLI for the Meridian product. Lifecycle and service
+discovery commands work without a running Hub. Agent commands use the Runtime
+Web API. The CLI emits machine-readable JSON on stdout and reserves stderr for
+usage text and operator hints.
 
 ## Install
 
@@ -44,8 +47,41 @@ meridian --help
 | `HUB_SOCKET_PATH` | platform runtime directory | Meridian hub socket path used by the service |
 | `WEB_GUI_PORT` | `3000` | Web API / GUI port |
 | `WEB_GUI_HOST` | unset | Optional public GUI host |
+| `MERIDIAN_CONFIG_DIR` | platform config directory | Config and shared bootstrap-key directory |
+| `MERIDIAN_STATE_DIR` | platform state directory | Durable Hub, Orchestrator, and supervisor state |
+| `MERIDIAN_RUNTIME_DESCRIPTOR_DIR` | platform runtime directory | Native live service descriptors |
+| `MERIDIAN_SERVICE_DECLARATION_DIR` | platform data directory | Native static service declarations |
+| `CLAWSO_SERVICE_DECLARATION_DIR` | unset | Clawso Foundation-admitted declaration export |
+| `CLAWSO_RUNTIME_DESCRIPTOR_DIR` | unset | Clawso Foundation-admitted runtime-descriptor export |
 
 ## Commands
+
+### Native lifecycle
+
+```bash
+meridian start
+meridian status
+meridian doctor
+meridian stop
+```
+
+The supervisor manages Runtime and Orchestrator as separate processes. Gateway
+is deliberately excluded. Registration occurs only after an authenticated
+readiness probe succeeds and is removed during shutdown. `status` and `doctor`
+do not require Runtime to be reachable.
+
+### Portable service discovery
+
+```bash
+meridian service list
+meridian service describe org.meridian/runtime
+meridian service resolve org.meridian/orchestrator
+meridian service doctor
+```
+
+Resolution order is explicit URL, service-specific environment, explicit
+instance selection, native descriptors, Clawso-admitted descriptors, then
+read-only compatibility probes. Discovery does not grant operation permission.
 
 ### `meridian spawn <provider> [options]`
 
@@ -130,14 +166,14 @@ Example:
 meridian kill codex_01
 ```
 
-### `meridian status`
+### `meridian status --agents`
 
 List running Meridian-managed instances.
 
 Example:
 
 ```bash
-meridian status
+meridian status --agents
 ```
 
 ### `meridian send <thread-id> <message>`
@@ -208,7 +244,7 @@ meridian send codex_01 "Summarize the public API surface."
 Check live threads, send follow-up input, then inspect logs:
 
 ```bash
-meridian status
+meridian status --agents
 meridian send codex_01 "Continue from the last failing test."
 meridian logs codex_01
 ```
@@ -224,3 +260,5 @@ meridian autoapprove off --thread codex_01
 - Meridian CLI talks to the hub through public service interfaces only. It does not import hub internals.
 - HTTP is checked first via `MERIDIAN_HTTP`; socket fallback uses `MERIDIAN_SOCKET`.
 - External automation should treat stdout as the stable integration surface and ignore stderr unless debugging operator-facing failures.
+- Existing standalone Roles state can be copied explicitly with
+  `meridian-migrate-roles-state`; see `docs/migration/roles-to-meridian.md`.

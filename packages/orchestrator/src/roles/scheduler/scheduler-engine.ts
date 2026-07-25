@@ -433,7 +433,13 @@ export class SchedulerEngine {
       return;
     }
 
+    const blocker = report.workers.find(isManualInterventionBlocker);
     const workerId = this.resolveServiceContinueWorker(report.workers);
+    if (blocker && workerId !== blocker.worker_id) {
+      await this.pauseForManualInterventionIfBlocked(report.workers);
+      return;
+    }
+
     if (!workerId) {
       await this.pauseForManualInterventionIfBlocked(report.workers);
       return;
