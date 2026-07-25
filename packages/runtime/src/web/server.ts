@@ -7,7 +7,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import { config } from "../config";
+import { config, runtimePaths } from "../config";
 import { IpcSender, requestHubMessage, requestHubRunMessage, setCallerIdentity } from "../interface/ipc-sender";
 import { BUILTIN_CALLERS, deriveBuiltinCallerKey } from "../shared/caller-bootstrap";
 import { callerEnvelopeFromHttpHeaders, type WireAuth } from "../shared/caller-wire";
@@ -231,6 +231,7 @@ export interface WebInterfaceServerOptions {
   logDir?: string;
   workRoot?: string;
   hubSocketPath?: string;
+  supervisorStatePath?: string;
   httpsEnabled?: boolean;
   tlsCertPath?: string;
   tlsKeyPath?: string;
@@ -574,6 +575,7 @@ export class WebInterfaceServer {
   private readonly listenHost: string;
   private readonly token: string;
   private readonly hubSocketPath: string;
+  private readonly supervisorStatePath: string;
   private readonly logDir: string;
   private readonly workRoot: string;
   private readonly httpsEnabled: boolean;
@@ -601,6 +603,8 @@ export class WebInterfaceServer {
     this.listenHost = options.listenHost ?? "0.0.0.0";
     this.token = (options.token ?? config.WEB_GUI_TOKEN).trim();
     this.hubSocketPath = options.hubSocketPath ?? config.HUB_SOCKET_PATH;
+    this.supervisorStatePath =
+      options.supervisorStatePath ?? path.join(runtimePaths.stateDir, "supervisor.json");
     this.logDir = options.logDir ?? config.LOG_DIR;
     this.workRoot = path.resolve(options.workRoot ?? config.AGENT_WORKDIR);
     this.httpsEnabled = options.httpsEnabled ?? config.WEB_GUI_HTTPS;
@@ -784,6 +788,11 @@ export class WebInterfaceServer {
 
     if (requestUrl.pathname === "/api/health" && request.method === "GET") {
       await this.handleHealthRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/system" && request.method === "GET") {
+      await this.handleSystemRequest(response);
       return;
     }
 
@@ -1069,6 +1078,28 @@ export class WebInterfaceServer {
       uptime,
       agents_count: instances.length
     });
+  }
+
+  private async handleSystemRequest(response: http.ServerResponse): Promise<void> {
+    try {
+      const snapshot = JSON.parse(
+        await fs.promises.readFile(this.supervisorStatePath, "utf8")
+      ) as Record<string, unknown>;
+      this.respondJson(response, 200, { ok: true, supervisor: snapshot });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        this.respondJson(response, 503, {
+          ok: false,
+          error: "Native Meridian supervisor state is not available"
+        });
+        return;
+      }
+      this.respondJson(response, 503, {
+        ok: false,
+        error: "Native Meridian supervisor state is unreadable"
+      });
+    }
   }
 
   private async handleLogInventoryRequest(response: http.ServerResponse): Promise<void> {

@@ -56,6 +56,13 @@ function createCliDeps(overrides: Partial<CliDependencies> = {}) {
       ]
     }),
     serviceCommand: async () => ({ ok: true, services: [] }),
+    supervisorCommand: async (command) => ({
+      ok: true,
+      command,
+      running: command !== "stop",
+      snapshot: null,
+      issues: []
+    }),
     now: () => new Date("2026-04-05T01:00:00.000Z"),
     stdout: (chunk: string) => {
       stdout += chunk;
@@ -482,7 +489,33 @@ test("runCli stop is an alias for interrupt", async () => {
   assert.deepEqual(JSON.parse(harness.stdout()), { ok: true });
 });
 
-test("runCli status formats active agents from /api/instances", async () => {
+test("runCli lifecycle commands bypass Hub reachability", async () => {
+  const { runCli } = await meridianCliModulePromise;
+  const seen: string[] = [];
+  const harness = createCliDeps({
+    connectToHub: async () => {
+      throw new Error("lifecycle control must not require Runtime");
+    },
+    supervisorCommand: async (command) => {
+      seen.push(command);
+      return {
+        ok: true,
+        command,
+        running: command !== "stop",
+        snapshot: null,
+        issues: []
+      };
+    }
+  });
+
+  for (const command of ["start", "status", "doctor", "stop"] as const) {
+    assert.equal(await runCli([command], harness.deps), 0);
+  }
+
+  assert.deepEqual(seen, ["start", "status", "doctor", "stop"]);
+});
+
+test("runCli status --agents formats active agents from /api/instances", async () => {
   const { runCli } = await meridianCliModulePromise;
   const harness = createCliDeps();
   harness.deps.hubHttpRequest = async (method: string, route: string, body?: unknown) => {
@@ -502,7 +535,7 @@ test("runCli status formats active agents from /api/instances", async () => {
     };
   };
 
-  const exitCode = await runCli(["status"], harness.deps);
+  const exitCode = await runCli(["status", "--agents"], harness.deps);
 
   assert.equal(exitCode, 0);
   assert.deepEqual(harness.httpCalls, [{ method: "GET", route: "/api/instances", body: undefined }]);
@@ -760,7 +793,7 @@ test("runCli fails fast when the Meridian API is unreachable", async () => {
     }
   });
 
-  await expectCliError(runCli(["status"], harness.deps), 3, /Meridian API is not reachable/i);
+  await expectCliError(runCli(["status", "--agents"], harness.deps), 3, /Meridian API is not reachable/i);
   assert.deepEqual(harness.httpCalls, []);
 });
 

@@ -150,6 +150,16 @@
       });
   }
 
+  function loadSystemStatus() {
+    return fetchWithAuth("/api/system")
+      .then(function (res) {
+        return res.json().then(function (body) {
+          if (!res.ok) throw new Error(body && body.error ? body.error : ("HTTP " + res.status));
+          return body;
+        });
+      });
+  }
+
   function mintCaller(callerId, callerLabel, callerAuthority) {
     var body = { caller_id: callerId, caller_label: callerLabel };
     if (callerAuthority) {
@@ -213,6 +223,7 @@
     setFocusModeEnabled: setFocusModeEnabled,
     getCustomFilters: getCustomFilters,
     setCustomFilters: setCustomFilters,
+    loadSystemStatus: loadSystemStatus,
     loadCallers: loadCallers,
     mintCaller: mintCaller,
     rotateCaller: rotateCaller,

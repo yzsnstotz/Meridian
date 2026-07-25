@@ -15,6 +15,11 @@ import {
   type ReasoningEffort
 } from "@meridian/runtime/types";
 import { parseModelReference } from "@meridian/runtime/shared/model-reference";
+import {
+  runSupervisorControlCommand,
+  type SupervisorControlCommand,
+  type SupervisorControlResult
+} from "@meridian/supervisor";
 import { connectToHub, hubHttpRequest, setCallerIdentity, type HubConnection, type HubHttpResponse } from "./hub-connection";
 import { runServiceCommand } from "./commands/service";
 
@@ -25,15 +30,17 @@ const EXIT_UNREACHABLE = 3;
 const EXIT_NOT_FOUND = 4;
 
 const COMMANDS: Record<string, string> = {
+  start: "Start the native Meridian Runtime and Orchestrator",
   spawn: "Launch an agent instance",
   models: "List selectable models for a provider",
   runtime: "Discover runtime providers, credentials, and models",
   credentials: "Manage credential accounts",
   kill: "Terminate an agent thread",
   interrupt: "Interrupt the active run without terminating the thread",
-  stop: "Alias for interrupt",
+  stop: "Stop Meridian, or interrupt one thread when a thread id is supplied",
   list: "List running agent instances with caller info",
-  status: "List running agent instances",
+  status: "Show native Meridian process status; use --agents for agent instances",
+  doctor: "Diagnose the native Meridian supervisor",
   send: "Send a message to an agent thread",
   logs: "Retrieve agent output logs",
   history: "Retrieve conversation history entries with caller info",
@@ -57,6 +64,7 @@ export interface CliDependencies {
   hubHttpRequest: (method: string, route: string, body?: unknown) => Promise<HubHttpResponse>;
   listProviderModels: (provider: AgentType) => Promise<ProviderModelCatalogResult>;
   serviceCommand: (args: string[]) => Promise<JsonRecord>;
+  supervisorCommand: (command: SupervisorControlCommand) => Promise<SupervisorControlResult>;
   now: () => Date;
   stdout: WriteFn;
   stderr: WriteFn;
@@ -79,6 +87,7 @@ export const defaultCliDependencies: CliDependencies = {
   hubHttpRequest,
   listProviderModels: async (provider: AgentType) => defaultProviderModelCatalog.listModels(provider),
   serviceCommand: runServiceCommand,
+  supervisorCommand: runSupervisorControlCommand,
   now: () => new Date(),
   stdout: (text: string) => {
     process.stdout.write(text);
@@ -163,10 +172,19 @@ function showCommandHelp(deps: CliDependencies, command: string): void {
       hint(deps, "Usage: meridian interrupt <thread-id>");
       return;
     case "stop":
-      hint(deps, "Usage: meridian stop <thread-id>");
+      hint(deps, "Usage: meridian stop [thread-id]");
+      hint(deps, "  With no thread id, stops native Runtime and Orchestrator.");
+      hint(deps, "  With a thread id, preserves the legacy non-destructive agent interrupt alias.");
       return;
     case "status":
-      hint(deps, "Usage: meridian status");
+      hint(deps, "Usage: meridian status [--agents]");
+      hint(deps, "  --agents  List Runtime agent instances instead of supervisor processes.");
+      return;
+    case "start":
+      hint(deps, "Usage: meridian start");
+      return;
+    case "doctor":
+      hint(deps, "Usage: meridian doctor");
       return;
     case "send":
       hint(deps, "Usage: meridian send <thread-id> <message>");
@@ -745,6 +763,14 @@ async function handleService(args: string[], deps: CliDependencies): Promise<voi
   jsonOut(deps, await deps.serviceCommand(args));
 }
 
+async function handleSupervisor(
+  command: SupervisorControlCommand,
+  deps: CliDependencies
+): Promise<void> {
+  const response = await deps.supervisorCommand(command);
+  jsonOut(deps, response as unknown as JsonRecord);
+}
+
 function parseOAuthMode(raw: string | undefined): "browser" | "device" | undefined {
   if (raw === undefined) {
     return undefined;
@@ -1181,6 +1207,19 @@ export async function runCli(args: string[], deps: CliDependencies = defaultCliD
     return EXIT_SUCCESS;
   }
 
+  if (command === "start" || command === "doctor") {
+    await handleSupervisor(command, deps);
+    return EXIT_SUCCESS;
+  }
+  if (command === "stop" && commandArgs.length === 0) {
+    await handleSupervisor("stop", deps);
+    return EXIT_SUCCESS;
+  }
+  if (command === "status" && !commandArgs.includes("--agents")) {
+    await handleSupervisor("status", deps);
+    return EXIT_SUCCESS;
+  }
+
   await ensureHubReachable(deps);
 
   switch (command) {
@@ -1226,6 +1265,9 @@ export async function runCli(args: string[], deps: CliDependencies = defaultCliD
       return EXIT_SUCCESS;
     case "service":
       throw new CliError(EXIT_ERROR, "service command routing invariant violated");
+    case "start":
+    case "doctor":
+      throw new CliError(EXIT_ERROR, "supervisor command routing invariant violated");
     case "caller":
       await handleCaller(commandArgs, deps);
       return EXIT_SUCCESS;
@@ -1236,10 +1278,13 @@ export async function runCli(args: string[], deps: CliDependencies = defaultCliD
 
 async function main(): Promise<void> {
   try {
-    const callerId = "meridian-cli";
-    const callerKey = deriveBuiltinCallerKey(callerId);
-    setCallerIdentity({ caller_id: callerId, caller_key: callerKey, caller_label: "Meridian CLI" });
-    const exitCode = await runCli(process.argv.slice(2));
+    const args = process.argv.slice(2);
+    if (requiresHubCallerIdentity(args)) {
+      const callerId = "meridian-cli";
+      const callerKey = deriveBuiltinCallerKey(callerId);
+      setCallerIdentity({ caller_id: callerId, caller_key: callerKey, caller_label: "Meridian CLI" });
+    }
+    const exitCode = await runCli(args);
     process.exit(exitCode);
   } catch (error) {
     const cliError = toCliError(error);
@@ -1249,6 +1294,20 @@ async function main(): Promise<void> {
     });
     process.exit(cliError.exitCode);
   }
+}
+
+function requiresHubCallerIdentity(args: string[]): boolean {
+  const [command, ...commandArgs] = args;
+  if (command === "service" || command === "start" || command === "doctor") {
+    return false;
+  }
+  if (command === "stop" && commandArgs.length === 0) {
+    return false;
+  }
+  if (command === "status" && !commandArgs.includes("--agents")) {
+    return false;
+  }
+  return true;
 }
 
 if (require.main === module) {

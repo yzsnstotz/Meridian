@@ -81,6 +81,37 @@ test("Web Interface Server rejects unauthenticated requests", async () => {
   assert.equal(hubCallCount, 0);
 });
 
+test("Web Interface Server exposes the supervisor projection without becoming its writer", async () => {
+  const stateDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-supervisor-web-"));
+  const supervisorStatePath = path.join(stateDir, "supervisor.json");
+  const snapshot = {
+    schemaVersion: "1",
+    supervisorPid: 42,
+    generation: 3,
+    children: {
+      runtime: { status: "ready" },
+      orchestrator: { status: "ready" }
+    }
+  };
+  await fs.promises.writeFile(supervisorStatePath, JSON.stringify(snapshot));
+
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/system?token=secret-token`);
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { ok: true, supervisor: snapshot });
+      assert.equal(
+        await fs.promises.readFile(supervisorStatePath, "utf8"),
+        JSON.stringify(snapshot)
+      );
+    }, {
+      supervisorStatePath
+    });
+  } finally {
+    await fs.promises.rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test("Web Interface Server returns instance JSON for an authorized request", async () => {
   const seenMessages: Array<Record<string, unknown>> = [];
 
