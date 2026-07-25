@@ -83,6 +83,62 @@ describe("resume-worker tool", () => {
     await expect(fs.readFile(harness.planPath, "utf8")).resolves.toContain("| 🔄 | 2 | N-04 | Resume Worker Tool |");
   });
 
+  it("allows forced retry to recover a blocked worker whose recorded thread has lost its bootstrap key", async () => {
+    const harness = await createHarness();
+    const state = harness.lifecycleStore.load();
+    state.workers["N-04"] = {
+      ...state.workers["N-04"]!,
+      status: "blocked",
+      hub_result: {
+        trace_id: "11111111-1111-4111-8111-111111111111",
+        thread_id: "worker-thread-456",
+        source: "codex",
+        status: "success",
+        run_state: "completed",
+        content: "<<<MERIDIAN-STATUS>>>\nworker_id: N-04\noutcome: blocked\nnotes: environment repaired; retry needed\n<<<END>>>",
+        attachments: [],
+        timestamp: "2026-04-05T00:05:00.000Z"
+      }
+    };
+    harness.lifecycleStore.save(state);
+    const killThread = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "bootstrap_key_missing"
+    });
+
+    const result = await executeResumeWorkerAction(
+      {
+        planPath: harness.planPath,
+        workerId: "N-04",
+        action: "retry",
+        force: true
+      },
+      {
+        lifecycleStoreFactory: () => harness.lifecycleStore,
+        killThread
+      }
+    );
+
+    expect(killThread).toHaveBeenCalledWith("worker-thread-456");
+    expect(result).toMatchObject({
+      worker: "N-04",
+      action: "retry",
+      status: "pending",
+      thread_id: "worker-thread-456",
+      thread_killed: false,
+      retry_count: 0
+    });
+    expect(result.kill_error).toBe("bootstrap_key_missing");
+    expect(result.prior_failure_reason).toContain("outcome: blocked");
+    expect(harness.lifecycleStore.load().workers["N-04"]).toMatchObject({
+      status: "pending",
+      thread_id: "worker-thread-456",
+      hub_result: null,
+      retry_count: 0
+    });
+    await expect(fs.readFile(harness.planPath, "utf8")).resolves.toContain("| ⬜ | 2 | N-04 | Resume Worker Tool |");
+  });
+
   it("treats a missing recorded thread as already stopped before retry", async () => {
     const harness = await createHarness();
 

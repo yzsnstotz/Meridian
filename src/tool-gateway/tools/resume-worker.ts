@@ -179,7 +179,11 @@ export async function executeResumeWorkerAction(
       if (isMissingThreadEvidence(killError)) {
         threadKilled = true;
         killError = undefined;
-      } else if (args.action === "force-complete" && args.force === true && isBootstrapKeyMissingEvidence(killError)) {
+      } else if (
+        (args.action === "force-complete" || args.action === "retry")
+        && args.force === true
+        && isBootstrapKeyMissingEvidence(killError)
+      ) {
         threadKilled = false;
       } else {
         throw new Error(
