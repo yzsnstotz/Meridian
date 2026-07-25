@@ -1,0 +1,6 @@
+{
+  "caller_id": "ads-prod",
+  "auth_method": "hmac",
+  "hmac_key_env": "MUMU_PROVISIONER_HMAC_KEY",
+  "allowed_project_ids": ["mumu", "mumu2"]
+}

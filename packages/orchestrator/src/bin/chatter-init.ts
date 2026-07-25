@@ -1,0 +1,149 @@
+#!/usr/bin/env node
+import * as readline from "node:readline/promises";
+import { stdin, stdout } from "node:process";
+import { ChatterRoleConfigSchema, type ChatterRoleConfig, type ChatterTemplateName } from "../types";
+
+export interface ChatterInitAnswers {
+  rolesApiUrl: string;          // e.g., http://localhost:7701
+  chatterId: string;
+  memoryFolder: string;
+  template: ChatterTemplateName | "custom";
+  manifestPath?: string;
+  allowedModes: ("stateless" | "session")[];
+  skillAllowlist: string[];
+  // Free-form: meridian-hub owns the accepted kinds. The CLI wizard
+  // suggests "claude-code" but does not constrain the typed value, so
+  // operators can target codex/claude/cursor/gemini as hub support evolves.
+  llmAgentKind: string;
+  llmModel?: string;
+  userReplyChannelSocket: string;
+  userReplyChannelChatId: string;
+  // Optional managed-credential binding; if set, meridian-hub will spawn this
+  // Chatter's agent process under the specified CODEX_HOME (multi-codex
+  // credentials, per meridian PR #78 + meridian-roles PR #244).
+  credentialId?: string;
+}
+
+export interface ChatterCreateBody {
+  role_type: "chatter";
+  thread_id: string;
+  config: ChatterRoleConfig;
+}
+
+/**
+ * Pure function: maps wizard answers to a validated create-body. Throws on
+ * schema violation so the wizard surface can re-prompt.
+ */
+export function buildChatterCreateBody(answers: ChatterInitAnswers): ChatterCreateBody {
+  const baseConfig: Record<string, unknown> = {
+    chatter_id: answers.chatterId,
+    memory_folder: answers.memoryFolder,
+    allowed_modes: answers.allowedModes,
+    skill_allowlist: answers.skillAllowlist,
+    llm_agent_kind: answers.llmAgentKind,
+    user_reply_channel: {
+      channel: "socket",
+      chat_id: answers.userReplyChannelChatId,
+      socket_path: answers.userReplyChannelSocket
+    }
+  };
+
+  if (answers.llmModel && answers.llmModel.trim().length > 0) {
+    baseConfig.llm_model = answers.llmModel.trim();
+  }
+
+  if (answers.credentialId && answers.credentialId.trim().length > 0) {
+    baseConfig.credential_id = answers.credentialId.trim();
+  }
+
+  if (answers.template === "custom") {
+    if (!answers.manifestPath) {
+      throw new Error("manifest_path is required when template is 'custom'");
+    }
+    baseConfig.manifest_path = answers.manifestPath;
+  } else {
+    baseConfig.template = answers.template;
+  }
+
+  const parsed = ChatterRoleConfigSchema.parse(baseConfig);
+  return {
+    role_type: "chatter",
+    thread_id: `chatter-${answers.chatterId}`,
+    config: parsed
+  };
+}
+
+async function ask(rl: readline.Interface, prompt: string, fallback?: string): Promise<string> {
+  const suffix = fallback !== undefined ? ` [${fallback}]` : "";
+  const answer = (await rl.question(`${prompt}${suffix}: `)).trim();
+  if (answer.length === 0 && fallback !== undefined) return fallback;
+  return answer;
+}
+
+async function runWizard(): Promise<void> {
+  const rl = readline.createInterface({ input: stdin, output: stdout });
+  try {
+    stdout.write("\n=== Chatter init wizard ===\n");
+    const rolesApiUrl = await ask(rl, "meridian-roles API URL", "http://localhost:7701");
+    const chatterId = await ask(rl, "chatter_id (slug, e.g. tenant-a)");
+    const memoryFolder = await ask(rl, "memory_folder (absolute path)");
+    const templateRaw = await ask(rl, "template (flat-log | topic-tree | indexed-kb | custom)", "flat-log");
+    const template = templateRaw as ChatterInitAnswers["template"];
+    const manifestPath = template === "custom"
+      ? await ask(rl, "manifest_path (absolute path)")
+      : undefined;
+    const allowedModesRaw = await ask(rl, "allowed_modes (comma: stateless,session)", "stateless,session");
+    const allowedModes = allowedModesRaw.split(",").map((s) => s.trim()).filter(Boolean) as ("stateless" | "session")[];
+    const skillAllowlistRaw = await ask(rl, "skill_allowlist (comma, blank for none)", "");
+    const skillAllowlist = skillAllowlistRaw.length === 0
+      ? []
+      : skillAllowlistRaw.split(",").map((s) => s.trim()).filter(Boolean);
+    const userReplyChannelSocket = await ask(rl, "user_reply_channel socket_path", "/tmp/ads.sock");
+    const userReplyChannelChatId = await ask(rl, "user_reply_channel chat_id", `ads:${chatterId}`);
+    const llmAgentKind = await ask(
+      rl,
+      "llm_agent_kind (any kind meridian-hub supports — e.g. claude-code, codex, claude, gemini)",
+      "claude-code"
+    );
+    const llmModel = await ask(rl, "llm_model (blank to inherit the provider default)", "");
+    const credentialId = await ask(rl, "credential_id (blank for ambient credentials)", "");
+
+    const body = buildChatterCreateBody({
+      rolesApiUrl,
+      chatterId,
+      memoryFolder,
+      template,
+      manifestPath,
+      allowedModes,
+      skillAllowlist,
+      llmAgentKind,
+      llmModel: llmModel.length > 0 ? llmModel : undefined,
+      userReplyChannelSocket,
+      userReplyChannelChatId,
+      credentialId: credentialId.length > 0 ? credentialId : undefined
+    });
+
+    stdout.write("\nPOST body:\n");
+    stdout.write(`${JSON.stringify(body, null, 2)}\n\n`);
+    stdout.write(`Send it with:\n  curl -X POST ${rolesApiUrl}/api/role \\\n    -H 'Content-Type: application/json' \\\n    -d '${JSON.stringify(body)}'\n`);
+  } finally {
+    rl.close();
+  }
+}
+
+// Run the wizard when invoked directly (not when imported by tests).
+const invokedDirectly = (() => {
+  try {
+    const entry = process.argv[1] ?? "";
+    return entry.endsWith("chatter-init.ts") || entry.endsWith("chatter-init.js");
+  } catch {
+    return false;
+  }
+})();
+
+if (invokedDirectly) {
+  runWizard().catch((e) => {
+    stdout.write(`Error: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(1);
+  });
+}

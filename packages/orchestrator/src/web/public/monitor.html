@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>System Monitor - meridian-roles</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script defer src="/app.js"></script>
+    <script defer src="/monitor.js"></script>
+  </head>
+  <body data-page="system-monitor">
+    <nav class="global-nav">
+      <a class="nav-brand" href="/">
+        <span class="nav-brand-mark">M</span>
+        meridian-roles
+      </a>
+      <div class="nav-tabs">
+        <a class="nav-tab" href="/?tab=dispatchers">Dispatchers<span id="nav-dispatcher-count" class="nav-tab-count" hidden>0</span></a>
+        <a class="nav-tab" href="/?tab=processes">Processes<span id="nav-process-count" class="nav-tab-count" hidden>0</span></a>
+        <a class="nav-tab active" href="/monitor">System Monitor<span id="nav-monitor-red-dot" class="nav-tab-leak-dot" hidden title="system monitor has a red indicator"></span></a>
+        <a class="nav-tab" href="/?tab=schedulers">Schedulers<span id="nav-scheduler-count" class="nav-tab-count" hidden>0</span></a>
+        <a class="nav-tab" href="/?tab=roles">Roles<span id="nav-role-count" class="nav-tab-count" hidden>0</span></a>
+      </div>
+    </nav>
+
+    <main class="shell monitor-shell">
+      <section class="panel monitor-header-panel">
+        <div class="panel-heading monitor-heading">
+          <div>
+            <p class="eyebrow">Host Diagnostics</p>
+            <h1>System Monitor</h1>
+          </div>
+          <div class="monitor-poll-meta">
+            <span id="monitor-last-poll">last poll: --</span>
+            <span id="monitor-stale-badge" class="monitor-stale-badge" hidden>stale</span>
+            <span id="monitor-spinner" class="monitor-spinner" aria-hidden="true"></span>
+          </div>
+        </div>
+        <div id="monitor-alarm-banner" class="monitor-alarm-banner" role="status" aria-live="polite" hidden></div>
+      </section>
+
+      <section id="monitor-indicator-grid" class="monitor-indicator-grid" aria-label="System monitor indicators"></section>
+      <p id="monitor-feedback" class="feedback" role="status" aria-live="polite"></p>
+    </main>
+  </body>
+</html>

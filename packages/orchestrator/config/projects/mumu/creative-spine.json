@@ -1,0 +1,158 @@
+{
+  "short_drama": {
+    "canonical_artifacts": [
+      {
+        "key": "full_dialogue",
+        "source": "fragment",
+        "label": "正式台词",
+        "role": "canonical_performance",
+        "description": "The episode dialogue the user can film or perform."
+      }
+    ],
+    "planning_artifacts": [
+      {
+        "key": "episodes",
+        "source": "outline",
+        "label": "剧情大纲",
+        "role": "planning",
+        "description": "Episode hook, summary, and cliff planning."
+      }
+    ],
+    "derived_artifacts": [
+      {
+        "key": "scene_outline",
+        "source": "fragment",
+        "label": "场景摘要",
+        "role": "derived_production",
+        "description": "A scene navigation view derived from full_dialogue."
+      }
+    ],
+    "support_artifacts": [
+      {
+        "key": "free_form",
+        "source": "fragment",
+        "label": "辅助资料",
+        "role": "support",
+        "description": "Free-form supporting notes that are not a competing script."
+      }
+    ]
+  },
+  "lianxian": {
+    "canonical_artifacts": [
+      {
+        "key": "full_oral_script",
+        "source": "fragment",
+        "label": "连线对话稿",
+        "role": "canonical_performance",
+        "description": "The equal-weight host-caller dialogue script with both 主播 and 连线用户 turns."
+      }
+    ],
+    "planning_artifacts": [
+      {
+        "key": "segments",
+        "source": "outline",
+        "label": "段落节奏",
+        "role": "planning",
+        "description": "Segment order, purpose, and rhythm navigation."
+      }
+    ],
+    "derived_artifacts": [],
+    "support_artifacts": [
+      {
+        "key": "key_line",
+        "source": "outline",
+        "label": "共情金句",
+        "role": "support",
+        "description": "Memorable lines that support navigation and emphasis."
+      }
+    ]
+  },
+  "douyin": {
+    "canonical_artifacts": [
+      {
+        "key": "full_script",
+        "source": "fragment",
+        "label": "照读口播",
+        "role": "canonical_performance",
+        "description": "The whole-video read-aloud script."
+      }
+    ],
+    "planning_artifacts": [],
+    "derived_artifacts": [
+      {
+        "key": "visual_beats",
+        "source": "outline",
+        "label": "拍摄分镜",
+        "role": "derived_production",
+        "description": "Timed filming beats derived from the whole-video script."
+      },
+      {
+        "key": "shot_list",
+        "source": "fragment",
+        "label": "拍摄分镜",
+        "role": "derived_production",
+        "description": "A whole-record filming guide derived from full_script."
+      }
+    ],
+    "support_artifacts": [
+      {
+        "key": "caption",
+        "source": "fragment",
+        "label": "辅助字幕",
+        "role": "support",
+        "description": "Caption or copy support that must not compete with full_script."
+      }
+    ]
+  },
+  "variety": {
+    "canonical_artifacts": [
+      {
+        "key": "run_of_show",
+        "source": "fragment",
+        "label": "流程台本",
+        "role": "canonical_order",
+        "description": "The canonical event order and timing surface."
+      },
+      {
+        "key": "host_script",
+        "source": "fragment",
+        "label": "主持照读稿",
+        "role": "canonical_performance",
+        "description": "The canonical script for host speech."
+      }
+    ],
+    "planning_artifacts": [
+      {
+        "key": "segments",
+        "source": "outline",
+        "label": "环节流程",
+        "role": "planning",
+        "description": "Segment-level planning and navigation."
+      }
+    ],
+    "derived_artifacts": [],
+    "support_artifacts": [
+      {
+        "key": "game_rules",
+        "source": "fragment",
+        "label": "游戏规则",
+        "role": "support",
+        "description": "Rules support for the show."
+      },
+      {
+        "key": "guest_brief",
+        "source": "fragment",
+        "label": "嘉宾提示",
+        "role": "support",
+        "description": "Guest-facing support material."
+      },
+      {
+        "key": "edit_notes",
+        "source": "fragment",
+        "label": "剪辑提示",
+        "role": "support",
+        "description": "Post-production support notes."
+      }
+    ]
+  }
+}

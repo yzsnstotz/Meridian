@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Create Chatter — meridian-roles</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Create Chatter</h1>
+    <p><a href="/">← Dashboard</a></p>
+  </header>
+  <main>
+    <form id="chatter-create-form">
+      <fieldset>
+        <legend>Identity</legend>
+        <label>
+          chatter_id (slug, e.g. tenant-a)
+          <input name="chatter_id" required pattern="[A-Za-z0-9][A-Za-z0-9_-]*" />
+        </label>
+        <label>
+          thread_id (default: chatter-&lt;chatter_id&gt;)
+          <input name="thread_id" placeholder="auto" />
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Memory</legend>
+        <label>
+          memory_folder (absolute path)
+          <input name="memory_folder" required pattern="/.*" placeholder="/abs/path/to/memory" />
+        </label>
+        <label>
+          Schema source
+          <select name="schema_source">
+            <option value="template">Template (paved path)</option>
+            <option value="manifest">Custom manifest file</option>
+          </select>
+        </label>
+        <label data-when-schema="template">
+          template
+          <select name="template">
+            <option value="flat-log">flat-log</option>
+            <option value="topic-tree">topic-tree</option>
+            <option value="indexed-kb">indexed-kb</option>
+          </select>
+        </label>
+        <label data-when-schema="manifest" hidden>
+          manifest_path (absolute)
+          <input name="manifest_path" placeholder="/abs/path/to/manifest.json" />
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Policy</legend>
+        <label>
+          allowed_modes
+          <label><input type="checkbox" name="allowed_modes" value="stateless" checked /> stateless</label>
+          <label><input type="checkbox" name="allowed_modes" value="session" checked /> session</label>
+        </label>
+        <label>
+          skill_allowlist (comma-separated, blank for none — dispatch_coding_job is always allowed)
+          <input name="skill_allowlist" placeholder="web_search,scheduler_trigger" />
+        </label>
+        <label>
+          llm_agent_kind (populated from meridian-hub's supported kinds)
+          <select name="llm_agent_kind" id="chatter-llm-agent-kind">
+            <option value="" disabled selected>Loading…</option>
+          </select>
+        </label>
+        <label>
+          llm_model (optional; filtered by the selected kind)
+          <select name="llm_model" id="chatter-llm-model">
+            <option value="">Use provider default</option>
+          </select>
+          <small id="chatter-llm-model-hint" class="field-hint muted">
+            Model options follow whatever meridian-hub publishes for the chosen kind.
+          </small>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Multi-codex credential (optional)</legend>
+        <label>
+          credential_id (sourced from meridian-hub's <code>GET /api/credentials</code>)
+          <select name="credential_id" id="chatter-credential-id" data-credential-select>
+            <option value="">Use default codex login (~/.codex)</option>
+          </select>
+          <small class="field-hint muted">
+            Revoked credentials are filtered out. Leave on the default to inherit
+            ambient credentials at spawn time.
+          </small>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Reply channel (where replies go — typically ADS)</legend>
+        <label>
+          chat_id
+          <input name="user_reply_channel_chat_id" required placeholder="ads:tenant-a" />
+        </label>
+        <label>
+          socket_path
+          <input name="user_reply_channel_socket_path" required placeholder="/tmp/ads.sock" />
+        </label>
+      </fieldset>
+
+      <button type="submit">Create Chatter</button>
+    </form>
+
+    <section id="result" hidden>
+      <h2>Result</h2>
+      <pre id="result-body"></pre>
+    </section>
+  </main>
+
+  <script>
+    const form = document.getElementById("chatter-create-form");
+    const result = document.getElementById("result");
+    const resultBody = document.getElementById("result-body");
+    const kindSelect = document.getElementById("chatter-llm-agent-kind");
+    const modelSelect = document.getElementById("chatter-llm-model");
+    const credentialSelect = document.getElementById("chatter-credential-id");
+
+    function syncSchemaVisibility() {
+      const choice = form.elements.schema_source.value;
+      for (const el of document.querySelectorAll("[data-when-schema]")) {
+        el.hidden = el.dataset.whenSchema !== choice;
+      }
+    }
+    form.elements.schema_source.addEventListener("change", syncSchemaVisibility);
+    syncSchemaVisibility();
+
+    /* The agent-kinds catalog is owned by meridian-roles (which sources it
+       from meridian-hub's supported set). We keep the per-kind model list
+       alongside the kind so a single fetch populates both dropdowns and
+       the model dropdown can stay filtered as the operator changes kind. */
+    let agentKindsCatalog = [];
+
+    async function loadAgentKinds() {
+      try {
+        const res = await fetch("/api/agent-kinds");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = await res.json();
+        agentKindsCatalog = Array.isArray(body?.agent_kinds) ? body.agent_kinds : [];
+      } catch (err) {
+        console.warn("Failed to load /api/agent-kinds:", err);
+        agentKindsCatalog = [];
+      }
+
+      kindSelect.innerHTML = "";
+      if (agentKindsCatalog.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.disabled = true;
+        opt.selected = true;
+        opt.textContent = "Failed to load — refresh to retry";
+        kindSelect.appendChild(opt);
+        repopulateModelOptions(null);
+        return;
+      }
+
+      for (const entry of agentKindsCatalog) {
+        const opt = document.createElement("option");
+        opt.value = entry.kind;
+        opt.textContent = entry.label || entry.kind;
+        kindSelect.appendChild(opt);
+      }
+
+      // Default selection: claude-code if present (chatter's historical
+      // pinned value), otherwise first entry.
+      const preferred = agentKindsCatalog.find((e) => e.kind === "claude-code")?.kind
+        ?? agentKindsCatalog[0].kind;
+      kindSelect.value = preferred;
+      repopulateModelOptions(preferred);
+    }
+
+    function repopulateModelOptions(kind) {
+      const entry = agentKindsCatalog.find((e) => e.kind === kind);
+      const models = entry?.models ?? [];
+      modelSelect.innerHTML = "";
+      const defaultOpt = document.createElement("option");
+      defaultOpt.value = "";
+      defaultOpt.textContent = "Use provider default";
+      modelSelect.appendChild(defaultOpt);
+      for (const model of models) {
+        const opt = document.createElement("option");
+        opt.value = model;
+        opt.textContent = model;
+        modelSelect.appendChild(opt);
+      }
+    }
+
+    kindSelect.addEventListener("change", () => repopulateModelOptions(kindSelect.value));
+
+    /* Credential dropdown mirrors loadCredentialSelectors() in app.js
+       (single-page form, no shared script). Revoked entries are filtered
+       so operators can't pick a dead credential. Default option ("") maps
+       to omission of credential_id at submit time. */
+    async function loadCredentialOptions() {
+      let credentials = [];
+      try {
+        const res = await fetch("/api/credentials");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = await res.json();
+        credentials = Array.isArray(body?.credentials) ? body.credentials : [];
+      } catch (err) {
+        console.warn("Failed to load /api/credentials:", err);
+        return;
+      }
+
+      const usable = credentials.filter((c) => c && c.revoked_at === null);
+      // Preserve the leading default option; rebuild the rest.
+      Array.from(credentialSelect.querySelectorAll("option")).forEach((opt, idx) => {
+        if (idx === 0 && opt.value === "") return;
+        opt.remove();
+      });
+      for (const cred of usable) {
+        const opt = document.createElement("option");
+        opt.value = cred.credential_id;
+        const label = typeof cred.credential_label === "string" && cred.credential_label.trim().length > 0
+          ? cred.credential_label
+          : cred.credential_id;
+        opt.textContent = cred.is_default ? `${label} (default)` : label;
+        credentialSelect.appendChild(opt);
+      }
+    }
+
+    void loadAgentKinds();
+    void loadCredentialOptions();
+
+    function buildBody(formData) {
+      const chatterId = formData.get("chatter_id");
+      const threadId = formData.get("thread_id") || `chatter-${chatterId}`;
+      const schemaSource = formData.get("schema_source");
+      const allowedModes = formData.getAll("allowed_modes");
+      const skillAllowlistRaw = (formData.get("skill_allowlist") || "").toString().trim();
+      const skillAllowlist = skillAllowlistRaw.length === 0
+        ? []
+        : skillAllowlistRaw.split(",").map(s => s.trim()).filter(Boolean);
+
+      const credentialId = (formData.get("credential_id") || "").toString().trim();
+      const llmModel = (formData.get("llm_model") || "").toString().trim();
+      const config = {
+        chatter_id: chatterId,
+        memory_folder: formData.get("memory_folder"),
+        allowed_modes: allowedModes,
+        skill_allowlist: skillAllowlist,
+        llm_agent_kind: formData.get("llm_agent_kind") || "claude-code",
+        user_reply_channel: {
+          channel: "socket",
+          chat_id: formData.get("user_reply_channel_chat_id"),
+          socket_path: formData.get("user_reply_channel_socket_path")
+        }
+      };
+      if (llmModel.length > 0) {
+        config.llm_model = llmModel;
+      }
+      if (credentialId.length > 0) {
+        config.credential_id = credentialId;
+      }
+      if (schemaSource === "manifest") {
+        config.manifest_path = formData.get("manifest_path");
+      } else {
+        config.template = formData.get("template");
+      }
+      return { role_type: "chatter", thread_id: threadId, config };
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const body = buildBody(new FormData(form));
+      try {
+        const res = await fetch("/api/role", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const text = await res.text();
+        result.hidden = false;
+        resultBody.textContent = `HTTP ${res.status}\n\n${text}`;
+      } catch (err) {
+        result.hidden = false;
+        resultBody.textContent = `Network error: ${err.message}`;
+      }
+    });
+  </script>
+</body>
+</html>

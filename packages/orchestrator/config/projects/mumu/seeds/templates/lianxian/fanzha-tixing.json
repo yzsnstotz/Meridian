@@ -1,0 +1,16 @@
+{
+  "id": "fanzha-tixing",
+  "title": "网恋借钱反诈型",
+  "overall_arc": "从连线人被网恋对象频繁借钱、要求保密切入，先稳住羞耻感，再把甜言蜜语、资金流和身份漏洞拆开核验，帮助主播在不指责连线人的前提下完成风险提醒和止损引导。",
+  "typical_duration_min": 18,
+  "segment_pattern": [
+    { "no": 1, "type": "hook", "duration_min": 2, "purpose": "用“认识二十天，他让我帮他周转八千”快速建立警觉。" },
+    { "no": 2, "type": "buildup", "duration_min": 4, "purpose": "补齐认识渠道、转账次数、对方身份证明和不让告诉朋友的理由。" },
+    { "no": 3, "type": "conflict", "duration_min": 5, "purpose": "逐项拆出诈骗高危信号：急迫借钱、情感绑定、拒绝视频、诱导保密。" },
+    { "no": 4, "type": "empathy_line", "duration_min": 2, "purpose": "先说“被骗不是笨，是对方训练过你的信任”，降低连线人防御。" },
+    { "no": 5, "type": "interaction", "duration_min": 3, "purpose": "让观众补充见过的网恋借钱话术，形成弹幕提醒池。" },
+    { "no": 6, "type": "closing", "duration_min": 2, "purpose": "给出停止转账、保存证据、找可信朋友复核和必要时报案的步骤。" }
+  ],
+  "audience_note": "适合情感场和生活提醒场交叉，能把围观情绪转成实用风险教育。",
+  "notes": "语气要保护连线人，避免羞辱受害者；不替代法律或警方判断。"
+}

@@ -1,0 +1,16 @@
+{
+  "id": "qianren-fanhui",
+  "title": "前任反悔型",
+  "overall_arc": "从前任分手后回头求复合切入，先接住连线人的委屈和摇摆，再拆分对方是真后悔还是怕失去控制，最后把选择权还给连线人，并引导观众讨论边界感。",
+  "typical_duration_min": 18,
+  "segment_pattern": [
+    { "no": 1, "type": "hook", "duration_min": 2, "purpose": "三句话甩出前任回头的核心冲突，让直播间立刻站队。" },
+    { "no": 2, "type": "buildup", "duration_min": 4, "purpose": "补齐分手原因、对方回头方式和连线人的真实顾虑。" },
+    { "no": 3, "type": "conflict", "duration_min": 5, "purpose": "把复合诱惑和旧伤害并置，逼出最关键的判断点。" },
+    { "no": 4, "type": "empathy_line", "duration_min": 3, "purpose": "落一两句共情金句，替连线人说出不敢说的委屈。" },
+    { "no": 5, "type": "interaction", "duration_min": 3, "purpose": "让观众投票或留言：这是后悔，还是失控后的挽回。" },
+    { "no": 6, "type": "closing", "duration_min": 1, "purpose": "收束成可执行建议，不替连线人做决定。" }
+  ],
+  "audience_note": "适合女性情感直播间，尤其是刚经历分手、复合拉扯的观众。",
+  "notes": "避免简单劝分或劝和，重点是让主播显得清醒又能共情。"
+}

@@ -1,0 +1,733 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  isPmResolverExhaustedForManualIntervention,
+  resolveEligibleServiceContinueWorkers,
+  resolveExhaustedPmResolverWorkers,
+  resolveManualInterventionWorker,
+  resolveServiceContinueWorker
+} from "../service-continuation";
+import type { DispatchThreadStateV2, PmResolverLifecycleState } from "../../../types";
+
+describe("service continuation", () => {
+  it("treats hyphen dependency placeholders as no dependencies", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "⬜", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "-" },
+      { status: "⬜", batch: "1", worker: "N-01", model: "CODEX-HIGH", depends_on: "PRE-FLIGHT" }
+    ], createLifecycleState())).toBe("PRE-FLIGHT");
+  });
+
+  it("returns multiple independent eligible workers for parallel continuation", () => {
+    const rows = [
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+      { status: "⬜", batch: "1", worker: "R-01", model: "CODEX", depends_on: "PRE-FLIGHT" },
+      { status: "⬜", batch: "1", worker: "R-02", model: "CODEX", depends_on: "PRE-FLIGHT" },
+      { status: "⬜", batch: "2", worker: "R-03", model: "CODEX", depends_on: "R-01" }
+    ];
+
+    expect(resolveEligibleServiceContinueWorkers(rows, createLifecycleState(), { limit: 3 }))
+      .toEqual(["R-01", "R-02"]);
+    expect(resolveServiceContinueWorker(rows, createLifecycleState())).toBe("R-01");
+  });
+
+  it("limits parallel eligible workers in plan order", () => {
+    const rows = [
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+      { status: "⬜", batch: "1", worker: "R-01", model: "CODEX", depends_on: "PRE-FLIGHT" },
+      { status: "⬜", batch: "1", worker: "R-02", model: "CODEX", depends_on: "PRE-FLIGHT" },
+      { status: "⬜", batch: "1", worker: "R-03", model: "CODEX", depends_on: "PRE-FLIGHT" }
+    ];
+
+    expect(resolveEligibleServiceContinueWorkers(rows, createLifecycleState(), { limit: 2 }))
+      .toEqual(["R-01", "R-02"]);
+  });
+
+  it("keeps PRE-FLIGHT exclusive in parallel continuation", () => {
+    const rows = [
+      { status: "⬜", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+      { status: "⬜", batch: "1", worker: "R-01", model: "CODEX", depends_on: "—" }
+    ];
+
+    expect(resolveEligibleServiceContinueWorkers(rows, createLifecycleState(), { limit: 2 }))
+      .toEqual(["PRE-FLIGHT"]);
+  });
+
+  it("resolves prefix wildcard dependencies such as all E-XX", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "1", worker: "E-01", model: "CODEX", depends_on: "PRE-FLIGHT" },
+      { status: "✅", batch: "1", worker: "E-02", model: "CODEX", depends_on: "PRE-FLIGHT" },
+      { status: "⬜", batch: "Ω", worker: "SUMMARY-GATE", model: "OPUS", depends_on: "all E-XX" }
+    ], createLifecycleState())).toBe("SUMMARY-GATE");
+  });
+
+  it("resolves implementation-worker dependency groups", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+      { status: "✅", batch: "1", worker: "N-01", model: "CODEX", depends_on: "PRE-FLIGHT" },
+      { status: "✅", batch: "1", worker: "R-01", model: "CODEX", depends_on: "PRE-FLIGHT" },
+      { status: "✅", batch: "2", worker: "V-01", model: "HUMAN", depends_on: "R-01" },
+      { status: "⬜", batch: "Ω", worker: "DELTA-CHECK", model: "CODEX", depends_on: "all impl workers" }
+    ], createLifecycleState())).toBe("DELTA-CHECK");
+  });
+
+  it("resolves decorated worker ids plus batch and PM decision group dependencies", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "Ω", worker: "🟠 DELTA-CHECK", model: "CODEX", depends_on: "N-01–N-03" },
+      { status: "✅", batch: "Ω+1=7", worker: "C-01", model: "CODEX", depends_on: "🟠 DELTA-CHECK" },
+      { status: "✅", batch: "Ω+2=9", worker: "C-02", model: "CODEX", depends_on: "🟠 DELTA-CHECK" },
+      { status: "✅", batch: "8", worker: "PM-DECIDE-1", model: "PM", depends_on: "🟠 DELTA-CHECK" },
+      { status: "✅", batch: "6", worker: "V-01", model: "HUMAN", depends_on: "R-01" },
+      { status: "✅", batch: "6", worker: "V-02", model: "HUMAN", depends_on: "R-02" },
+      {
+        status: "⬜",
+        batch: "Ω=10",
+        worker: "PR-REVIEW",
+        model: "CODEX",
+        depends_on: "DELTA-CHECK, all Ω+1/Ω+2 workers, all PM-DECIDE-N, V-01, V-02"
+      }
+    ], createLifecycleState())).toBe("PR-REVIEW");
+  });
+
+  it("resolves numeric batch dependency groups such as All Batch 1-3", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "✅", batch: "1", worker: "R-01", model: "CODEX-HIGH", depends_on: "PRE-FLIGHT" },
+      { status: "✅", batch: "1", worker: "R-02", model: "CODEX-HIGH", depends_on: "PRE-FLIGHT" },
+      { status: "✅", batch: "2", worker: "N-06", model: "CODEX-XHIGH", depends_on: "R-01" },
+      { status: "✅", batch: "3", worker: "N-10", model: "CODEX-HIGH", depends_on: "R-01, R-02" },
+      { status: "⬜", batch: "4", worker: "BATCH-4-GATE", model: "CODEX-HIGH", depends_on: "All Batch 1–3" }
+    ], createLifecycleState())).toBe("BATCH-4-GATE");
+  });
+
+  it("resolves suffixed range dependency clauses such as BATCH-1..BATCH-6 GATEs", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "1", worker: "BATCH-1-GATE", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "✅", batch: "2", worker: "BATCH-2-GATE", model: "CODEX-HIGH", depends_on: "BATCH-1-GATE" },
+      { status: "✅", batch: "3", worker: "BATCH-3-GATE", model: "CODEX-HIGH", depends_on: "BATCH-2-GATE" },
+      { status: "✅", batch: "4", worker: "BATCH-4-GATE", model: "CODEX-HIGH", depends_on: "BATCH-3-GATE" },
+      { status: "✅", batch: "5", worker: "BATCH-5-GATE", model: "CODEX-HIGH", depends_on: "BATCH-4-GATE" },
+      { status: "✅", batch: "6", worker: "BATCH-6-GATE", model: "CODEX-HIGH", depends_on: "BATCH-5-GATE" },
+      {
+        status: "⬜",
+        batch: "7",
+        worker: "BATCH-7-GATE",
+        model: "CODEX-HIGH",
+        depends_on: "BATCH-1..BATCH-6 GATEs"
+      }
+    ], createLifecycleState())).toBe("BATCH-7-GATE");
+  });
+
+  it("blocks suffixed range dependency clauses while any range member is pending", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "1", worker: "BATCH-1-GATE", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "✅", batch: "2", worker: "BATCH-2-GATE", model: "CODEX-HIGH", depends_on: "BATCH-1-GATE" },
+      { status: "⬜", batch: "3", worker: "BATCH-3-GATE", model: "CODEX-HIGH", depends_on: "BATCH-2-GATE" },
+      { status: "⬜", batch: "4", worker: "BATCH-4-GATE", model: "CODEX-HIGH", depends_on: "BATCH-3-GATE" },
+      { status: "⬜", batch: "5", worker: "BATCH-5-GATE", model: "CODEX-HIGH", depends_on: "BATCH-4-GATE" },
+      { status: "⬜", batch: "6", worker: "BATCH-6-GATE", model: "CODEX-HIGH", depends_on: "BATCH-5-GATE" },
+      {
+        status: "⬜",
+        batch: "7",
+        worker: "BATCH-7-GATE",
+        model: "CODEX-HIGH",
+        depends_on: "BATCH-1..BATCH-6 GATEs"
+      }
+    ], createLifecycleState())).toBe("BATCH-3-GATE");
+  });
+
+  it("resolves all above dependencies against rows before the current worker", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "✅", batch: "4", worker: "V-12-B", model: "HUMAN", depends_on: "PRE-FLIGHT" },
+      { status: "✅", batch: "4", worker: "R-13", model: "CODEX-HIGH", depends_on: "V-12-B" },
+      { status: "⬜", batch: "Ω", worker: "SUMMARY-GATE", model: "CODEX-XHIGH", depends_on: "All above" }
+    ], createLifecycleState())).toBe("SUMMARY-GATE");
+  });
+
+  it("resolves ALL-PRIOR dependencies against rows before the current worker", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "✅", batch: "5", worker: "V-02-C", model: "CODEX-XHIGH", depends_on: "PRE-FLIGHT" },
+      { status: "⬜", batch: "∞", worker: "POST-FLIGHT", model: "CODEX-HIGH", depends_on: "ALL-PRIOR" }
+    ], createLifecycleState())).toBe("POST-FLIGHT");
+  });
+
+  it("does not resolve all above when any earlier row is non-terminal", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "⬜", batch: "4", worker: "V-12-B", model: "HUMAN", depends_on: "PRE-FLIGHT" },
+      { status: "⬜", batch: "Ω", worker: "SUMMARY-GATE", model: "CODEX-XHIGH", depends_on: "All above" }
+    ], createLifecycleState())).toBeNull();
+  });
+
+  it("does not auto-continue rows whose notes explicitly mark them blocked", () => {
+    expect(resolveServiceContinueWorker([
+      {
+        status: "⬜",
+        batch: "1",
+        worker: "R-02",
+        model: "CODEX",
+        depends_on: "PRE-FLIGHT",
+        notes: "**⏳ BLOCKED: PM Blocker Resolution #1 must be confirmed first**"
+      }
+    ], createLifecycleState())).toBeNull();
+  });
+
+  it("does not re-dispatch a worker whose plan shows 🔄 but lifecycle is completed", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+      { status: "🔄", batch: "1", worker: "R-01", model: "CODEX", depends_on: "PRE-FLIGHT" }
+    ], createLifecycleState({
+      "R-01": {
+        status: "completed",
+        thread_id: "worker-thread-r01"
+      }
+    }))).toBeNull();
+  });
+
+  it("does not re-dispatch a worker whose plan shows 🔄 but lifecycle is skipped", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+      { status: "🔄", batch: "1", worker: "R-01", model: "CODEX", depends_on: "PRE-FLIGHT" }
+    ], createLifecycleState({
+      "R-01": {
+        status: "skipped",
+        thread_id: "worker-thread-r01"
+      }
+    }))).toBeNull();
+  });
+
+  it("ignores blocked running rows when selecting the next automatic continuation target", () => {
+    expect(resolveServiceContinueWorker([
+      {
+        status: "✅",
+        batch: "1",
+        worker: "R-01",
+        model: "CODEX",
+        depends_on: "PRE-FLIGHT",
+        notes: "Completed."
+      },
+      {
+        status: "🔄",
+        batch: "1",
+        worker: "R-03",
+        model: "CODEX",
+        depends_on: "PRE-FLIGHT",
+        notes: "**⏳ BLOCKED: PM Blocker Resolution #2 must be confirmed first**"
+      },
+      {
+        status: "⬜",
+        batch: "2",
+        worker: "E-01R",
+        model: "CODEX",
+        depends_on: "R-01",
+        notes: "Ready to rerun."
+      }
+    ], createLifecycleState({
+      "R-01": {
+        status: "completed"
+      }
+    }))).toBe("E-01R");
+  });
+
+  it("does not auto-continue abandoned rows once the retry threshold is reached", () => {
+    expect(resolveServiceContinueWorker([
+      { status: "⚠️ ABANDONED", batch: "1", worker: "R-03", model: "CODEX", depends_on: "PRE-FLIGHT" }
+    ], createLifecycleState({
+      "R-03": {
+        status: "abandoned",
+        retry_count: 2
+      }
+    }))).toBeNull();
+  });
+
+  it("pauses instead of auto-retrying failed rows with blocking hub results", () => {
+    const rows = [
+      { status: "❌", batch: "0", worker: "N-01", model: "CODEX-HIGH", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "N-01": {
+        status: "failed",
+        retry_count: 0,
+        hub_result: createHubResult("Status: BLOCKED - required @phoenix namespace is absent from the extracted asar tree.")
+      }
+    });
+
+    expect(resolveServiceContinueWorker(rows, lifecycleState)).toBeNull();
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBe("N-01");
+  });
+
+  it("does not retry or route around a blocked PRE-FLIGHT worker", () => {
+    const rows = [
+      { status: "❌", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "⬜", batch: "1", worker: "N-01", model: "CODEX-XHIGH", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "PRE-FLIGHT": {
+        status: "blocked",
+        retry_count: 0,
+        hub_result: createHubResult("PRE-FLIGHT is still **BLOCKED**.")
+      }
+    });
+
+    expect(resolveServiceContinueWorker(rows, lifecycleState)).toBeNull();
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBe("PRE-FLIGHT");
+  });
+
+  it("does not resume a stale downstream running row while PRE-FLIGHT is blocked", () => {
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "🔄", batch: "1", worker: "N-01", model: "CODEX-XHIGH", depends_on: "—" }
+    ];
+
+    expect(resolveServiceContinueWorker(rows, createLifecycleState())).toBeNull();
+    expect(resolveManualInterventionWorker(rows, createLifecycleState())).toBe("PRE-FLIGHT");
+  });
+
+  it("can resume PRE-FLIGHT itself when its plan row is stale running", () => {
+    const rows = [
+      { status: "🔄", batch: "0", worker: "PRE-FLIGHT", model: "CODEX-HIGH", depends_on: "—" },
+      { status: "⬜", batch: "1", worker: "N-01", model: "CODEX-XHIGH", depends_on: "—" }
+    ];
+
+    expect(resolveServiceContinueWorker(rows, createLifecycleState())).toBe("PRE-FLIGHT");
+  });
+
+  // Regression: a worker whose original reply emitted outcome:blocked but
+  // whose validator subsequently approved it (lifecycle status=completed)
+  // must NOT trigger manual intervention even though the plan markdown row
+  // still shows ⛔ BLOCKED. The plan can lag behind the lifecycle; the
+  // lifecycle is authoritative for terminal-success and validator-owned
+  // states. See PR #128/#129 marker protocol — BATCH-2-GATE incident.
+  it("does not flag manual intervention when lifecycle is completed despite a stale ⛔ BLOCKED plan row", () => {
+    const rows = [
+      {
+        status: "⛔ BLOCKED",
+        batch: "2",
+        worker: "BATCH-2-GATE",
+        model: "CODEX-HIGH",
+        depends_on: "—"
+      }
+    ];
+    const lifecycleState = createLifecycleState({
+      "BATCH-2-GATE": {
+        status: "completed",
+        retry_count: 0,
+        hub_result: createHubResult(
+          "Working on the gate.\n<<<MERIDIAN-STATUS>>>\nworker_id: BATCH-2-GATE\nrole: worker\noutcome: blocked\nreport_path: /tmp/report.md\nnotes: original blocker since resolved by validator\n<<<END>>>"
+        )
+      }
+    });
+
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
+  });
+
+  it("treats completed lifecycle dependencies as satisfied when the plan row is stale blocked", () => {
+    const rows = [
+      {
+        status: "⛔ BLOCKED",
+        batch: "3",
+        worker: "BATCH-3-GATE",
+        model: "CODEX-XHIGH",
+        depends_on: "N-14,N-15"
+      },
+      {
+        status: "⬜",
+        batch: "7",
+        worker: "N-40",
+        model: "CODEX-XHIGH",
+        depends_on: "BATCH-3-GATE"
+      }
+    ];
+    const lifecycleState = createLifecycleState({
+      "BATCH-3-GATE": {
+        status: "completed",
+        hub_result: createHubResult("outcome: blocked before PM resolved it")
+      }
+    });
+
+    expect(resolveServiceContinueWorker(rows, lifecycleState)).toBe("N-40");
+  });
+
+  it("does not flag manual intervention when lifecycle is awaiting_validation despite a stale ⛔ BLOCKED plan row", () => {
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "1", worker: "N-12", model: "CODEX", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "N-12": { status: "awaiting_validation" }
+    });
+
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
+  });
+
+  it("does not flag manual intervention when lifecycle is fix_requested despite a stale ⛔ BLOCKED plan row", () => {
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "1", worker: "N-12", model: "CODEX", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "N-12": { status: "fix_requested" }
+    });
+
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
+  });
+
+  it("does not flag manual intervention when lifecycle is skipped despite a stale ⛔ BLOCKED plan row", () => {
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "1", worker: "N-12", model: "CODEX", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "N-12": { status: "skipped" }
+    });
+
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
+  });
+
+  it("still flags manual intervention when lifecycle status is blocked even if plan row says ⛔ BLOCKED", () => {
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "1", worker: "N-12", model: "CODEX", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "N-12": {
+        status: "blocked",
+        hub_result: createHubResult("Status: BLOCKED — needs PM input.")
+      }
+    });
+
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBe("N-12");
+  });
+
+  it("still flags manual intervention when no lifecycle entry exists and plan says ⛔ BLOCKED", () => {
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "1", worker: "N-12", model: "CODEX", depends_on: "—" }
+    ];
+
+    expect(resolveManualInterventionWorker(rows, createLifecycleState())).toBe("N-12");
+  });
+
+  it("does not flag manual intervention for a validator-decided terminal-failed worker (max cycles exhausted)", () => {
+    // Mirrors agent-dispatcher-9fd97803 / M-01: validator scored 0.5 across
+    // all 3 cycles, transitionToValidationFailed("max_cycles_exhausted")
+    // stamped status=failed, but resolveDisplayStatus still renders the
+    // plan row as ⛔ BLOCKED because the synthesized output_artifact
+    // hub_result contains block signals from earlier attempts.
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "4", worker: "M-01", model: "CODEX", depends_on: "—" },
+      { status: "🔍", batch: "4", worker: "M-02", model: "CODEX", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "M-01": {
+        status: "failed",
+        hub_result: createHubResult("Outcome: BLOCKED\n\n— stale block signal from earlier attempt"),
+        validation: {
+          current_cycle: 3,
+          max_fix_cycles: 3,
+          validator_thread_id: null,
+          last_score: 0.5,
+          last_feedback: "still missing the runtime",
+          history: [
+            { cycle: 1, score: 0.5, feedback: "f1", validator_thread_id: "v1", timestamp: "2026-05-09T23:52:09Z" },
+            { cycle: 2, score: 0.5, feedback: "f2", validator_thread_id: "v2", timestamp: "2026-05-10T00:22:50Z" },
+            { cycle: 3, score: 0.5, feedback: "f3", validator_thread_id: "v3", timestamp: "2026-05-10T01:01:13Z" }
+          ],
+          spawn_failure_count: 0,
+          last_spawn_failure_at: null
+        }
+      },
+      "M-02": {
+        status: "awaiting_validation"
+      }
+    });
+
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
+  });
+
+  it("does not auto-retry a validator-decided failed worker after max cycles are exhausted", () => {
+    const rows = [
+      { status: "❌", batch: "4", worker: "R-07", model: "CODEX", depends_on: "R-03,R-04,R-05,R-06" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "R-07": {
+        status: "failed",
+        retry_count: 0,
+        validation: {
+          current_cycle: 18,
+          max_fix_cycles: 5,
+          validator_thread_id: null,
+          last_score: 0.5,
+          last_feedback: "same blockers after repeated validation",
+          history: Array.from({ length: 18 }, (_, index) => ({
+            cycle: index + 1,
+            score: 0.5,
+            feedback: `feedback ${index + 1}`,
+            validator_thread_id: `validator-${index + 1}`,
+            timestamp: "2026-06-16T11:12:11.852Z"
+          })),
+          spawn_failure_count: 0,
+          last_spawn_failure_at: null
+        }
+      }
+    });
+
+    expect(resolveServiceContinueWorker(rows, lifecycleState)).toBeNull();
+    expect(resolveEligibleServiceContinueWorkers(rows, lifecycleState, { limit: 2 })).toEqual([]);
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
+  });
+
+  it("does not implicitly continue a stale running row after validator max cycles are exhausted", () => {
+    const rows = [
+      { status: "🔄", batch: "4", worker: "R-07", model: "CODEX", depends_on: "R-03,R-04,R-05,R-06" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "R-07": {
+        status: "failed",
+        retry_count: 0,
+        validation: {
+          current_cycle: 5,
+          max_fix_cycles: 5,
+          validator_thread_id: null,
+          last_score: 0.5,
+          last_feedback: "max cycles exhausted",
+          history: [],
+          spawn_failure_count: 0,
+          last_spawn_failure_at: null
+        }
+      }
+    });
+
+    expect(resolveServiceContinueWorker(rows, lifecycleState)).toBeNull();
+  });
+
+  it("does not auto-retry an abandoned worker after validator max cycles are exhausted", () => {
+    const rows = [
+      { status: "⚠️ ABANDONED", batch: "4", worker: "R-07", model: "CODEX", depends_on: "R-03,R-04,R-05,R-06" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "R-07": {
+        status: "abandoned",
+        retry_count: 0,
+        validation: {
+          current_cycle: 18,
+          max_fix_cycles: 5,
+          validator_thread_id: null,
+          last_score: 0.5,
+          last_feedback: "max cycles exhausted",
+          history: [],
+          spawn_failure_count: 0,
+          last_spawn_failure_at: null
+        }
+      }
+    });
+
+    expect(resolveServiceContinueWorker(rows, lifecycleState)).toBeNull();
+    expect(resolveEligibleServiceContinueWorkers(rows, lifecycleState, { limit: 2 })).toEqual([]);
+  });
+
+  it("still flags manual intervention for a failed worker that has not exhausted max cycles", () => {
+    // Worker reached `failed` via a non-validator path (e.g. transport
+    // error, hit_limit, outcome:failed marker) before the validator could
+    // decide. PM might still help — keep current behavior.
+    const rows = [
+      { status: "⛔ BLOCKED", batch: "1", worker: "N-44", model: "CODEX", depends_on: "—" }
+    ];
+    const lifecycleState = createLifecycleState({
+      "N-44": {
+        status: "failed",
+        hub_result: createHubResult("Outcome: FAILED — transient subprocess crash"),
+        validation: {
+          current_cycle: 0,
+          max_fix_cycles: 3,
+          validator_thread_id: null,
+          last_score: null,
+          last_feedback: null,
+          history: [],
+          spawn_failure_count: 0,
+          last_spawn_failure_at: null
+        }
+      }
+    });
+
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBe("N-44");
+  });
+
+  describe("PM-resolver exhausted skip (watchdog self-loop guard)", () => {
+    // Reproduces agent-dispatcher-f0953280 / R-04 self-loop: PM resolver
+    // thread for the same manual_intervention_required issue terminated
+    // (failed, or completed-and-escalated), the per-issue dedup blocks
+    // respawn, and the watchdog used to re-flag the worker every interval
+    // forever — 347K log lines over 12 days.
+
+    const buildResolver = (overrides: Partial<PmResolverLifecycleState> = {}): PmResolverLifecycleState => ({
+      thread_id: "pm-thread-x",
+      status: "failed",
+      started_at: "2026-05-31T11:49:15.079Z",
+      last_seen_at: "2026-05-31T11:57:08.305Z",
+      agent_type: "codex",
+      model_id: null,
+      mode: "bridge",
+      auto_approve: true,
+      issue: {
+        status: "manual_intervention_required",
+        worker_id: "R-04",
+        message: "manual intervention required",
+        error: null,
+        source: "watchdog"
+      },
+      result: null,
+      error: null,
+      transport_error: null,
+      marker_outcome: null,
+      marker_pm_action: null,
+      ...overrides
+    });
+
+    it("does not flag manual intervention when latest PM resolver thread is failed", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "R-01" }
+      ];
+      const state = createLifecycleState({ "R-04": { status: "blocked" } });
+      state.pm_resolvers = [buildResolver({ status: "failed" })];
+
+      expect(resolveManualInterventionWorker(rows, state)).toBeNull();
+      expect(isPmResolverExhaustedForManualIntervention(state, "R-04")).toBe(true);
+      expect(resolveExhaustedPmResolverWorkers(rows, state)).toEqual(["R-04"]);
+    });
+
+    it("does not flag manual intervention when latest PM resolver completed with marker_outcome=escalated", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "R-01" }
+      ];
+      const state = createLifecycleState({ "R-04": { status: "blocked" } });
+      state.pm_resolvers = [buildResolver({ status: "completed", marker_outcome: "escalated", marker_pm_action: "escalate_human" })];
+
+      expect(resolveManualInterventionWorker(rows, state)).toBeNull();
+      expect(isPmResolverExhaustedForManualIntervention(state, "R-04")).toBe(true);
+    });
+
+    it("still flags manual intervention when the latest PM resolver is still running", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "R-01" }
+      ];
+      const state = createLifecycleState({ "R-04": { status: "blocked" } });
+      state.pm_resolvers = [buildResolver({ status: "running" })];
+
+      expect(resolveManualInterventionWorker(rows, state)).toBe("R-04");
+      expect(isPmResolverExhaustedForManualIntervention(state, "R-04")).toBe(false);
+      expect(resolveExhaustedPmResolverWorkers(rows, state)).toEqual([]);
+    });
+
+    it("still flags manual intervention when the resolver completed with marker_outcome=resolved (a different issue, then re-blocked)", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "R-01" }
+      ];
+      const state = createLifecycleState({ "R-04": { status: "blocked" } });
+      state.pm_resolvers = [buildResolver({ status: "completed", marker_outcome: "resolved", marker_pm_action: "retry" })];
+
+      expect(resolveManualInterventionWorker(rows, state)).toBe("R-04");
+      expect(isPmResolverExhaustedForManualIntervention(state, "R-04")).toBe(false);
+    });
+
+    it("uses the most recent PM resolver (by last_seen_at) when multiple exist for the same worker", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "R-01" }
+      ];
+      const state = createLifecycleState({ "R-04": { status: "blocked" } });
+      state.pm_resolvers = [
+        buildResolver({ thread_id: "pm-thread-old", status: "failed", last_seen_at: "2026-05-30T08:00:00.000Z" }),
+        buildResolver({ thread_id: "pm-thread-new", status: "running", last_seen_at: "2026-05-31T15:00:00.000Z" })
+      ];
+
+      expect(isPmResolverExhaustedForManualIntervention(state, "R-04")).toBe(false);
+      expect(resolveManualInterventionWorker(rows, state)).toBe("R-04");
+    });
+
+    it("ignores PM resolvers whose issue.worker_id does not match", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "R-01" }
+      ];
+      const state = createLifecycleState({ "R-04": { status: "blocked" } });
+      state.pm_resolvers = [
+        buildResolver({ status: "failed", issue: { status: "manual_intervention_required", worker_id: "R-02", message: null, error: null, source: "watchdog" } })
+      ];
+
+      expect(isPmResolverExhaustedForManualIntervention(state, "R-04")).toBe(false);
+      expect(resolveManualInterventionWorker(rows, state)).toBe("R-04");
+    });
+
+    it("ignores PM resolvers whose issue.status differs (a separate issue category)", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "R-01" }
+      ];
+      const state = createLifecycleState({ "R-04": { status: "blocked" } });
+      state.pm_resolvers = [
+        buildResolver({ status: "failed", issue: { status: "still_blocked", worker_id: "R-04", message: null, error: null, source: "dispatcher" } })
+      ];
+
+      expect(isPmResolverExhaustedForManualIntervention(state, "R-04")).toBe(false);
+      expect(resolveManualInterventionWorker(rows, state)).toBe("R-04");
+    });
+
+    it("resolveExhaustedPmResolverWorkers returns all exhausted workers across rows", () => {
+      const rows = [
+        { status: "⛔ BLOCKED", batch: "1", worker: "R-04", model: "CODEX-XHIGH", depends_on: "—" },
+        { status: "⛔ BLOCKED", batch: "1", worker: "M-09", model: "CODEX-XHIGH", depends_on: "—" },
+        { status: "⛔ BLOCKED", batch: "1", worker: "N-21", model: "CODEX-XHIGH", depends_on: "—" }
+      ];
+      const state = createLifecycleState({
+        "R-04": { status: "blocked" },
+        "M-09": { status: "blocked" },
+        "N-21": { status: "blocked" }
+      });
+      state.pm_resolvers = [
+        buildResolver({ thread_id: "pm-r04", status: "failed", issue: { status: "manual_intervention_required", worker_id: "R-04", message: null, error: null, source: "watchdog" } }),
+        buildResolver({ thread_id: "pm-m09", status: "completed", marker_outcome: "escalated", issue: { status: "manual_intervention_required", worker_id: "M-09", message: null, error: null, source: "watchdog" } }),
+        buildResolver({ thread_id: "pm-n21", status: "running", issue: { status: "manual_intervention_required", worker_id: "N-21", message: null, error: null, source: "watchdog" } })
+      ];
+
+      expect(resolveExhaustedPmResolverWorkers(rows, state).sort()).toEqual(["M-09", "R-04"]);
+    });
+  });
+});
+
+function createHubResult(content: string): NonNullable<DispatchThreadStateV2["workers"][string]["hub_result"]> {
+  return {
+    trace_id: "trace-n-01",
+    thread_id: "n-01-thread",
+    source: "codex",
+    status: "success",
+    run_state: "completed",
+    content,
+    attachments: [],
+    timestamp: "2026-04-03T12:01:00.000Z"
+  };
+}
+
+function createLifecycleState(
+  workerOverrides: Record<string, Partial<DispatchThreadStateV2["workers"][string]>> = {}
+): DispatchThreadStateV2 {
+  return {
+    version: 2,
+    dispatcher: {
+      thread_id: null,
+      started_at: null,
+      status: "pending"
+    },
+    workers: Object.fromEntries(
+      Object.entries(workerOverrides).map(([workerId, overrides]) => ([
+        workerId,
+        {
+          thread_id: `${workerId.toLowerCase()}-thread`,
+          trace_id: null,
+          started_at: "2026-04-03T12:00:00.000Z",
+          last_seen_at: "2026-04-03T12:00:00.000Z",
+          status: "pending",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0,
+          ...overrides
+        }
+      ]))
+    ),
+    last_reconciled_at: null
+  };
+}

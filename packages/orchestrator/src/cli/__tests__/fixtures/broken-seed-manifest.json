@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "layers": "flat",
+  "index": "none",
+  "bindings": {},
+  "record_schemas": {
+    "template_short_drama": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "episode_count": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["id", "episode_count"],
+      "additionalProperties": false
+    }
+  }
+}
