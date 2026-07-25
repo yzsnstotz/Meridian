@@ -8,7 +8,7 @@
   },
   "description": "Meridian role-layer service — BaseRole framework, Dispatcher, prompt hot-reload, and independent GUI",
   "engines": {
-    "node": "^22.0.0"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -27,9 +27,9 @@
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
-    "@typescript-eslint/eslint-plugin": "^8.46.1",
-    "@typescript-eslint/parser": "^8.46.1",
-    "eslint": "^9.38.0",
+    "@typescript-eslint/eslint-plugin": "^8.65.0",
+    "@typescript-eslint/parser": "^8.65.0",
+    "eslint": "^10.8.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
