@@ -2248,6 +2248,33 @@ interface BuildChildEnvLogger {
   warn: (obj: Record<string, unknown>, message: string) => void;
 }
 
+// Standard system CA bundle locations, in preference order. codex is a Rust
+// binary that verifies TLS with rustls-native-certs; when it is spawned under a
+// launchd/PM2 daemon (e.g. calling-hub) the process cannot read the macOS login
+// Keychain, so the native trust store comes up empty and every
+// https://chatgpt.com handshake fails with `invalid peer certificate:
+// UnknownIssuer`. Handing codex an explicit CA bundle via SSL_CERT_FILE makes
+// verification work regardless of Keychain access in the daemon context.
+const CA_BUNDLE_CANDIDATES: readonly string[] = [
+  "/etc/ssl/cert.pem", // macOS system bundle
+  "/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu
+  "/etc/pki/tls/certs/ca-bundle.crt", // RHEL/CentOS/Fedora
+  "/opt/homebrew/etc/ca-certificates/cert.pem" // Homebrew
+];
+
+function resolveSystemCaBundle(): string | null {
+  for (const candidate of CA_BUNDLE_CANDIDATES) {
+    try {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    } catch {
+      // ignore and try the next candidate
+    }
+  }
+  return null;
+}
+
 /**
  * Module-level helper that constructs the child env for a spawned agent process.
  *
@@ -2291,6 +2318,16 @@ export function buildChildEnvImpl(
     // any directory injection (env_overrides may still carry API keys etc.).
     if (resolvedCredential.provider !== "claude") {
       env.CODEX_HOME = resolvedCredential.codex_home;
+      // Give the spawned codex process an explicit CA bundle so TLS
+      // verification survives daemon-context Keychain restrictions (see
+      // CA_BUNDLE_CANDIDATES above). Respect any SSL_CERT_FILE already present
+      // in the ambient env or supplied via credential env_overrides below.
+      if (!env.SSL_CERT_FILE) {
+        const caBundle = resolveSystemCaBundle();
+        if (caBundle) {
+          env.SSL_CERT_FILE = caBundle;
+        }
+      }
     }
     for (const [k, v] of Object.entries(resolvedCredential.env_overrides)) {
       const ambient = baseEnv[k];
