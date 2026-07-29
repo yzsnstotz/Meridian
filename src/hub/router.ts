@@ -4312,7 +4312,15 @@ export class HubRouter {
 
     const maxAttempts = config.AGENT_REPLY_WAIT_MAX_ATTEMPTS;
     const delayMs = config.AGENT_REPLY_WAIT_DELAY_MS;
-    const maxUnchangedSnapshotPolls = 3;
+    // A run is only declared "timeout" after this many consecutive polls where
+    // the agent's terminal snapshot is unchanged AND getClientRunActivity()
+    // reports "inactive". The original 3 was far too aggressive: heavy codex
+    // workers go quiet for long stretches during cargo/npm builds and thinking
+    // (no new terminal snapshot, activity probe reads "inactive"), producing
+    // false "hub may be overloaded" run-handoff failures that orphan a
+    // still-working worker. Default raised to 30; override via
+    // HUB_MAX_UNCHANGED_SNAPSHOT_POLLS.
+    const maxUnchangedSnapshotPolls = Number(process.env.HUB_MAX_UNCHANGED_SNAPSHOT_POLLS) || 30;
     let fallbackCandidate: string | null = null;
     let fallbackTail: string | null = null;
     let stablePolls = 0;
