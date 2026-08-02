@@ -4,7 +4,7 @@ import {
   wrapHubMessage,
   type CallerIdentityWithKey
 } from "../shared/caller-wire";
-import { sendIpcMessage, sendIpcRequest, IPC_RUN_REQUEST_TIMEOUT_MS } from "../shared/ipc";
+import { sendIpcMessage, sendIpcRequest, getIpcRunRequestTimeoutMs } from "../shared/ipc";
 import { HubResultSchema, type HubMessage, type HubResult } from "../types";
 
 const interfaceLog = createLogger("interface");
@@ -78,7 +78,7 @@ export class IpcSender {
   }
 
   async requestRun(message: HubMessage): Promise<HubResult> {
-    return this.request(message, IPC_RUN_REQUEST_TIMEOUT_MS);
+    return this.request(message, getIpcRunRequestTimeoutMs());
   }
 
   private wrap(message: HubMessage): ReturnType<typeof wrapHubMessage<HubMessage>> {
