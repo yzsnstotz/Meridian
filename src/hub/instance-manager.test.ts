@@ -232,6 +232,12 @@ test("describeSpawnInvocation exposes the codex-exec command for streaming-bridg
     "--json",
     "-c",
     'model_reasoning_effort="high"',
+    "-c",
+    "skills.include_instructions=false",
+    "-c",
+    "features.memories=false",
+    "-c",
+    "features.multi_agent=false",
     "--model",
     "gpt-5.4",
     "--dangerously-bypass-approvals-and-sandbox",
@@ -239,7 +245,7 @@ test("describeSpawnInvocation exposes the codex-exec command for streaming-bridg
   ]);
   assert.equal(
     invocation.provider_append,
-    'codex exec --json -c model_reasoning_effort="high" --model gpt-5.4 --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check'
+    'codex exec --json -c model_reasoning_effort="high" -c skills.include_instructions=false -c features.memories=false -c features.multi_agent=false --model gpt-5.4 --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check'
   );
 
   await manager.kill(threadId);
@@ -391,6 +397,12 @@ test("spawn forwards selected model and reasoning effort into the streaming-brid
     "--json",
     "-c",
     'model_reasoning_effort="xhigh"',
+    "-c",
+    "skills.include_instructions=false",
+    "-c",
+    "features.memories=false",
+    "-c",
+    "features.multi_agent=false",
     "--model",
     "gpt-5.4",
     "--dangerously-bypass-approvals-and-sandbox",
@@ -478,6 +490,12 @@ test("spawn stores integration_profile and sandbox_mode on the registry instance
     "codex",
     "exec",
     "--json",
+    "-c",
+    "skills.include_instructions=false",
+    "-c",
+    "features.memories=false",
+    "-c",
+    "features.multi_agent=false",
     "--sandbox",
     "read-only",
     "--skip-git-repo-check"
