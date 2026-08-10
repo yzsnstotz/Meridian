@@ -701,13 +701,38 @@ export class HubRouter {
 
   async initialize(): Promise<void> {
     const persistedState = loadPersistedHubState(this.statePath, this.now().toISOString());
-    const result = await this.instanceManager.rehydrateFromState(persistedState);
-    this.rehydrateLocalState(persistedState);
+
+    // The caller registry MUST be constructed before rehydrate. Both of the
+    // statements below can observe hub state while `this.callerRegistry` is
+    // still null, and neither fails loudly when it is:
+    //
+    //   1. rehydrateFromState() ends with notifyStateChange(), wired in the
+    //      constructor to persistStateSafely(). That serializes
+    //      `this.callerRegistry?.list() ?? []` — so with the registry still
+    //      null the optional chain quietly writes `callers: []` over every
+    //      persisted caller record in state.json. The final persist below used
+    //      to put them back, making the wipe invisible in the happy path; a
+    //      SIGKILL inside that window (pm2 kill_timeout during a slow
+    //      rehydrate is a documented occurrence — see the parallel-probe note
+    //      in rehydrateFromState) loses every caller key permanently, and the
+    //      next hub generation rejects every caller with `caller_required`.
+    //
+    //   2. rehydrateFromState is awaited, so the event loop is open across it.
+    //      A request landing in that window reaches requireCallerRegistry(),
+    //      whose test-only fallback bootstraps an EMPTY registry — which then
+    //      answers auth for real callers, and is overwritten a moment later by
+    //      the assignment here, discarding anything minted meanwhile.
+    //
+    // Constructing first closes both. It is safe to hoist: the constructor
+    // reads only `persistedState`, which is already fully loaded above, and
+    // takes no dependency on rehydrated instance state.
     this.callerRegistry = new CallerRegistry({
       initialRecords: persistedState.callers ?? [],
       persist: () => this.persistStateSafely(),
       now: this.now
     });
+    const result = await this.instanceManager.rehydrateFromState(persistedState);
+    this.rehydrateLocalState(persistedState);
     this.persistStateSafely();
     this.log.info(
       {
