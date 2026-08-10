@@ -16,7 +16,7 @@
     "start:interface": "tsx src/interface/index.ts",
     "start:monitor": "tsx src/monitor/index.ts",
     "start:web": "tsx src/web/server.ts",
-    "test": "TELEGRAM_BOT_TOKEN=123456789:test_token ALLOWED_USER_IDS=123456789 MERIDIAN_DISABLE_WEB_AUTOSTART=true node --test --test-force-exit --import tsx src/**/*.test.ts",
+    "test": "TELEGRAM_BOT_TOKEN=123456789:test_token ALLOWED_USER_IDS=123456789 MERIDIAN_DISABLE_WEB_AUTOSTART=true MERIDIAN_RUNTIME_CONFIG=/dev/null/meridian-runtime-absent.json node --test --test-force-exit --import tsx src/**/*.test.ts",
     "test:integration": "node --test --import tsx 'tests/integration/**/*.test.ts'",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint . --ext .ts",

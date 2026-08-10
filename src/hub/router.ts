@@ -18,7 +18,7 @@ import { createGeminiStreamParser } from "../shared/stream-parsers/gemini";
 import { streamFromSpawn, type OutputDelta } from "../shared/stream-adapter";
 import { resolveTelegramDetailRecord } from "./result-sender";
 import { AgentAPIClient } from "../shared/agentapi-client";
-import { sendIpcRequest } from "../shared/ipc";
+import { sendIpcRequest, getRuntimeTunable } from "../shared/ipc";
 import { buildWebGuiUrl, tryBuildGuiInlineKeyboard } from "../shared/telegram-controls";
 import { parseModelReference } from "../shared/model-reference";
 import {
@@ -4318,9 +4318,37 @@ export class HubRouter {
     // workers go quiet for long stretches during cargo/npm builds and thinking
     // (no new terminal snapshot, activity probe reads "inactive"), producing
     // false "hub may be overloaded" run-handoff failures that orphan a
-    // still-working worker. Default raised to 30; override via
-    // HUB_MAX_UNCHANGED_SNAPSHOT_POLLS.
-    const maxUnchangedSnapshotPolls = Number(process.env.HUB_MAX_UNCHANGED_SNAPSHOT_POLLS) || 30;
+    // still-working worker. Default raised to 30.
+    //
+    // Runtime-settable so a round that is being orphaned right now can be
+    // rescued WITHOUT restarting the hub (a restart would itself disrupt every
+    // in-flight run):
+    //   1. HUB_MAX_UNCHANGED_SNAPSHOT_POLLS          (env; needs a restart)
+    //   2. "hubMaxUnchangedSnapshotPolls" in the runtime config file
+    //      (MERIDIAN_RUNTIME_CONFIG, default ~/.meridian/runtime.json)
+    //   3. 30
+    //
+    // Read once per waitForAgentReply rather than once per poll: the value is
+    // the ceiling for THIS wait, so re-reading mid-wait would let the threshold
+    // move under an already-accumulated unchangedSnapshotPolls counter. A file
+    // edit therefore takes effect on the next run request, not the current one.
+    // Keeping it out of the loop also keeps the accessor's read+parse off the
+    // poll path.
+    //
+    // The threshold is in polls, not wallclock. One poll is
+    // AGENT_REPLY_WAIT_DELAY_MS (default 500ms) plus a getMessages() and a
+    // getStatus() round-trip to agentapi, so the real wall depends on how
+    // loaded that worker is; the total wait is bounded by
+    // AGENT_REPLY_WAIT_MAX_ATTEMPTS (default 600) regardless. Raising this
+    // trades "detect a genuinely dead worker early" for "do not guillotine a
+    // worker that is quietly doing a long build" — a cargo link, a large
+    // transfer or tool provisioning emits no new terminal snapshot and probes
+    // as "inactive" for minutes at a time.
+    const maxUnchangedSnapshotPolls = getRuntimeTunable(
+      "HUB_MAX_UNCHANGED_SNAPSHOT_POLLS",
+      "hubMaxUnchangedSnapshotPolls",
+      30
+    );
     let fallbackCandidate: string | null = null;
     let fallbackTail: string | null = null;
     let stablePolls = 0;
