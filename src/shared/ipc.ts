@@ -68,6 +68,43 @@ function timeoutFromRuntimeConfig(): number | null {
   return value;
 }
 
+/**
+ * Generic runtime-config accessor so hub knobs can be retuned WITHOUT a restart.
+ *
+ * Resolution order, evaluated PER CALL:
+ *   1. process.env[envVar]                  (needs a restart to change)
+ *   2. `configKey` in the runtime config file
+ *      (MERIDIAN_RUNTIME_CONFIG, default ~/.meridian/runtime.json)
+ *      -> edit the file, the next call picks it up immediately
+ *   3. `fallback`
+ *
+ * Invalid, non-numeric or non-positive values are ignored and fall through, so
+ * a malformed env var or a corrupt/missing config file can never disable the
+ * knob — it degrades to the compiled-in default.
+ *
+ * Deliberately NOT cached. The mtime-keyed cache used by
+ * timeoutFromRuntimeConfig() memoizes exactly one key and cannot be reused for
+ * an arbitrary `configKey` without turning into a per-key map. Callers are
+ * expected to read a tunable once per operation (see waitForAgentReply, which
+ * hoists the read out of its poll loop — one read+parse per run request, not
+ * per poll), so the syscall cost is noise next to the work being tuned. If a caller
+ * ever needs this on a hot path, cache at the call site rather than adding
+ * hidden staleness here: "edit the file, next read picks it up" is the whole
+ * point of this accessor.
+ */
+export function getRuntimeTunable(envVar: string, configKey: string, fallback: number): number {
+  const fromEnv = positiveNumber(process.env[envVar]);
+  if (fromEnv !== null) return fromEnv;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(runtimeConfigPath(), "utf8")) as Record<string, unknown>;
+    const fromFile = positiveNumber(parsed?.[configKey]);
+    if (fromFile !== null) return fromFile;
+  } catch {
+    // Missing or malformed config file: fall through to the default.
+  }
+  return fallback;
+}
+
 export function getIpcRunRequestTimeoutMs(): number {
   return (
     positiveNumber(process.env.MERIDIAN_IPC_RUN_TIMEOUT_MS) ??
