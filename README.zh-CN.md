@@ -95,8 +95,8 @@ Meridian 将日常 Agent 控制与更高层的任务编排分开，同时保留�
 
 > **不需要另外检出 Hub 或 Roles 仓库。** 原 Hub 能力已经进入
 > `@meridian/runtime`，Roles 已经进入 `@meridian/orchestrator`。目前仍出现的
-> `meridian-roles` 等旧名称只用于兼容既有 Service Identity、命令行 Binary
-> 和状态迁移路径。
+> `meridian-roles` 等旧名称属于现有界面标签或兼容边界，指向的仍是上述集成组件，
+> 并不代表需要单独安装。
 
 ## 快速开始
 
