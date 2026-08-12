@@ -6,7 +6,7 @@ dist/
 bin/agentapi
 .context/
 .meridian/state/
-docs/
+packages/*/.meridian/state/
 skills/
 Meridian-roles/
 meridian-roles/
