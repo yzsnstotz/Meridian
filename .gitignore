@@ -7,7 +7,6 @@ bin/agentapi
 .context/
 .meridian/state/
 packages/*/.meridian/state/
-docs/
 skills/
 Meridian-roles/
 meridian-roles/

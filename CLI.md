@@ -11,7 +11,7 @@ usage text and operator hints.
 cd /path/to/Meridian
 npm install
 npm run build
-npm link
+npm link --workspace @meridian/cli
 ```
 
 After linking, verify the command is available:
@@ -29,30 +29,30 @@ meridian --help
 
 ## Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Success |
-| `1` | General error |
-| `2` | Invalid arguments |
-| `3` | Meridian service unreachable |
-| `4` | Target thread not found |
+| Code | Meaning                      |
+| ---- | ---------------------------- |
+| `0`  | Success                      |
+| `1`  | General error                |
+| `2`  | Invalid arguments            |
+| `3`  | Meridian service unreachable |
+| `4`  | Target thread not found      |
 
 ## Environment
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `MERIDIAN_SOCKET` | platform runtime directory | CLI socket fallback when HTTP is unavailable |
-| `MERIDIAN_HTTP` | `http://localhost:3000` | CLI HTTP endpoint for Meridian web API |
-| `AGENT_WORKDIR` | user home | Default workdir for spawned agents and initial root for GUI repo picking |
-| `HUB_SOCKET_PATH` | platform runtime directory | Meridian hub socket path used by the service |
-| `WEB_GUI_PORT` | `3000` | Web API / GUI port |
-| `WEB_GUI_HOST` | unset | Optional public GUI host |
-| `MERIDIAN_CONFIG_DIR` | platform config directory | Config and shared bootstrap-key directory |
-| `MERIDIAN_STATE_DIR` | platform state directory | Durable Hub, Orchestrator, and supervisor state |
-| `MERIDIAN_RUNTIME_DESCRIPTOR_DIR` | platform runtime directory | Native live service descriptors |
-| `MERIDIAN_SERVICE_DECLARATION_DIR` | platform data directory | Native static service declarations |
-| `CLAWSO_SERVICE_DECLARATION_DIR` | unset | Clawso Foundation-admitted declaration export |
-| `CLAWSO_RUNTIME_DESCRIPTOR_DIR` | unset | Clawso Foundation-admitted runtime-descriptor export |
+| Variable                           | Default                    | Purpose                                                                  |
+| ---------------------------------- | -------------------------- | ------------------------------------------------------------------------ |
+| `MERIDIAN_SOCKET`                  | platform runtime directory | CLI socket fallback when HTTP is unavailable                             |
+| `MERIDIAN_HTTP`                    | `http://localhost:3000`    | CLI HTTP endpoint for Meridian web API                                   |
+| `AGENT_WORKDIR`                    | user home                  | Default workdir for spawned agents and initial root for GUI repo picking |
+| `HUB_SOCKET_PATH`                  | platform runtime directory | Meridian hub socket path used by the service                             |
+| `WEB_GUI_PORT`                     | `3000`                     | Web API / GUI port                                                       |
+| `WEB_GUI_HOST`                     | unset                      | Optional public GUI host                                                 |
+| `MERIDIAN_CONFIG_DIR`              | platform config directory  | Config and shared bootstrap-key directory                                |
+| `MERIDIAN_STATE_DIR`               | platform state directory   | Durable Hub, Orchestrator, and supervisor state                          |
+| `MERIDIAN_RUNTIME_DESCRIPTOR_DIR`  | platform runtime directory | Native live service descriptors                                          |
+| `MERIDIAN_SERVICE_DECLARATION_DIR` | platform data directory    | Native static service declarations                                       |
+| `CLAWSO_SERVICE_DECLARATION_DIR`   | unset                      | Clawso Foundation-admitted declaration export                            |
+| `CLAWSO_RUNTIME_DESCRIPTOR_DIR`    | unset                      | Clawso Foundation-admitted runtime-descriptor export                     |
 
 ## Commands
 
@@ -88,12 +88,14 @@ read-only compatibility probes. Discovery does not grant operation permission.
 Launch an agent instance through Meridian.
 
 Providers:
+
 - `claude`
 - `codex`
 - `gemini`
 - `cursor`
 
 Options:
+
 - `--provider <claude|codex|gemini|cursor>`: explicit provider alias for API payloads
 - `--model <model-id>`: override the provider default model
 - `--workdir <path>`: absolute working directory; if omitted, Meridian defaults to `AGENT_WORKDIR`
@@ -134,6 +136,7 @@ meridian runtime catalog
 ```
 
 The command proxies `GET /api/runtime/catalog` and returns JSON containing:
+
 - `providers[]`: provider id, label, status, account-operation capabilities, visible credentials, default credential id, selectable models, and per-provider error
 - `credentials[]`: flattened visible account list with provider, credential id, label, kind, active/revoked status, default flags, host-default flag, and API-key metadata
 - `defaults`: provider to selected/default credential id
