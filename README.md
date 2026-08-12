@@ -1,391 +1,275 @@
-# Meridian
+<p align="center">
+  <strong>English</strong>
+  · <a href="README.zh-CN.md">简体中文</a>
+  · <a href="README.ja.md">日本語</a>
+</p>
 
-Meridian is one orchestration product in one repository. It keeps execution
-responsibilities separated at runtime:
+<p align="center">
+  <img src="docs/assets/meridian-hero.svg" alt="Meridian — local-first multi-agent orchestration" width="100%" />
+</p>
 
-- Runtime owns the Hub, provider processes, channels, and authenticated Web API.
-- Orchestrator owns roles, TaskSpec dispatch, scheduling, and routine jobs.
-- Supervisor starts Runtime and Orchestrator independently, waits for real
-  readiness, publishes native service descriptors, and applies bounded restart.
-- CLI is the JSON-first user and automation control surface.
-- Gateway is an independent OpenAI/Anthropic-compatible ingress product. It is
-  built in this workspace but is never a required Meridian child.
+<p align="center">
+  <strong>A local-first control plane for durable, observable coding-agent work.</strong>
+</p>
+
+<p align="center">
+  Run Codex, Claude, Gemini, and Cursor as managed workers. Coordinate TaskSpec DAGs.<br />
+  Operate everything through one CLI, browser UI, Telegram bridge, or authenticated API.
+</p>
+
+<p align="center">
+  <a href="https://github.com/yzsnstotz/Meridian/actions/workflows/ci.yml"><img src="https://github.com/yzsnstotz/Meridian/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <img src="https://img.shields.io/badge/Node.js-%E2%89%A522.13-5FA04E?logo=nodedotjs&logoColor=white" alt="Node.js 22.13 or newer" />
+  <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white" alt="TypeScript 5.9" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-7C3AED" alt="MIT License" /></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a>
+  · <a href="docs/getting-started.md">Setup guide</a>
+  · <a href="CLI.md">CLI reference</a>
+  · <a href="docs/system/SYSTEM_INDEX.md">Architecture</a>
+  · <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+
+---
+
+## Why Meridian
+
+Coding CLIs are excellent workers, but a real multi-agent system needs more than
+parallel terminals. Meridian provides the operational layer around them:
+ownership, routing, durable state, health checks, dependency-aware dispatch,
+and a consistent control surface.
+
+| Capability                    | What Meridian provides                                                                                                 |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| **Multi-agent orchestration** | Explicit or inferred TaskSpec DAGs, dependency-aware dispatch, retries, validation, and restart recovery.              |
+| **Managed agent runtime**     | Persistent thread identities, provider/model routing, approvals, cancellation, logs, and conversation history.         |
+| **One product lifecycle**     | A supervisor starts Runtime and Orchestrator independently, waits for real readiness, and applies bounded restarts.    |
+| **Local-first security**      | Provider credentials and durable state stay on the operator's machine; Runtime HTTP and IPC callers are authenticated. |
+| **Multiple control surfaces** | JSON-first CLI, browser interfaces, Telegram adapters, WebSocket/SSE streams, and an authenticated HTTP API.           |
+| **Compatible model gateway**  | Optional OpenAI- and Anthropic-shaped endpoints backed by locally authenticated provider CLIs.                         |
+
+## Architecture
+
+Meridian is one product with separable runtime responsibilities. The Gateway is
+built in the same workspace but intentionally remains an optional, independent
+service.
+
+```mermaid
+flowchart LR
+    U["Operator / automation"] --> C["Meridian CLI"]
+    U --> W["Web UI / Telegram"]
+    C --> S["Supervisor"]
+    W --> R
+    S --> R["Runtime"]
+    S --> O["Orchestrator"]
+    O -->|"TaskSpec + DAG dispatch"| R
+    R --> A["Codex · Claude · Gemini · Cursor"]
+    R <-->|"typed contracts + authenticated transport"| O
+    G["Optional Gateway"] --> A
+
+    classDef core fill:#111c33,stroke:#5eead4,color:#eef6ff,stroke-width:1.5px;
+    classDef edge fill:#0b1325,stroke:#64748b,color:#dce7f5;
+    class R,O,S core;
+    class U,C,W,A,G edge;
+```
+
+### Product surfaces
+
+Meridian keeps day-to-day agent control and higher-level orchestration
+separate, while giving operators a direct path between them.
+
+| Runtime Console                                                                                                                                  | Orchestrator Dashboard                                                                                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [![Runtime Console showing provider, model, credential, and session controls](docs/assets/runtime-console.jpg)](docs/assets/runtime-console.jpg) | [![Orchestrator Dashboard showing dispatcher policy and DAG controls](docs/assets/orchestrator-dashboard.jpg)](docs/assets/orchestrator-dashboard.jpg) |
+| Launch and inspect provider sessions, choose credentials and models, and monitor logs.                                                           | Configure dispatch policy, parallel execution, validation, PM resolution, roles, and schedulers.                                                       |
+
+### Workspace packages
+
+| Package                                            | Responsibility                                                                        |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| [`@meridian/contracts`](packages/contracts/)       | Dependency-light schemas, portable paths, and service contracts.                      |
+| [`@meridian/runtime`](packages/runtime/)           | Hub, provider lifecycle, channels, authenticated Web API, monitoring, and browser UI. |
+| [`@meridian/orchestrator`](packages/orchestrator/) | Roles, TaskSpec dispatch, scheduler, validation, recovery, and orchestration GUI.     |
+| [`@meridian/supervisor`](packages/supervisor/)     | Native Runtime/Orchestrator lifecycle, readiness, registration, and bounded restart.  |
+| [`@meridian/cli`](packages/cli/)                   | JSON-first operator and automation interface.                                         |
+| [`@meridian/gateway`](packages/gateway/)           | Optional OpenAI/Anthropic-compatible ingress for locally authenticated CLIs.          |
+
+> **No separate Hub or Roles checkout is required.** The former Hub capability
+> lives in `@meridian/runtime`, and Roles lives in `@meridian/orchestrator`.
+> Some existing UI labels and compatibility boundaries still use legacy names
+> such as `meridian-roles`; they refer to these integrated components, not to a
+> separate installation.
+
+## Quick start
+
+### Prerequisites
+
+- macOS or Linux
+- Node.js **22.13 or newer** and npm
+- At least one supported provider CLI installed and authenticated
+
+### Install
 
 ```bash
-npm install
-npm run build
-npm link
+git clone https://github.com/yzsnstotz/Meridian.git
+cd Meridian
 
+npm ci
+npm run build
+npm link --workspace @meridian/cli
+```
+
+Meridian reads operator configuration from a private platform config directory.
+For a predictable development setup:
+
+```bash
+export MERIDIAN_CONFIG_DIR="$HOME/.config/meridian"
+mkdir -p "$MERIDIAN_CONFIG_DIR"
+cp .env.example "$MERIDIAN_CONFIG_DIR/.env"
+```
+
+Edit the two required Telegram/operator values in that file. Placeholder values
+are sufficient for a local Web/CLI evaluation; use real BotFather credentials
+before starting the Telegram interface.
+
+### Start and verify
+
+```bash
 meridian start
-meridian status
 meridian doctor
 meridian service list
 ```
 
-`meridian stop` stops the native Runtime and Orchestrator. The legacy
-`meridian stop <thread-id>` form remains a non-destructive alias for interrupting
-one agent thread; `meridian status --agents` lists agent instances.
+The supervisor starts the managed services and generates private bootstrap/Web
+tokens on first launch. These loopback-only addresses are available after
+`meridian start` reports the services ready:
 
-Native discovery does not require Clawso. When Clawso is present, Meridian can
-also consume Foundation-admitted declaration and runtime-descriptor exports by
-setting `CLAWSO_SERVICE_DECLARATION_DIR` and
-`CLAWSO_RUNTIME_DESCRIPTOR_DIR`. Static declarations describe compatibility;
-live native or admitted runtime descriptors remain endpoint authority.
+- Runtime Web UI and API: `http://127.0.0.1:3000/?token=<WEB_GUI_TOKEN>`
+- Orchestrator UI and API: `http://127.0.0.1:7701`
 
-See [the system index](docs/system/SYSTEM_INDEX.md) for package ownership and
-[the Roles migration guide](docs/migration/roles-to-meridian.md) before retiring
-a standalone Meridian-Roles installation.
+Read `WEB_GUI_TOKEN` from the private config `.env`; do not paste a real token
+into documentation, issues, or commits.
 
-## Meridian Gateway Service
-
-`meridian-gateway` is Meridian's OpenAI-compatible HTTP front door for logged-in
-CLI subscriptions. It exposes `/v1/chat/completions`, `/v1/models`, and
-Anthropic-compatible `/v1/messages` routes, then routes each request to the
-matching local CLI provider: Codex, Claude, or Gemini. The service is designed
-for tools that already know the OpenAI or Anthropic wire format but should use
-the user's existing subscription login instead of direct provider API keys. The
-root Gateway page is the operator surface: connect each CLI, inspect the safe
-account details each provider exposes, run a direct text test against a chosen
-CLI/model, copy the generated API key, and see the live model catalog that the
-Gateway can actually advertise.
-
-Start it locally:
+Launch a first Codex worker:
 
 ```bash
-MERIDIAN_GATEWAY_PORT=8789 npm run start:gateway
+meridian spawn codex --workdir "$PWD" --mode bridge
+meridian status --agents
+meridian send <thread-id> "Inspect this repository and summarize its architecture."
 ```
 
-On first start it creates an API key at
-`~/.meridian-gateway/gateway-key`. Use that key as `Authorization: Bearer
-<key>` for OpenAI-compatible calls, or as `x-api-key: <key>` for
-Anthropic-compatible calls. The root page and `/providers/*` login routes help
-connect or install the backing CLIs. `/v1/models` is intentionally live rather
-than a hardcoded table: Codex is sourced from `codex app-server`/local Codex
-catalog fallbacks, and API-backed catalogs are used when configured. Providers
-whose CLIs do not expose a model-list/status dimension report that limitation
-instead of advertising stale model IDs.
+Copy `<thread-id>` from the `spawn` result (or `meridian status --agents`).
 
-Example:
+See the [complete setup guide](docs/getting-started.md) for provider login,
+configuration locations, first-dispatch examples, and troubleshooting.
+
+## How orchestration works
+
+The Orchestrator accepts an explicit task graph or infers one from a TaskSpec.
+It dispatches eligible tasks to Runtime workers, correlates results over the
+socket reply channel, and persists enough state to recover safely after a
+restart.
+
+```text
+TaskSpec
+  └─ Orchestrator builds / loads a DAG
+       ├─ Worker A: inspect architecture
+       ├─ Worker B: implement change       (after A)
+       └─ Validator: verify acceptance     (after B)
+            └─ Runtime selects provider, model, credentials, and workspace
+```
+
+Create a small explicit dispatcher through the local Orchestrator API:
 
 ```bash
-KEY="$(cat ~/.meridian-gateway/gateway-key)"
-curl http://127.0.0.1:8789/v1/chat/completions \
-  -H "Authorization: Bearer $KEY" \
-  -H "Content-Type: application/json" \
+curl -X POST http://127.0.0.1:7701/api/role \
+  -H 'Content-Type: application/json' \
   -d '{
-    "model": "gpt-5.4",
-    "messages": [{ "role": "user", "content": "Say gateway ok." }]
+    "thread_id": "dispatcher-demo",
+    "role_type": "dispatcher",
+    "tasks": [
+      { "task_id": "A", "instruction": "Inspect the repository", "depends_on": [] },
+      { "task_id": "B", "instruction": "Write a concise architecture summary", "depends_on": ["A"] }
+    ]
   }'
 ```
 
-## Telegram Bot Registration (T-03)
-1. Open `@BotFather` in Telegram and run `/newbot`.
-1. Save the generated token and set `TELEGRAM_BOT_TOKEN` in the environment or Meridian config `.env`.
-1. Optional multi-bot: set `TELEGRAM_BOT_TOKENS` as a comma-separated list of additional bot tokens.
-1. Set your Telegram user id in `ALLOWED_USER_IDS`.
-1. `/spawn` defaults to the resolved work root (normally the user home). Set `MERIDIAN_WORK_ROOT` or `AGENT_WORKDIR` to select a different root.
-1. Configure slash commands in `@BotFather` with `/setcommands`:
+The Orchestrator UI exposes live task state, prompt/config editors, recovery
+controls, and execution evidence at `http://127.0.0.1:7701`.
 
-```text
-spawn - Spawn a new agent instance
-restart - Restart Meridian Runtime, Orchestrator, or ADS
-browse - Browse repo and return exact file/folder path
-kill - Kill an existing instance
-status - Get current instance status
-attach - Attach this chat to a thread
-detach - Detach this chat from the active thread
-reboot - Restart an existing thread in place
-gui - Get the Web GUI link for a thread
-approve - Send approval input to a pane_bridge thread
-update - Toggle monitor progress updates for a thread
-mupdate - Send one manual progress update for a thread
-list - List active instances
-help - Show command usage
-```
+## Operating surfaces
 
-`/spawn` supports an optional directory argument:
+| Surface                 | Best for                                    | Entry point                                     |
+| ----------------------- | ------------------------------------------- | ----------------------------------------------- |
+| **CLI**                 | Local operation and scripts                 | [`CLI.md`](CLI.md)                              |
+| **Runtime Web UI/API**  | Threads, credentials, model discovery, logs | `http://127.0.0.1:3000/?token=<WEB_GUI_TOKEN>`  |
+| **Orchestrator UI/API** | Roles, DAGs, prompts, recovery              | `http://127.0.0.1:7701`                         |
+| **Telegram**            | Remote control and progress updates         | [Operations guide](docs/operations.md#telegram) |
+| **Gateway**             | Existing OpenAI/Anthropic clients           | [Gateway guide](docs/gateway.md)                |
+| **Unix socket/A2A**     | Strong local service integration            | [`MANUAL.md`](MANUAL.md)                        |
 
-```text
-/spawn type=codex mode=pane_bridge dir=/absolute/path/to/repo
-/spawn type=codex mode=stateless_call dir=/absolute/path/to/repo
-```
+## Optional model gateway
 
-`/detach`, `/reboot`, and `/gui` support thread-oriented control flows:
-
-```text
-/detach
-/detach thread=codex_01
-/reboot thread=codex_01
-/gui
-/gui thread=codex_01
-```
-
-`/update` supports optional interval and explicit thread:
-
-```text
-/update on thread=codex_01 interval=30
-/update off thread=codex_01
-```
-
-`/mupdate` sends one immediate progress snapshot without enabling periodic updates:
-
-```text
-/mupdate
-/mupdate thread=codex_01
-```
-
-`/approve` sends approval keystrokes into a `pane_bridge` tmux session:
-
-```text
-/approve run thread=cursor_01
-/approve allow thread=cursor_01
-/approve all thread=cursor_01
-/approve skip thread=cursor_01
-```
-
-`/model` opens a Telegram picker that fetches the live model list for the thread's current provider:
-
-```text
-/model
-/model thread=codex_01
-```
-
-For `codex` threads, Meridian queries `codex app-server` first (uses Codex login/session auth), and only falls back to `OPENAI_API_KEY` if app-server model listing is unavailable.
-
-## Email Loop Runtime Integration
-
-External services such as Email Loop should use the Meridian Web API instead of
-scraping Hub pages.
-
-Discovery:
+The Gateway exposes `/v1/chat/completions`, `/v1/models`, and Anthropic-style
+`/v1/messages` routes backed by local Codex, Claude, Gemini, or Antigravity
+sessions. It is deliberately not managed by the Meridian supervisor.
 
 ```bash
-curl -H "Authorization: Bearer $WEB_GUI_TOKEN" \
-  -H "X-Meridian-Caller-Id: email-loop" \
-  -H "X-Meridian-Caller-Key: $MERIDIAN_EMAIL_LOOP_CALLER_KEY" \
-  "$MERIDIAN_HTTP/api/runtime/catalog"
+npm run start:gateway
 ```
 
-CLI equivalent:
+It binds to `127.0.0.1:8789` by default and generates a private API key at
+`~/.meridian-gateway/gateway-key`. Read the [Gateway guide](docs/gateway.md)
+before exposing it beyond loopback.
+
+## Documentation
+
+| Document                                               | Use it when you need to…                                        |
+| ------------------------------------------------------ | --------------------------------------------------------------- |
+| [Getting started](docs/getting-started.md)             | Install, configure, start, and run the first worker/DAG.        |
+| [CLI reference](CLI.md)                                | Script lifecycle, agent, credential, and service commands.      |
+| [Integration manual](MANUAL.md)                        | Integrate through HTTP, WebSocket, or authenticated Hub IPC.    |
+| [Operations guide](docs/operations.md)                 | Run lifecycle, Telegram, paths, ports, logs, and safe recovery. |
+| [Gateway guide](docs/gateway.md)                       | Use OpenAI/Anthropic-compatible local endpoints.                |
+| [System index](docs/system/SYSTEM_INDEX.md)            | Find package ownership, boundaries, and module-level docs.      |
+| [Roles migration](docs/migration/roles-to-meridian.md) | Move state from a standalone Meridian-Roles installation.       |
+| [Contributing](CONTRIBUTING.md)                        | Make a focused change and run the right verification.           |
+| [Security policy](SECURITY.md)                         | Report vulnerabilities privately and review deployment posture. |
+
+## Security model
+
+- Runtime Web/API and Gateway completion traffic is token-authenticated.
+- IPC callers use registered identities derived from a private bootstrap key.
+- Credential records are owner-scoped and stored under private directories.
+- Provider CLIs run locally with explicit workspace and approval settings.
+- Runtime state, logs, sockets, and service descriptors resolve to per-user
+  platform directories unless the operator supplies explicit overrides.
+
+The Orchestrator UI/API is designed for the local loopback boundary. Keep every
+service on loopback unless you place it behind TLS and an access-controlled
+reverse proxy. Never commit generated `.env`, state, credential, or gateway-key
+files.
+
+## Development
 
 ```bash
-meridian runtime catalog
-```
-
-Example response:
-
-```json
-{
-  "ok": true,
-  "providers": [
-    {
-      "provider": "codex",
-      "label": "Codex",
-      "status": "available",
-      "capabilities": { "oauth": true, "api_key": true, "model_list": true },
-      "default_credential_id": "host-default-codex",
-      "credentials": [
-        {
-          "provider": "codex",
-          "credential_id": "host-default-codex",
-          "label": "Default (codex)",
-          "kind": "oauth",
-          "status": "active",
-          "is_default": false,
-          "is_host_default": true
-        }
-      ],
-      "models": [{ "id": "gpt-5.4", "label": "GPT-5.4" }],
-      "error": null
-    },
-    {
-      "provider": "claude",
-      "label": "Claude",
-      "status": "unavailable",
-      "capabilities": { "oauth": false, "api_key": false, "model_list": true },
-      "default_credential_id": "host-default-claude",
-      "credentials": [
-        {
-          "provider": "claude",
-          "credential_id": "host-default-claude",
-          "label": "Default (claude)",
-          "kind": "oauth",
-          "status": "active",
-          "is_default": false,
-          "is_host_default": true
-        }
-      ],
-      "models": [],
-      "error": {
-        "code": "model_list_unavailable",
-        "message": "No API key configured for provider=claude"
-      }
-    }
-  ],
-  "credentials": [
-    {
-      "provider": "codex",
-      "credential_id": "host-default-codex",
-      "label": "Default (codex)",
-      "kind": "oauth",
-      "status": "active",
-      "is_default": false,
-      "is_host_default": true
-    },
-    {
-      "provider": "claude",
-      "credential_id": "host-default-claude",
-      "label": "Default (claude)",
-      "kind": "oauth",
-      "status": "active",
-      "is_default": false,
-      "is_host_default": true
-    }
-  ],
-  "defaults": {
-    "codex": "host-default-codex",
-    "claude": "host-default-claude"
-  }
-}
-```
-
-Credential/account operations:
-
-```bash
-meridian credentials list
-meridian credentials oauth-start --label "Email Loop Codex" --mode device
-meridian credentials oauth-poll <job-id>
-meridian credentials oauth-cancel <job-id>
-meridian credentials api-key --label "Email Loop API" --base-url https://api.openai.com/v1 --model gpt-5.4 --env-var OPENAI_API_KEY --key "$OPENAI_API_KEY"
-meridian credentials set-default <credential-id>
-meridian credentials revoke <credential-id> --yes
-```
-
-To start work with a selected runtime, use the returned `provider`, model `id`,
-and optional `credential_id` with the existing spawn API or CLI.
-
-## Telegram Webhook Mode
-
-Leave `WEBHOOK_URL` empty to keep long polling. To enable webhook mode, set a public HTTPS URL that ends at the base webhook path, for example:
-
-```text
-WEBHOOK_URL=https://bot.example.com/webhook
-WEBHOOK_PORT=8080
-WEBHOOK_SECRET_TOKEN=replace-with-random-secret
-```
-
-Behavior:
-- Single bot: Meridian serves Telegram updates on `/webhook`.
-- Multiple bots via `TELEGRAM_BOT_TOKENS`: Meridian serves `/webhook/<bot_id>` per bot and registers each public URL automatically.
-- `WEBHOOK_SECRET_TOKEN` is forwarded to Telegram and verified by grammY on incoming requests.
-
-Deployment note: `WEBHOOK_PORT` is the local listener port. In production, terminate TLS and route the public webhook URL to this port through your reverse proxy or load balancer.
-
-Optional external service registration:
-
-```text
-COORDINATOR_SOCKET_PATH=/tmp/coordinator.sock
-COORDINATOR_INTENTS=delegate,plan,review
-```
-
-When both variables are set, the hub statically registers that socket and forwards the listed non-built-in intents there.
-
-## Local Development
-```bash
-npm run start:hub
-npm run start:interface
-npm run start:monitor
-```
-
-## Deployment (T-11)
-
-### Runtime Directory Structure
-
-Meridian resolves paths independently of the checkout:
-
-- macOS: config/data/state under `~/Library/Application Support/Meridian`; runtime sockets and descriptors under `$TMPDIR/meridian-<uid>`.
-- Linux: config/data/state under the XDG directories; runtime under `$XDG_RUNTIME_DIR/meridian` or `${TMPDIR:-/tmp}/meridian-<uid>`.
-- Explicit `MERIDIAN_CONFIG_DIR`, `MERIDIAN_DATA_DIR`, `MERIDIAN_STATE_DIR`, `MERIDIAN_RUNTIME_DIR`, `MERIDIAN_LOG_DIR`, and `MERIDIAN_SOCKET_DIR` values override platform defaults.
-
-```text
-<state-dir>/logs/
-  hub.log
-  hub-error.log
-  interface.log
-  interface-error.log
-  monitor.log
-  monitor-error.log
-  instance.log
-<runtime-dir>/sockets/
-  hub-core.sock
-<runtime-dir>/services/
-  *.json
-```
-
-### 1) Initialize Host Directories
-```bash
-sudo ./scripts/setup-host.sh
-```
-
-### 2) Build
-```bash
+npm ci
+npm run typecheck
 npm run build
+npm test
+npm run test:orchestrator
 ```
 
-### 3) PM2 Process Guard
-Start:
-```bash
-pm2 start ecosystem.config.js
-```
+Package boundaries are enforced by `npm run test:boundaries`. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the full test matrix and pull-request
+expectations.
 
-Stop:
-```bash
-pm2 stop ecosystem.config.js
-pm2 delete ecosystem.config.js
-```
+## Project status
 
-Logs:
-```bash
-pm2 logs
-```
+Meridian is under active development. Interfaces are intentionally explicit and
+tested, but operators should review changes before using the system for
+unattended or externally reachable workloads.
 
-Notes:
-- `calling-hub`, `calling-interface`, and `calling-monitor` are all started by default.
-- `agentapi` child processes are not managed by PM2.
-- `setup-host.sh` assigns log/socket directory ownership to the runtime user when run with `sudo`.
-
-### 4) Docker Compose (Alternative)
-Build image:
-```bash
-docker compose build
-```
-
-Start Hub + Interface:
-```bash
-docker compose up -d hub interface
-```
-
-Start Monitor (after monitor build artifact exists):
-```bash
-docker compose --profile monitor up -d monitor
-```
-
-Stop:
-```bash
-docker compose down
-```
-
-Tail logs:
-```bash
-docker compose logs -f
-```
-
-Notes:
-- Container deployments must set explicit Meridian state/runtime paths and mount those exact directories.
-- Static declarations never override a live runtime endpoint.
-
-### 5) Install logrotate
-```bash
-sudo ./scripts/install-logrotate.sh
-sudo logrotate -d /etc/logrotate.d/meridian
-```
+Licensed under the [MIT License](LICENSE).
