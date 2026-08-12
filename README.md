@@ -98,9 +98,9 @@ separate, while giving operators a direct path between them.
 
 > **No separate Hub or Roles checkout is required.** The former Hub capability
 > lives in `@meridian/runtime`, and Roles lives in `@meridian/orchestrator`.
-> Legacy names such as `meridian-roles` remain only where compatibility is
-> required—for example service identities, the existing binary, and state
-> migration paths.
+> Some existing UI labels and compatibility boundaries still use legacy names
+> such as `meridian-roles`; they refer to these integrated components, not to a
+> separate installation.
 
 ## Quick start
 

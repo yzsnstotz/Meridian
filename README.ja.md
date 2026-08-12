@@ -97,8 +97,8 @@ Meridian は日常的な Agent 操作と上位のオーケストレーション�
 > **Hub や Roles の別リポジトリをチェックアウトする必要はありません。**
 > 旧 Hub の機能は `@meridian/runtime` に、Roles は
 > `@meridian/orchestrator` に統合済みです。現在も残る `meridian-roles`
-> などの旧名称は、既存の Service Identity、CLI Binary、状態移行パスとの
-> 互換性が必要な箇所だけで使われます。
+> などの旧名称は、既存 UI のラベルまたは互換境界を示すものであり、別途
+> インストールが必要という意味ではありません。
 
 ## クイックスタート
 
