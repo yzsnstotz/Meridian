@@ -54,12 +54,12 @@ starting the Telegram interface.
 All path overrides must be absolute. If they are unset, Meridian selects
 portable platform defaults:
 
-| Data | macOS | Linux |
-| --- | --- | --- |
-| Config | `~/Library/Application Support/Meridian/config` | `${XDG_CONFIG_HOME:-~/.config}/meridian` |
-| Data | `~/Library/Application Support/Meridian/data` | `${XDG_DATA_HOME:-~/.local/share}/meridian` |
-| State and logs | `~/Library/Application Support/Meridian/state` | `${XDG_STATE_HOME:-~/.local/state}/meridian` |
-| Runtime sockets | System temporary directory | `${XDG_RUNTIME_DIR:-system temporary directory}` |
+| Data            | macOS                                           | Linux                                            |
+| --------------- | ----------------------------------------------- | ------------------------------------------------ |
+| Config          | `~/Library/Application Support/Meridian/config` | `${XDG_CONFIG_HOME:-~/.config}/meridian`         |
+| Data            | `~/Library/Application Support/Meridian/data`   | `${XDG_DATA_HOME:-~/.local/share}/meridian`      |
+| State and logs  | `~/Library/Application Support/Meridian/state`  | `${XDG_STATE_HOME:-~/.local/state}/meridian`     |
+| Runtime sockets | System temporary directory                      | `${XDG_RUNTIME_DIR:-system temporary directory}` |
 
 ## 4. Start the product
 
@@ -73,8 +73,10 @@ meridian service list
 readiness, and records native service descriptors. It does not start the
 optional Gateway.
 
-Open the two operator surfaces. Read the generated `WEB_GUI_TOKEN` from the
-private config `.env` and use it only in the loopback Runtime URL:
+After `meridian start` reports both managed services ready, open the two
+operator surfaces. They are local loopback addresses, not hosted Meridian
+websites. Read the generated `WEB_GUI_TOKEN` from the private config `.env` and
+use it only in the loopback Runtime URL:
 
 - Runtime Console: `http://127.0.0.1:3000/?token=<WEB_GUI_TOKEN>`
 - Orchestrator Dashboard: `http://127.0.0.1:7701`

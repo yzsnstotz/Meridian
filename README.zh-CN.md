@@ -93,6 +93,11 @@ Meridian 将日常 Agent 控制与更高层的任务编排分开，同时保留�
 | [`@meridian/cli`](packages/cli/)                   | 面向操作者与自动化的 JSON-first 接口。                             |
 | [`@meridian/gateway`](packages/gateway/)           | 使用本机已认证 CLI 的可选 OpenAI/Anthropic 兼容入口。              |
 
+> **不需要另外检出 Hub 或 Roles 仓库。** 原 Hub 能力已经进入
+> `@meridian/runtime`，Roles 已经进入 `@meridian/orchestrator`。目前仍出现的
+> `meridian-roles` 等旧名称只用于兼容既有 Service Identity、命令行 Binary
+> 和状态迁移路径。
+
 ## 快速开始
 
 ### 环境要求
@@ -132,18 +137,23 @@ meridian service list
 ```
 
 Supervisor 会启动受管服务，并在首次运行时生成私有的 Bootstrap/Web Token。
-默认地址如下：
+以下地址仅绑定本机回环网络，并在 `meridian start` 报告服务就绪后可用：
 
 - Runtime Web UI/API：`http://127.0.0.1:3000/?token=<WEB_GUI_TOKEN>`
 - Orchestrator UI/API：`http://127.0.0.1:7701`
+
+请从私有配置 `.env` 中读取 `WEB_GUI_TOKEN`；不要把真实 Token 粘贴到文档、
+Issue 或 Commit 中。
 
 启动第一个 Codex Worker：
 
 ```bash
 meridian spawn codex --workdir "$PWD" --mode bridge
 meridian status --agents
-meridian send codex_01 "检查这个仓库并概括它的架构。"
+meridian send <thread-id> "检查这个仓库并概括它的架构。"
 ```
+
+请从 `spawn` 返回结果（或 `meridian status --agents`）中复制 `<thread-id>`。
 
 Provider 登录、配置目录、首次调度示例与故障排查，请阅读
 [完整安装指南](docs/getting-started.md)。

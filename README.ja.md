@@ -94,6 +94,12 @@ Meridian は日常的な Agent 操作と上位のオーケストレーション�
 | [`@meridian/cli`](packages/cli/)                   | オペレーターと自動化向けの JSON-first インターフェース。                                  |
 | [`@meridian/gateway`](packages/gateway/)           | ローカルの認証済み CLI を利用する、オプションの OpenAI/Anthropic 互換入口。               |
 
+> **Hub や Roles の別リポジトリをチェックアウトする必要はありません。**
+> 旧 Hub の機能は `@meridian/runtime` に、Roles は
+> `@meridian/orchestrator` に統合済みです。現在も残る `meridian-roles`
+> などの旧名称は、既存の Service Identity、CLI Binary、状態移行パスとの
+> 互換性が必要な箇所だけで使われます。
+
 ## クイックスタート
 
 ### 前提条件
@@ -135,18 +141,24 @@ meridian service list
 ```
 
 Supervisor は管理対象サービスを起動し、初回起動時に非公開の Bootstrap/Web Token を
-生成します。デフォルトの入口は次のとおりです。
+生成します。次のループバック専用 URL は、`meridian start` がサービスの準備完了を
+報告した後に利用できます。
 
 - Runtime Web UI/API：`http://127.0.0.1:3000/?token=<WEB_GUI_TOKEN>`
 - Orchestrator UI/API：`http://127.0.0.1:7701`
+
+`WEB_GUI_TOKEN` は非公開設定の `.env` から読み取ります。実際の Token をドキュメント、
+Issue、Commit に貼り付けないでください。
 
 最初の Codex Worker を起動します。
 
 ```bash
 meridian spawn codex --workdir "$PWD" --mode bridge
 meridian status --agents
-meridian send codex_01 "このリポジトリを調査し、アーキテクチャを要約してください。"
+meridian send <thread-id> "このリポジトリを調査し、アーキテクチャを要約してください。"
 ```
+
+`spawn` の結果（または `meridian status --agents`）から `<thread-id>` をコピーします。
 
 Provider のログイン、設定場所、最初のディスパッチ例、トラブルシューティングについては
 [完全なセットアップガイド](docs/getting-started.md)を参照してください。
