@@ -2,9 +2,16 @@
 
 ## Reporting a vulnerability
 
-Please do not disclose an exploitable vulnerability in a public issue. Use the
-repository's [private vulnerability reporting
-form](https://github.com/yzsnstotz/Meridian/security/advisories/new) and include:
+Please do not disclose an exploitable vulnerability in a public issue.
+
+1. First try the repository's [private vulnerability reporting
+   form](https://github.com/yzsnstotz/Meridian/security/advisories/new).
+2. If GitHub reports that private reporting is unavailable, open a
+   [security contact request](https://github.com/yzsnstotz/Meridian/issues/new?template=security_contact.yml)
+   containing **no vulnerability details**. A maintainer can then arrange an
+   appropriate private channel.
+
+In the private report, include:
 
 - the affected revision and package;
 - a minimal reproduction or proof of concept;
@@ -13,7 +20,8 @@ form](https://github.com/yzsnstotz/Meridian/security/advisories/new) and include
 
 Remove unrelated credentials, personal paths, and private log content. The
 maintainers will acknowledge the report, assess scope, and coordinate disclosure
-and remediation through the advisory.
+and remediation privately. Repository administrators should enable GitHub
+Private Vulnerability Reporting so the first route remains available.
 
 ## Supported code
 

@@ -96,6 +96,12 @@ separate, while giving operators a direct path between them.
 | [`@meridian/cli`](packages/cli/)                   | JSON-first operator and automation interface.                                         |
 | [`@meridian/gateway`](packages/gateway/)           | Optional OpenAI/Anthropic-compatible ingress for locally authenticated CLIs.          |
 
+> **No separate Hub or Roles checkout is required.** The former Hub capability
+> lives in `@meridian/runtime`, and Roles lives in `@meridian/orchestrator`.
+> Legacy names such as `meridian-roles` remain only where compatibility is
+> required—for example service identities, the existing binary, and state
+> migration paths.
+
 ## Quick start
 
 ### Prerequisites
@@ -137,18 +143,24 @@ meridian service list
 ```
 
 The supervisor starts the managed services and generates private bootstrap/Web
-tokens on first launch. By default:
+tokens on first launch. These loopback-only addresses are available after
+`meridian start` reports the services ready:
 
-- Runtime Web UI and API: `http://127.0.0.1:3000`
+- Runtime Web UI and API: `http://127.0.0.1:3000/?token=<WEB_GUI_TOKEN>`
 - Orchestrator UI and API: `http://127.0.0.1:7701`
+
+Read `WEB_GUI_TOKEN` from the private config `.env`; do not paste a real token
+into documentation, issues, or commits.
 
 Launch a first Codex worker:
 
 ```bash
 meridian spawn codex --workdir "$PWD" --mode bridge
 meridian status --agents
-meridian send codex_01 "Inspect this repository and summarize its architecture."
+meridian send <thread-id> "Inspect this repository and summarize its architecture."
 ```
+
+Copy `<thread-id>` from the `spawn` result (or `meridian status --agents`).
 
 See the [complete setup guide](docs/getting-started.md) for provider login,
 configuration locations, first-dispatch examples, and troubleshooting.
