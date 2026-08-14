@@ -35,34 +35,6 @@
 
 ---
 
-## 交流群
-
-<table>
-  <tr>
-    <td width="58%" valign="middle">
-      <h3>一起共建 Meridian</h3>
-      <p>
-        欢迎加入微信 <strong>Meridian 交流 2 群</strong>，交流使用方式、分享反馈，
-        认识更多正在使用 Meridian 的开发者。
-      </p>
-      <p>
-        <strong>加入方式：</strong>使用微信扫描二维码。如果你正在手机上浏览此页面，
-        可以点击图片查看原图后识别二维码。
-      </p>
-      <p>
-        <sub>该邀请二维码有效期至 <strong>2026 年 8 月 21 日</strong>；
-        邀请更新后会及时替换此图片。</sub>
-      </p>
-    </td>
-    <td width="42%" align="center">
-      <a href="docs/assets/wechat-community-group-2.jpg">
-        <img src="docs/assets/wechat-community-group-2.jpg" alt="Meridian 交流 2 群微信二维码" width="320" />
-      </a><br />
-      <sub>Meridian 交流 2 群 · 微信</sub>
-    </td>
-  </tr>
-</table>
-
 ## 为什么选择 Meridian
 
 编程 CLI 是优秀的 Worker，但真正的多 Agent 系统不能只是同时打开多个终端。
@@ -126,6 +98,34 @@ Meridian 将日常 Agent 控制与更高层的任务编排分开，同时保留�
 > `@meridian/runtime`，Roles 已经进入 `@meridian/orchestrator`。目前仍出现的
 > `meridian-roles` 等旧名称属于现有界面标签或兼容边界，指向的仍是上述集成组件，
 > 并不代表需要单独安装。
+
+## 交流群
+
+<table>
+  <tr>
+    <td width="58%" valign="middle">
+      <h3>一起共建 Meridian</h3>
+      <p>
+        欢迎加入微信 <strong>Meridian 交流 2 群</strong>，交流使用方式、分享反馈，
+        认识更多正在使用 Meridian 的开发者。
+      </p>
+      <p>
+        <strong>加入方式：</strong>使用微信扫描二维码。如果你正在手机上浏览此页面，
+        可以点击图片查看原图后识别二维码。
+      </p>
+      <p>
+        <sub>该邀请二维码有效期至 <strong>2026 年 8 月 21 日</strong>；
+        邀请更新后会及时替换此图片。</sub>
+      </p>
+    </td>
+    <td width="42%" align="center">
+      <a href="docs/assets/wechat-community-group-2.jpg">
+        <img src="docs/assets/wechat-community-group-2.jpg" alt="Meridian 交流 2 群微信二维码" width="260" />
+      </a><br />
+      <sub>Meridian 交流 2 群 · 微信</sub>
+    </td>
+  </tr>
+</table>
 
 ## 快速开始
 

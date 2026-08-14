@@ -35,34 +35,6 @@
 
 ---
 
-## コミュニティ
-
-<table>
-  <tr>
-    <td width="58%" valign="middle">
-      <h3>Meridian を一緒につくりましょう</h3>
-      <p>
-        WeChat の <strong>Meridian 交流グループ 2</strong>に参加して、
-        活用方法やフィードバックを共有し、ほかの Meridian ユーザーと交流できます。
-      </p>
-      <p>
-        <strong>参加方法：</strong>WeChat で QR コードを読み取ってください。
-        スマートフォンでこのページを表示している場合は、画像をクリックすると原寸で確認できます。
-      </p>
-      <p>
-        <sub>招待 QR コードの有効期限は <strong>2026 年 8 月 21 日</strong>です。
-        招待の更新時に、この画像も差し替えます。</sub>
-      </p>
-    </td>
-    <td width="42%" align="center">
-      <a href="docs/assets/wechat-community-group-2.jpg">
-        <img src="docs/assets/wechat-community-group-2.jpg" alt="Meridian 交流グループ 2 の WeChat QR コード" width="320" />
-      </a><br />
-      <sub>Meridian 交流グループ 2 · WeChat</sub>
-    </td>
-  </tr>
-</table>
-
 ## Meridian を選ぶ理由
 
 コーディング CLI は優れた Worker ですが、複数のターミナルを同時に開くだけでは
@@ -128,6 +100,34 @@ Meridian は日常的な Agent 操作と上位のオーケストレーション�
 > `@meridian/orchestrator` に統合済みです。現在も残る `meridian-roles`
 > などの旧名称は、既存 UI のラベルまたは互換境界を示すものであり、別途
 > インストールが必要という意味ではありません。
+
+## コミュニティ
+
+<table>
+  <tr>
+    <td width="58%" valign="middle">
+      <h3>Meridian を一緒につくりましょう</h3>
+      <p>
+        WeChat の <strong>Meridian 交流グループ 2</strong>に参加して、
+        活用方法やフィードバックを共有し、ほかの Meridian ユーザーと交流できます。
+      </p>
+      <p>
+        <strong>参加方法：</strong>WeChat で QR コードを読み取ってください。
+        スマートフォンでこのページを表示している場合は、画像をクリックすると原寸で確認できます。
+      </p>
+      <p>
+        <sub>招待 QR コードの有効期限は <strong>2026 年 8 月 21 日</strong>です。
+        招待の更新時に、この画像も差し替えます。</sub>
+      </p>
+    </td>
+    <td width="42%" align="center">
+      <a href="docs/assets/wechat-community-group-2.jpg">
+        <img src="docs/assets/wechat-community-group-2.jpg" alt="Meridian 交流グループ 2 の WeChat QR コード" width="260" />
+      </a><br />
+      <sub>Meridian 交流グループ 2 · WeChat</sub>
+    </td>
+  </tr>
+</table>
 
 ## クイックスタート
 
