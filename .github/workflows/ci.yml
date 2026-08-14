@@ -45,4 +45,16 @@ jobs:
       - name: Test orchestrator
         # The suite contains process- and port-oriented fixtures. Serializing
         # test files avoids worker RPC starvation on shared CI runners.
+        #
+        # Guarded because this step was written against the packages/* workspace
+        # layout, which currently exists only on feat/meridian-monorepo-portability
+        # (#139). On main there is no `workspaces` key and no @meridian/orchestrator,
+        # so the command fails outright with "No workspaces found". That went
+        # unnoticed because the step is last and the preceding suite failed first,
+        # hiding it behind an unrelated red X on every PR.
+        #
+        # The guard keeps one workflow file correct in both layouts: it is skipped
+        # until the workspace exists and runs automatically once #139 lands, so
+        # neither branch has to carry a divergent copy of ci.yml.
+        if: hashFiles('packages/orchestrator/package.json') != ''
         run: npm run test -w @meridian/orchestrator -- --no-file-parallelism
