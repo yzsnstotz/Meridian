@@ -20,6 +20,34 @@ function appendReasoningEffortConfig(args: string[], reasoningEffort?: Reasoning
   args.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
 }
 
+function appendLeanContextConfig(args: string[]): void {
+  // Every hub-spawned codex session pays a fixed context prologue that has
+  // nothing to do with the task: the full skill roster with per-skill
+  // instructions, a ~32KB "## Memory" developer message, and the multi-agent
+  // preamble. Measured A/B against codex-cli 0.146.0 with an identical prompt:
+  // 17,564 input tokens without these flags vs 10,016 with them (−43%), and the
+  // prologue's "skill" mentions drop from 195 to 18. Workers get their task from
+  // the dispatch prompt, so none of that prologue earns its cost.
+  //
+  // Read the env var at call time, not module load, so the escape hatch flips
+  // without a rebuild+restart of the hub.
+  //
+  // This only touches agents the hub spawns — the operator's interactive codex
+  // never goes through these builders, so their skills and memories stay intact.
+  //
+  // Keep these three key names and their boolean types exact: codex validates
+  // `-c` keys and hard-errors on a wrong shape (e.g. `skills.bundled=false`
+  // dies with "invalid type: boolean, expected struct BundledSkillsConfig"),
+  // which would abort EVERY hub spawn, not just degrade one.
+  const optOut = process.env.MERIDIAN_CODEX_LEAN_CONTEXT;
+  if (optOut === "0" || optOut === "false") {
+    return;
+  }
+  args.push("-c", "skills.include_instructions=false");
+  args.push("-c", "features.memories=false");
+  args.push("-c", "features.multi_agent=false");
+}
+
 export function buildCodexSpawnArgs(
   mode: BridgeMode,
   tmuxSession: string | null,
@@ -34,6 +62,7 @@ export function buildCodexSpawnArgs(
   const args = ["server", `--type=${codexAgentConfig.type}`, endpointFlag];
   args.push("--", codexAgentConfig.command);
   appendReasoningEffortConfig(args, reasoningEffort);
+  appendLeanContextConfig(args);
   if (modelId) {
     args.push("--model", modelId);
   }
@@ -59,6 +88,7 @@ export function buildCodexExecArgs(
   void autoApprove;
   const args = [codexAgentConfig.command, "exec", "--json"];
   appendReasoningEffortConfig(args, reasoningEffort);
+  appendLeanContextConfig(args);
   if (modelId) {
     args.push("--model", modelId);
   }
@@ -85,6 +115,7 @@ export function buildCodexResumeArgs(
   void autoApprove;
   const args = [codexAgentConfig.command, "exec", "resume", sessionId, "--json"];
   appendReasoningEffortConfig(args, reasoningEffort);
+  appendLeanContextConfig(args);
   if (modelId) {
     args.push("--model", modelId);
   }
