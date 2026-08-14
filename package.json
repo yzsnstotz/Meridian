@@ -28,7 +28,7 @@
     "eventsource": "^5.0.0",
     "grammy": "^1.41.1",
     "pino": "^10.1.0",
-    "zod": "^4.1.11"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
