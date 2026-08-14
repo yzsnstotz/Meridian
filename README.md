@@ -35,36 +35,6 @@
 
 ---
 
-## Community
-
-<table>
-  <tr>
-    <td width="58%" valign="middle">
-      <h3>Build Meridian together</h3>
-      <p>
-        Join <strong>Meridian Exchange Group 2</strong> on WeChat to compare
-        workflows, share feedback, and meet other builders using Meridian.
-      </p>
-      <p>
-        <strong>How to join:</strong> scan the QR code with WeChat. Click the
-        image to open the full-resolution version if you are viewing this page
-        on a phone.
-      </p>
-      <p>
-        <sub>The invitation QR code is valid through <strong>August 21,
-        2026</strong>. This image will be replaced when the invitation is
-        refreshed.</sub>
-      </p>
-    </td>
-    <td width="42%" align="center">
-      <a href="docs/assets/wechat-community-group-2.jpg">
-        <img src="docs/assets/wechat-community-group-2.jpg" alt="WeChat QR code for Meridian Exchange Group 2" width="320" />
-      </a><br />
-      <sub>Meridian Exchange Group 2 · WeChat</sub>
-    </td>
-  </tr>
-</table>
-
 ## Why Meridian
 
 Coding CLIs are excellent workers, but a real multi-agent system needs more than
@@ -132,6 +102,36 @@ separate, while giving operators a direct path between them.
 > Some existing UI labels and compatibility boundaries still use legacy names
 > such as `meridian-roles`; they refer to these integrated components, not to a
 > separate installation.
+
+## Community
+
+<table>
+  <tr>
+    <td width="58%" valign="middle">
+      <h3>Build Meridian together</h3>
+      <p>
+        Join <strong>Meridian Exchange Group 2</strong> on WeChat to compare
+        workflows, share feedback, and meet other builders using Meridian.
+      </p>
+      <p>
+        <strong>How to join:</strong> scan the QR code with WeChat. Click the
+        image to open the full-resolution version if you are viewing this page
+        on a phone.
+      </p>
+      <p>
+        <sub>The invitation QR code is valid through <strong>August 21,
+        2026</strong>. This image will be replaced when the invitation is
+        refreshed.</sub>
+      </p>
+    </td>
+    <td width="42%" align="center">
+      <a href="docs/assets/wechat-community-group-2.jpg">
+        <img src="docs/assets/wechat-community-group-2.jpg" alt="WeChat QR code for Meridian Exchange Group 2" width="260" />
+      </a><br />
+      <sub>Meridian Exchange Group 2 · WeChat</sub>
+    </td>
+  </tr>
+</table>
 
 ## Quick start
 
