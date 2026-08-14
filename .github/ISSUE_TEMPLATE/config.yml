@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security reporting policy
+    url: https://github.com/yzsnstotz/Meridian/security/policy
+    about: Read the private-reporting options before sharing any vulnerability details.

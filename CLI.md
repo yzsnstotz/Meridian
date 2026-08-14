@@ -1,14 +1,17 @@
 # Meridian CLI
 
-`meridian` is the external CLI for the Meridian hub. It emits machine-readable JSON on stdout and reserves stderr for usage text and operator hints.
+`meridian` is the external CLI for the Meridian product. Lifecycle and service
+discovery commands work without a running Hub. Agent commands use the Runtime
+Web API. The CLI emits machine-readable JSON on stdout and reserves stderr for
+usage text and operator hints.
 
 ## Install
 
 ```bash
-cd /Users/yzliu/work/Meridian
+cd /path/to/Meridian
 npm install
 npm run build
-npm link
+npm link --workspace @meridian/cli
 ```
 
 After linking, verify the command is available:
@@ -26,38 +29,73 @@ meridian --help
 
 ## Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Success |
-| `1` | General error |
-| `2` | Invalid arguments |
-| `3` | Meridian service unreachable |
-| `4` | Target thread not found |
+| Code | Meaning                      |
+| ---- | ---------------------------- |
+| `0`  | Success                      |
+| `1`  | General error                |
+| `2`  | Invalid arguments            |
+| `3`  | Meridian service unreachable |
+| `4`  | Target thread not found      |
 
 ## Environment
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `MERIDIAN_SOCKET` | `/tmp/hub-core.sock` | CLI socket fallback when HTTP is unavailable |
-| `MERIDIAN_HTTP` | `http://localhost:3000` | CLI HTTP endpoint for Meridian web API |
-| `AGENT_WORKDIR` | parent of repo root | Default workdir for spawned agents and initial root for GUI repo picking |
-| `HUB_SOCKET_PATH` | `/tmp/hub-core.sock` | Meridian hub socket path used by the service |
-| `WEB_GUI_PORT` | `3000` | Web API / GUI port |
-| `WEB_GUI_HOST` | unset | Optional public GUI host |
+| Variable                           | Default                    | Purpose                                                                  |
+| ---------------------------------- | -------------------------- | ------------------------------------------------------------------------ |
+| `MERIDIAN_SOCKET`                  | platform runtime directory | CLI socket fallback when HTTP is unavailable                             |
+| `MERIDIAN_HTTP`                    | `http://localhost:3000`    | CLI HTTP endpoint for Meridian web API                                   |
+| `AGENT_WORKDIR`                    | user home                  | Default workdir for spawned agents and initial root for GUI repo picking |
+| `HUB_SOCKET_PATH`                  | platform runtime directory | Meridian hub socket path used by the service                             |
+| `WEB_GUI_PORT`                     | `3000`                     | Web API / GUI port                                                       |
+| `WEB_GUI_HOST`                     | unset                      | Optional public GUI host                                                 |
+| `MERIDIAN_CONFIG_DIR`              | platform config directory  | Config and shared bootstrap-key directory                                |
+| `MERIDIAN_STATE_DIR`               | platform state directory   | Durable Hub, Orchestrator, and supervisor state                          |
+| `MERIDIAN_RUNTIME_DESCRIPTOR_DIR`  | platform runtime directory | Native live service descriptors                                          |
+| `MERIDIAN_SERVICE_DECLARATION_DIR` | platform data directory    | Native static service declarations                                       |
+| `CLAWSO_SERVICE_DECLARATION_DIR`   | unset                      | Clawso Foundation-admitted declaration export                            |
+| `CLAWSO_RUNTIME_DESCRIPTOR_DIR`    | unset                      | Clawso Foundation-admitted runtime-descriptor export                     |
 
 ## Commands
+
+### Native lifecycle
+
+```bash
+meridian start
+meridian status
+meridian doctor
+meridian stop
+```
+
+The supervisor manages Runtime and Orchestrator as separate processes. Gateway
+is deliberately excluded. Registration occurs only after an authenticated
+readiness probe succeeds and is removed during shutdown. `status` and `doctor`
+do not require Runtime to be reachable.
+
+### Portable service discovery
+
+```bash
+meridian service list
+meridian service describe org.meridian/runtime
+meridian service resolve org.meridian/orchestrator
+meridian service doctor
+```
+
+Resolution order is explicit URL, service-specific environment, explicit
+instance selection, native descriptors, Clawso-admitted descriptors, then
+read-only compatibility probes. Discovery does not grant operation permission.
 
 ### `meridian spawn <provider> [options]`
 
 Launch an agent instance through Meridian.
 
 Providers:
+
 - `claude`
 - `codex`
 - `gemini`
 - `cursor`
 
 Options:
+
 - `--provider <claude|codex|gemini|cursor>`: explicit provider alias for API payloads
 - `--model <model-id>`: override the provider default model
 - `--workdir <path>`: absolute working directory; if omitted, Meridian defaults to `AGENT_WORKDIR`
@@ -70,10 +108,10 @@ Options:
 Examples:
 
 ```bash
-meridian spawn codex --model gpt-5.4 --workdir /Users/yzliu/work/Meridian --auto-approve
-meridian spawn claude --model claude-opus-4-6 --workdir /Users/yzliu/work/project --no-auto-approve
-meridian spawn gemini --mode bridge --workdir /Users/yzliu/work/sandbox
-meridian spawn codex --mode stateless_call --workdir /Users/yzliu/work/Meridian
+meridian spawn codex --model gpt-5.4 --workdir "$PWD" --auto-approve
+meridian spawn claude --model claude-opus-4-6 --workdir "$PWD" --no-auto-approve
+meridian spawn gemini --mode bridge --workdir "$PWD"
+meridian spawn codex --mode stateless_call --workdir "$PWD"
 ```
 
 ### `meridian models <provider>`
@@ -98,6 +136,7 @@ meridian runtime catalog
 ```
 
 The command proxies `GET /api/runtime/catalog` and returns JSON containing:
+
 - `providers[]`: provider id, label, status, account-operation capabilities, visible credentials, default credential id, selectable models, and per-provider error
 - `credentials[]`: flattened visible account list with provider, credential id, label, kind, active/revoked status, default flags, host-default flag, and API-key metadata
 - `defaults`: provider to selected/default credential id
@@ -130,14 +169,14 @@ Example:
 meridian kill codex_01
 ```
 
-### `meridian status`
+### `meridian status --agents`
 
 List running Meridian-managed instances.
 
 Example:
 
 ```bash
-meridian status
+meridian status --agents
 ```
 
 ### `meridian send <thread-id> <message>`
@@ -188,27 +227,27 @@ meridian health
 Start a worker with explicit provider + model:
 
 ```bash
-meridian spawn codex --model gpt-5.4 --workdir /Users/yzliu/work/Meridian --auto-approve
+meridian spawn codex --model gpt-5.4 --workdir "$PWD" --auto-approve
 ```
 
 Discover accounts and models before spawning:
 
 ```bash
 meridian runtime catalog
-meridian spawn codex --model gpt-5.4 --workdir /Users/yzliu/work/Meridian --auto-approve
+meridian spawn codex --model gpt-5.4 --workdir "$PWD" --auto-approve
 ```
 
 Run a fresh, non-resuming Codex call lane:
 
 ```bash
-meridian spawn codex --mode stateless_call --workdir /Users/yzliu/work/Meridian
+meridian spawn codex --mode stateless_call --workdir "$PWD"
 meridian send codex_01 "Summarize the public API surface."
 ```
 
 Check live threads, send follow-up input, then inspect logs:
 
 ```bash
-meridian status
+meridian status --agents
 meridian send codex_01 "Continue from the last failing test."
 meridian logs codex_01
 ```
@@ -224,3 +263,5 @@ meridian autoapprove off --thread codex_01
 - Meridian CLI talks to the hub through public service interfaces only. It does not import hub internals.
 - HTTP is checked first via `MERIDIAN_HTTP`; socket fallback uses `MERIDIAN_SOCKET`.
 - External automation should treat stdout as the stable integration surface and ignore stderr unless debugging operator-facing failures.
+- Existing standalone Roles state can be copied explicitly with
+  `meridian-migrate-roles-state`; see `docs/migration/roles-to-meridian.md`.

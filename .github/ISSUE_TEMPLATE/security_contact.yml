@@ -1,0 +1,41 @@
+name: Security contact request
+description: Ask maintainers to arrange a private channel. Do not include vulnerability details.
+title: "[Security contact]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form only when GitHub private vulnerability reporting is unavailable. This issue is public: do not include exploit details, affected endpoints, logs, credentials, or proof-of-concept material.
+
+  - type: input
+    id: contact
+    attributes:
+      label: Preferred contact method
+      description: Provide a public handle or another non-sensitive way for a maintainer to reach you privately.
+      placeholder: GitHub @handle
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: General affected area
+      description: Keep this high level. Do not describe the vulnerability.
+      options:
+        - Runtime
+        - Orchestrator
+        - Supervisor
+        - CLI
+        - Gateway
+        - Supply chain / dependencies
+        - Unsure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Public issue safety check
+      options:
+        - label: I have not included vulnerability details, credentials, private paths, logs, or proof-of-concept material.
+          required: true
