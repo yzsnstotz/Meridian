@@ -29,10 +29,39 @@
   · <a href="docs/getting-started.md">安装指南</a>
   · <a href="CLI.md">CLI 参考</a>
   · <a href="docs/system/SYSTEM_INDEX.md">系统架构</a>
+  · <a href="#交流群">交流群</a>
   · <a href="CONTRIBUTING.md">参与贡献</a>
 </p>
 
 ---
+
+## 交流群
+
+<table>
+  <tr>
+    <td width="58%" valign="middle">
+      <h3>一起共建 Meridian</h3>
+      <p>
+        欢迎加入微信 <strong>Meridian 交流 2 群</strong>，交流使用方式、分享反馈，
+        认识更多正在使用 Meridian 的开发者。
+      </p>
+      <p>
+        <strong>加入方式：</strong>使用微信扫描二维码。如果你正在手机上浏览此页面，
+        可以点击图片查看原图后识别二维码。
+      </p>
+      <p>
+        <sub>该邀请二维码有效期至 <strong>2026 年 8 月 21 日</strong>；
+        邀请更新后会及时替换此图片。</sub>
+      </p>
+    </td>
+    <td width="42%" align="center">
+      <a href="docs/assets/wechat-community-group-2.jpg">
+        <img src="docs/assets/wechat-community-group-2.jpg" alt="Meridian 交流 2 群微信二维码" width="320" />
+      </a><br />
+      <sub>Meridian 交流 2 群 · 微信</sub>
+    </td>
+  </tr>
+</table>
 
 ## 为什么选择 Meridian
 

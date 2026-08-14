@@ -29,10 +29,41 @@
   · <a href="docs/getting-started.md">Setup guide</a>
   · <a href="CLI.md">CLI reference</a>
   · <a href="docs/system/SYSTEM_INDEX.md">Architecture</a>
+  · <a href="#community">Community</a>
   · <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
 ---
+
+## Community
+
+<table>
+  <tr>
+    <td width="58%" valign="middle">
+      <h3>Build Meridian together</h3>
+      <p>
+        Join <strong>Meridian Exchange Group 2</strong> on WeChat to compare
+        workflows, share feedback, and meet other builders using Meridian.
+      </p>
+      <p>
+        <strong>How to join:</strong> scan the QR code with WeChat. Click the
+        image to open the full-resolution version if you are viewing this page
+        on a phone.
+      </p>
+      <p>
+        <sub>The invitation QR code is valid through <strong>August 21,
+        2026</strong>. This image will be replaced when the invitation is
+        refreshed.</sub>
+      </p>
+    </td>
+    <td width="42%" align="center">
+      <a href="docs/assets/wechat-community-group-2.jpg">
+        <img src="docs/assets/wechat-community-group-2.jpg" alt="WeChat QR code for Meridian Exchange Group 2" width="320" />
+      </a><br />
+      <sub>Meridian Exchange Group 2 · WeChat</sub>
+    </td>
+  </tr>
+</table>
 
 ## Why Meridian
 
