@@ -504,6 +504,12 @@ test("HubRouter streams Codex stdout through OutputBus and resumes using codexSe
       "--json",
       "-c",
       'model_reasoning_effort="xhigh"',
+      "-c",
+      "skills.include_instructions=false",
+      "-c",
+      "features.memories=false",
+      "-c",
+      "features.multi_agent=false",
       "--sandbox",
       "read-only",
       "--skip-git-repo-check"
@@ -535,6 +541,12 @@ test("HubRouter streams Codex stdout through OutputBus and resumes using codexSe
       "--json",
       "-c",
       'model_reasoning_effort="xhigh"',
+      "-c",
+      "skills.include_instructions=false",
+      "-c",
+      "features.memories=false",
+      "-c",
+      "features.multi_agent=false",
       "--sandbox",
       "read-only",
       "--skip-git-repo-check"
@@ -685,6 +697,12 @@ test("HubRouter runs stateless_call Codex threads without resuming prior exec se
         "--json",
         "-c",
         'model_reasoning_effort="xhigh"',
+        "-c",
+        "skills.include_instructions=false",
+        "-c",
+        "features.memories=false",
+        "-c",
+        "features.multi_agent=false",
         "--sandbox",
         "read-only",
         "--skip-git-repo-check"
@@ -698,6 +716,12 @@ test("HubRouter runs stateless_call Codex threads without resuming prior exec se
         "--json",
         "-c",
         'model_reasoning_effort="xhigh"',
+        "-c",
+        "skills.include_instructions=false",
+        "-c",
+        "features.memories=false",
+        "-c",
+        "features.multi_agent=false",
         "--sandbox",
         "read-only",
         "--skip-git-repo-check"
@@ -2013,20 +2037,47 @@ test("HubRouter run fallback does not reuse stale snapshot from before current r
     })
   });
 
-  const result = await router.route(
-    baseMessage({
-      trace_id: "dbdc1060-a7b9-4999-ac9a-5ad4d1d4c99f",
-      thread_id: "gemini_01",
-      target: "gemini_01"
-    })
-  );
+  // Pin the inactivity poll ceiling instead of inheriting the shipped default.
+  // What this test is about is that an unchanged pre-run snapshot is never
+  // promoted into a result and that polling stops after the configured budget
+  // — not what that budget happens to be. Reading the default made the
+  // assertion a hidden second copy of the constant: raising it 3 -> 30 in
+  // 45aea79 left this test asserting `callCount <= 5` against 31 real polls,
+  // and each of those polls costs a real AGENT_REPLY_WAIT_DELAY_MS, so the
+  // test also grew to ~14.5s before failing. Pinning it keeps the assertion
+  // exact and the runtime short, and survives the next tuning of the default.
+  const maxUnchangedSnapshotPolls = 3;
+  const originalMaxPolls = process.env.HUB_MAX_UNCHANGED_SNAPSHOT_POLLS;
+  process.env.HUB_MAX_UNCHANGED_SNAPSHOT_POLLS = String(maxUnchangedSnapshotPolls);
 
-  assert.equal(result.status, "partial");
-  assert.equal(result.run_state, "timeout");
-  assert.equal(result.content, "Task is running...");
-  assert.doesNotMatch(result.content, /stale old snapshot/);
-  assert.equal(result.progress?.phase, "running");
-  assert.ok(callCount <= 5, `expected stale polling to bail out quickly, got ${callCount} getMessages() calls`);
+  try {
+    const result = await router.route(
+      baseMessage({
+        trace_id: "dbdc1060-a7b9-4999-ac9a-5ad4d1d4c99f",
+        thread_id: "gemini_01",
+        target: "gemini_01"
+      })
+    );
+
+    assert.equal(result.status, "partial");
+    assert.equal(result.run_state, "timeout");
+    assert.equal(result.content, "Task is running...");
+    assert.doesNotMatch(result.content, /stale old snapshot/);
+    assert.equal(result.progress?.phase, "running");
+    // One poll establishes the baseline snapshot, then `maxUnchangedSnapshotPolls`
+    // consecutive unchanged-and-inactive polls trip the bail-out.
+    assert.equal(
+      callCount,
+      maxUnchangedSnapshotPolls + 1,
+      `expected stale polling to bail out after the configured budget, got ${callCount} getMessages() calls`
+    );
+  } finally {
+    if (originalMaxPolls === undefined) {
+      delete process.env.HUB_MAX_UNCHANGED_SNAPSHOT_POLLS;
+    } else {
+      process.env.HUB_MAX_UNCHANGED_SNAPSHOT_POLLS = originalMaxPolls;
+    }
+  }
 });
 
 test("HubRouter times out when an active worker never emits any reply for the current run", async () => {

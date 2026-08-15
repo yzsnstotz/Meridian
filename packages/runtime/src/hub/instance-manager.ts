@@ -2248,6 +2248,33 @@ interface BuildChildEnvLogger {
   warn: (obj: Record<string, unknown>, message: string) => void;
 }
 
+// Standard system CA bundle locations, in preference order. codex is a Rust
+// binary that verifies TLS with rustls-native-certs; when it is spawned under a
+// launchd/PM2 daemon (e.g. calling-hub) the process cannot read the macOS login
+// Keychain, so the native trust store comes up empty and every
+// https://chatgpt.com handshake fails with `invalid peer certificate:
+// UnknownIssuer`. Handing codex an explicit CA bundle via SSL_CERT_FILE makes
+// verification work regardless of Keychain access in the daemon context.
+const CA_BUNDLE_CANDIDATES: readonly string[] = [
+  "/etc/ssl/cert.pem", // macOS system bundle
+  "/etc/ssl/certs/ca-certificates.crt", // Debian/Ubuntu
+  "/etc/pki/tls/certs/ca-bundle.crt", // RHEL/CentOS/Fedora
+  "/opt/homebrew/etc/ca-certificates/cert.pem" // Homebrew
+];
+
+function resolveSystemCaBundle(): string | null {
+  for (const candidate of CA_BUNDLE_CANDIDATES) {
+    try {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    } catch {
+      // ignore and try the next candidate
+    }
+  }
+  return null;
+}
+
 /**
  * Module-level helper that constructs the child env for a spawned agent process.
  *
@@ -2291,6 +2318,41 @@ export function buildChildEnvImpl(
     // any directory injection (env_overrides may still carry API keys etc.).
     if (resolvedCredential.provider !== "claude") {
       env.CODEX_HOME = resolvedCredential.codex_home;
+      // Give the spawned codex process an explicit CA bundle so TLS
+      // verification survives daemon-context Keychain restrictions (see
+      // CA_BUNDLE_CANDIDATES above). Respect any SSL_CERT_FILE already present
+      // in the ambient env or supplied via credential env_overrides below.
+      if (!env.SSL_CERT_FILE) {
+        const caBundle = resolveSystemCaBundle();
+        if (caBundle) {
+          env.SSL_CERT_FILE = caBundle;
+        }
+      }
+      // Give the spawned worker a git credential for github.com that does not
+      // depend on the macOS login Keychain. Same daemon-context root cause as
+      // SSL_CERT_FILE above: git's default `osxkeychain` helper cannot reach the
+      // login Keychain under launchd/PM2, so it returns a stale/absent
+      // credential and github rejects the push/fetch with
+      // `remote: invalid credentials` — halting any worker that must clone,
+      // push a branch, or open a PR. git never consults GITHUB_TOKEN on its own,
+      // so we inject a credential helper (via GIT_CONFIG_*) that resets the
+      // inherited helper list and supplies the resolved token as HTTPS basic
+      // auth (github Smart HTTP accepts `x-access-token:<token>`, not Bearer).
+      // Respect any ambient GIT_CONFIG_* the caller already set rather than
+      // clobber it.
+      const gitToken = env.GITHUB_TOKEN || env.GH_TOKEN;
+      if (gitToken && !env.GIT_CONFIG_COUNT) {
+        env.GIT_CONFIG_COUNT = "2";
+        env.GIT_CONFIG_KEY_0 = "credential.helper";
+        env.GIT_CONFIG_VALUE_0 = ""; // reset inherited helpers (e.g. osxkeychain)
+        env.GIT_CONFIG_KEY_1 = "credential.helper";
+        env.GIT_CONFIG_VALUE_1 = `!f() { echo username=x-access-token; echo "password=${gitToken}"; }; f`;
+      } else if (gitToken && env.GIT_CONFIG_COUNT && logger) {
+        logger.warn(
+          { operation: "spawn_git_credential", credential_id: resolvedCredential.credential_id },
+          "Ambient GIT_CONFIG_COUNT present; skipping git credential-helper injection"
+        );
+      }
     }
     for (const [k, v] of Object.entries(resolvedCredential.env_overrides)) {
       const ambient = baseEnv[k];

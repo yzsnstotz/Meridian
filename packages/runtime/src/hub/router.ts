@@ -18,7 +18,7 @@ import { createGeminiStreamParser } from "../shared/stream-parsers/gemini";
 import { streamFromSpawn, type OutputDelta } from "../shared/stream-adapter";
 import { resolveTelegramDetailRecord } from "./result-sender";
 import { AgentAPIClient } from "../shared/agentapi-client";
-import { sendIpcRequest } from "../shared/ipc";
+import { sendIpcRequest, getRuntimeTunable } from "../shared/ipc";
 import { buildWebGuiUrl, tryBuildGuiInlineKeyboard } from "../shared/telegram-controls";
 import { parseModelReference } from "../shared/model-reference";
 import {
@@ -701,13 +701,38 @@ export class HubRouter {
 
   async initialize(): Promise<void> {
     const persistedState = loadPersistedHubState(this.statePath, this.now().toISOString());
-    const result = await this.instanceManager.rehydrateFromState(persistedState);
-    this.rehydrateLocalState(persistedState);
+
+    // The caller registry MUST be constructed before rehydrate. Both of the
+    // statements below can observe hub state while `this.callerRegistry` is
+    // still null, and neither fails loudly when it is:
+    //
+    //   1. rehydrateFromState() ends with notifyStateChange(), wired in the
+    //      constructor to persistStateSafely(). That serializes
+    //      `this.callerRegistry?.list() ?? []` — so with the registry still
+    //      null the optional chain quietly writes `callers: []` over every
+    //      persisted caller record in state.json. The final persist below used
+    //      to put them back, making the wipe invisible in the happy path; a
+    //      SIGKILL inside that window (pm2 kill_timeout during a slow
+    //      rehydrate is a documented occurrence — see the parallel-probe note
+    //      in rehydrateFromState) loses every caller key permanently, and the
+    //      next hub generation rejects every caller with `caller_required`.
+    //
+    //   2. rehydrateFromState is awaited, so the event loop is open across it.
+    //      A request landing in that window reaches requireCallerRegistry(),
+    //      whose test-only fallback bootstraps an EMPTY registry — which then
+    //      answers auth for real callers, and is overwritten a moment later by
+    //      the assignment here, discarding anything minted meanwhile.
+    //
+    // Constructing first closes both. It is safe to hoist: the constructor
+    // reads only `persistedState`, which is already fully loaded above, and
+    // takes no dependency on rehydrated instance state.
     this.callerRegistry = new CallerRegistry({
       initialRecords: persistedState.callers ?? [],
       persist: () => this.persistStateSafely(),
       now: this.now
     });
+    const result = await this.instanceManager.rehydrateFromState(persistedState);
+    this.rehydrateLocalState(persistedState);
     this.persistStateSafely();
     this.log.info(
       {
@@ -4312,7 +4337,43 @@ export class HubRouter {
 
     const maxAttempts = config.AGENT_REPLY_WAIT_MAX_ATTEMPTS;
     const delayMs = config.AGENT_REPLY_WAIT_DELAY_MS;
-    const maxUnchangedSnapshotPolls = 3;
+    // A run is only declared "timeout" after this many consecutive polls where
+    // the agent's terminal snapshot is unchanged AND getClientRunActivity()
+    // reports "inactive". The original 3 was far too aggressive: heavy codex
+    // workers go quiet for long stretches during cargo/npm builds and thinking
+    // (no new terminal snapshot, activity probe reads "inactive"), producing
+    // false "hub may be overloaded" run-handoff failures that orphan a
+    // still-working worker. Default raised to 30.
+    //
+    // Runtime-settable so a round that is being orphaned right now can be
+    // rescued WITHOUT restarting the hub (a restart would itself disrupt every
+    // in-flight run):
+    //   1. HUB_MAX_UNCHANGED_SNAPSHOT_POLLS          (env; needs a restart)
+    //   2. "hubMaxUnchangedSnapshotPolls" in the runtime config file
+    //      (MERIDIAN_RUNTIME_CONFIG, default ~/.meridian/runtime.json)
+    //   3. 30
+    //
+    // Read once per waitForAgentReply rather than once per poll: the value is
+    // the ceiling for THIS wait, so re-reading mid-wait would let the threshold
+    // move under an already-accumulated unchangedSnapshotPolls counter. A file
+    // edit therefore takes effect on the next run request, not the current one.
+    // Keeping it out of the loop also keeps the accessor's read+parse off the
+    // poll path.
+    //
+    // The threshold is in polls, not wallclock. One poll is
+    // AGENT_REPLY_WAIT_DELAY_MS (default 500ms) plus a getMessages() and a
+    // getStatus() round-trip to agentapi, so the real wall depends on how
+    // loaded that worker is; the total wait is bounded by
+    // AGENT_REPLY_WAIT_MAX_ATTEMPTS (default 600) regardless. Raising this
+    // trades "detect a genuinely dead worker early" for "do not guillotine a
+    // worker that is quietly doing a long build" — a cargo link, a large
+    // transfer or tool provisioning emits no new terminal snapshot and probes
+    // as "inactive" for minutes at a time.
+    const maxUnchangedSnapshotPolls = getRuntimeTunable(
+      "HUB_MAX_UNCHANGED_SNAPSHOT_POLLS",
+      "hubMaxUnchangedSnapshotPolls",
+      30
+    );
     let fallbackCandidate: string | null = null;
     let fallbackTail: string | null = null;
     let stablePolls = 0;

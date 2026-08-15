@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dispatch"
+  short_description: "Start Meridian agent-dispatcher jobs from TaskSpec artifacts."
+  default_prompt: "$dispatch /path/to/taskspec --dry-run"
