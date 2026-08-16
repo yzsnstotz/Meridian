@@ -1,0 +1,19 @@
+{
+  "name": "@meridian/gateway",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "engines": {
+    "node": "^22.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "TELEGRAM_BOT_TOKEN=123456789:test_token ALLOWED_USER_IDS=123456789 node --test --import tsx src/**/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@meridian/contracts": "1.0.0",
+    "@meridian/runtime": "1.0.0"
+  }
+}

@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Scheduler — meridian-roles</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script defer src="/app.js"></script>
+  </head>
+  <body data-page="scheduler-detail">
+    <!-- ── Global Nav ──────────────────────────────────────── -->
+    <nav class="global-nav">
+      <a class="nav-brand" href="/">
+        <span class="nav-brand-mark">M</span>
+        meridian-roles
+      </a>
+      <div class="nav-tabs">
+        <a class="nav-tab" href="/?tab=dispatchers">Dispatchers<span id="nav-dispatcher-count" class="nav-tab-count" hidden>0</span></a>
+        <a class="nav-tab" href="/?tab=processes">Processes<span id="nav-process-count" class="nav-tab-count" hidden>0</span></a>
+        <a class="nav-tab" href="/monitor">System Monitor<span id="nav-monitor-red-dot" class="nav-tab-leak-dot" hidden title="system monitor has a red indicator"></span></a>
+        <a class="nav-tab active" href="/?tab=schedulers">Schedulers<span id="nav-scheduler-count" class="nav-tab-count" hidden>0</span></a>
+        <a class="nav-tab" href="/?tab=roles">Roles<span id="nav-role-count" class="nav-tab-count" hidden>0</span></a>
+      </div>
+    </nav>
+
+    <main class="shell">
+      <!-- Header -->
+      <section class="hero hero-compact">
+        <a class="back-link" href="/">← Dashboard</a>
+        <p class="eyebrow">Scheduler Detail</p>
+        <h1 id="scheduler-title">Scheduler</h1>
+        <p class="lede" id="scheduler-plan-path">---</p>
+      </section>
+
+      <section class="detail-sticky-head scheduler-sticky-head" aria-label="Scheduler status and actions">
+        <!-- Status + Stats -->
+        <div class="stat-row">
+          <div class="stat-card">
+            <div class="stat-card-value" id="s-status-val">idle</div>
+            <div class="stat-card-label">Status</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-value" id="s-completed-cycles">0</div>
+            <div class="stat-card-label">Completed Cycles</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-value" id="s-next-run-val">---</div>
+            <div class="stat-card-label">Next Run</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-card-value" id="s-last-outcome-val">---</div>
+            <div class="stat-card-label">Last Outcome</div>
+          </div>
+        </div>
+
+        <!-- Controls -->
+        <section class="panel">
+          <div class="panel-heading"><h2>Controls</h2></div>
+          <div class="controls">
+            <button class="primary-button" data-action="start">Start</button>
+            <button class="ghost-button" data-action="stop">Stop</button>
+            <button class="ghost-button" data-action="pause">Pause</button>
+            <button class="ghost-button" data-action="resume">Resume</button>
+            <button class="primary-button" data-action="run-now">Run Now</button>
+            <button class="danger-button" data-action="cancel-run">Cancel Run</button>
+          </div>
+          <p id="control-feedback" class="feedback" role="status" aria-live="polite" style="margin-top:10px"></p>
+        </section>
+      </section>
+
+      <!-- Status Detail -->
+      <section class="panel">
+        <div class="panel-heading">
+          <h2>Status</h2>
+          <span id="scheduler-status-badge" class="status-badge idle">idle</span>
+        </div>
+        <table class="summary-table">
+          <tbody>
+            <tr><th>Mode</th><td id="s-mode">---</td></tr>
+            <tr><th>Scheduler ID</th><td id="s-id">---</td></tr>
+            <tr><th>Status</th><td id="s-status">---</td></tr>
+            <tr><th>Next Run At</th><td id="s-next-run">---</td></tr>
+            <tr><th>Active Run ID</th><td id="s-active-run">---</td></tr>
+            <tr><th>Active Report Dir</th><td id="s-active-run-report-dir">---</td></tr>
+            <tr><th>Dispatcher Thread</th><td id="s-dispatcher-thread">---</td></tr>
+            <tr><th>Last Completed Report</th><td id="s-last-report">---</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- Dispatch Plan Progress -->
+      <section class="panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Dispatch Plan Progress</h2>
+            <p id="dispatch-progress-summary" class="muted">No dispatch status loaded.</p>
+          </div>
+        </div>
+        <p id="dispatch-progress-feedback" class="feedback dispatch-plan-feedback" role="status" aria-live="polite"></p>
+        <div id="dispatch-progress-error" class="empty-state" hidden></div>
+        <div id="dispatch-progress-empty" class="empty-state">No dispatch rows loaded.</div>
+        <div class="table-shell">
+          <table id="dispatch-progress-table" class="status-table dispatch-progress-table" hidden>
+            <thead>
+              <tr>
+                <th>Plan</th>
+                <th>Lifecycle</th>
+                <th>Batch</th>
+                <th>Worker</th>
+                <th>Task</th>
+                <th>Tool Progress</th>
+                <th>Model</th>
+                <th>Depends</th>
+                <th>Owner</th>
+                <th>Issue</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="dispatch-progress-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Schedule Config -->
+      <section class="panel panel-form">
+        <div class="panel-heading">
+          <div>
+            <h2>Schedule Config</h2>
+            <p class="muted">Update when and where this scheduler reruns the saved dispatch plan.</p>
+            <p class="muted">Example: run every weekday at 09:00 and archive each run under a project reports folder.</p>
+          </div>
+        </div>
+        <form id="config-form" class="config-form stack">
+          <div class="summary-grid">
+            <label class="field">
+              <span>agent_type</span>
+              <select id="cfg-agent-type" name="agent_type">
+                <option value="claude">claude</option>
+                <option value="codex">codex</option>
+                <option value="gemini">gemini</option>
+                <option value="cursor">cursor</option>
+              </select>
+              <small class="field-hint muted">
+                Dispatcher provider used for future scheduler-owned dispatcher launches.
+              </small>
+            </label>
+            <label class="field">
+              <span>model_id</span>
+              <select id="cfg-model-id" name="model_id">
+                <option value="">provider default</option>
+                <optgroup label="codex">
+                  <option value="gpt-5.4 medium">codex: gpt-5.4 medium</option>
+                  <option value="gpt-5.5 high">codex: gpt-5.5 high</option>
+                  <option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>
+                </optgroup>
+                <optgroup label="claude">
+                  <option value="claude-opus-4-7">claude: claude-opus-4-7</option>
+                  <option value="claude-sonnet-4-6">claude: claude-sonnet-4-6</option>
+                </optgroup>
+                <optgroup label="gemini">
+                  <option value="gemini-2.5-pro">gemini: gemini-2.5-pro</option>
+                </optgroup>
+              </select>
+              <small class="field-hint muted">
+                Optional dispatcher model override. Leave blank to use the provider default.
+              </small>
+            </label>
+            <label class="field">
+              <span>mode</span>
+              <select id="cfg-agent-mode" name="mode">
+                <option value="bridge">bridge</option>
+              </select>
+              <small class="field-hint muted">
+                Launch mode for future child dispatcher sessions.
+              </small>
+            </label>
+          </div>
+          <div class="summary-grid">
+            <label class="field">
+              <span>scheduler_mode</span>
+              <select id="cfg-mode" name="scheduler_mode">
+                <option value="none">none</option>
+                <option value="cron">cron</option>
+                <option value="interval">interval</option>
+                <option value="loop">loop</option>
+              </select>
+              <small class="field-hint muted">
+                Schedule type. Example: <code>cron</code> for calendar time, <code>interval</code> for fixed spacing, <code>loop</code> after each completion.
+              </small>
+            </label>
+            <label class="field" id="cfg-cron-wrap">
+              <span>cron_expression</span>
+              <input id="cfg-cron" name="cron_expression" type="text" placeholder="0 9 * * 1-5" />
+              <small class="field-hint muted">
+                Cron mode only, 5 fields, no seconds. Example: <code>0 9 * * 1-5</code> runs weekdays at 09:00.
+              </small>
+            </label>
+            <label class="field">
+              <span>timezone</span>
+              <input id="cfg-timezone" name="timezone" type="text" placeholder="system" />
+              <small class="field-hint muted">
+                Timezone for cron math. Example: <code>Asia/Tokyo</code>; use <code>system</code> for the server timezone.
+              </small>
+            </label>
+          </div>
+          <fieldset class="field-group">
+            <legend>PM Resolver</legend>
+            <div class="summary-grid">
+              <label class="field">
+                <span>enabled</span>
+                <select id="cfg-pm-enabled" name="pm_enabled">
+                  <option value="false">false</option>
+                  <option value="true">true</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>agent_type</span>
+                <select id="cfg-pm-agent-type" name="pm_agent_type">
+                  <option value="codex">codex</option>
+                  <option value="claude">claude</option>
+                  <option value="gemini">gemini</option>
+                  <option value="cursor">cursor</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>mode</span>
+                <select id="cfg-pm-mode" name="pm_mode">
+                  <option value="bridge">bridge</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>model_id</span>
+                <select id="cfg-pm-model-id" name="pm_model_id" data-model-select>
+                  <option value="">(provider default)</option>
+                  <optgroup label="codex">
+                    <option value="gpt-5.2-codex">codex: gpt-5.2-codex</option>
+                    <option value="gpt-5.3-codex">codex: gpt-5.3-codex</option>
+                    <option value="gpt-5.4">codex: gpt-5.4</option>
+                    <option value="gpt-5.4 medium">codex: gpt-5.4 medium</option>
+                    <option value="gpt-5.4 high">codex: gpt-5.4 high</option>
+                    <option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>
+                    <option value="gpt-5.5 medium">codex: gpt-5.5 medium</option>
+                    <option value="gpt-5.5 high">codex: gpt-5.5 high</option>
+                    <option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>
+                    <option value="codex-5.3-max">codex: codex-5.3-max</option>
+                  </optgroup>
+                  <optgroup label="claude">
+                    <option value="claude-opus-4-7">claude: claude-opus-4-7</option>
+                    <option value="claude-opus-4-6">claude: claude-opus-4-6</option>
+                    <option value="claude-sonnet-4-6">claude: claude-sonnet-4-6</option>
+                  </optgroup>
+                  <optgroup label="gemini">
+                    <option value="gemini-2.5-pro">gemini: gemini-2.5-pro</option>
+                  </optgroup>
+                </select>
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>auto_approve</span>
+                <select id="cfg-pm-auto-approve" name="pm_auto_approve">
+                  <option value="false">false</option>
+                  <option value="true">true</option>
+                </select>
+              </label>
+              <label class="field field-wide">
+                <span>user_reply_channels</span>
+                <textarea id="cfg-pm-reply-channels" name="pm_reply_channels" rows="3" placeholder="Blank inherits scheduler channels"></textarea>
+              </label>
+            </div>
+          </fieldset>
+          <div class="summary-grid">
+            <label class="field" id="cfg-interval-wrap">
+              <span>interval_seconds</span>
+              <input id="cfg-interval" name="interval_seconds" type="number" min="1" />
+              <small class="field-hint muted">
+                Interval mode spacing in seconds. Example: <code>3600</code> runs about once per hour.
+              </small>
+            </label>
+            <label class="field">
+              <span>max_cycles</span>
+              <input id="cfg-max-cycles" name="max_cycles" type="number" min="1" />
+              <small class="field-hint muted">
+                Optional run limit. Example: <code>10</code> stops after 10 completed cycles.
+              </small>
+            </label>
+            <label class="field">
+              <span>delay_between_cycles_seconds</span>
+              <input id="cfg-delay" name="delay_between_cycles_seconds" type="number" min="0" />
+              <small class="field-hint muted">
+                Loop mode wait after a cycle completes. Example: <code>300</code> waits 5 minutes.
+              </small>
+            </label>
+          </div>
+          <div class="summary-grid">
+            <label class="field">
+              <span>scan_run_id_strategy</span>
+              <select id="cfg-scan-run-id-strategy" name="scan_run_id_strategy">
+                <option value="none">none</option>
+                <option value="daily-date">daily-date</option>
+              </select>
+              <small class="field-hint muted">
+                Optional routine-job run id. Use <code>daily-date</code> to publish <code>SCAN_RUN_ID</code> as a date-based value.
+              </small>
+            </label>
+            <label class="field">
+              <span>scan_run_id_prefix</span>
+              <input id="cfg-scan-run-id-prefix" name="scan_run_id_prefix" type="text" placeholder="daily" />
+              <small class="field-hint muted">
+                Prefix for date-based ids. Example: <code>daily</code> creates <code>daily-YYYY-MM-DD</code>.
+              </small>
+            </label>
+          </div>
+          <div class="summary-grid">
+            <label class="field">
+              <span>dispatch_repo_root</span>
+              <input id="cfg-dispatch-repo-root" name="dispatch_repo_root" type="text" placeholder="/abs/path/to/repo" />
+              <small class="field-hint muted">
+                Optional worker sandbox repo. Example: <code>/abs/path/to/dispatch-repo</code>.
+              </small>
+            </label>
+            <label class="field">
+              <span>docs_root</span>
+              <input id="cfg-docs-root" name="docs_root" type="text" placeholder="/abs/path/to/Docs/Projects/<repo>" />
+              <small class="field-hint muted">
+                Optional detached docs root. Example: <code>/abs/path/to/Docs/Projects/your-routine-job</code>.
+              </small>
+            </label>
+          </div>
+          <div class="summary-grid">
+            <label class="field">
+              <span>report_base_dir</span>
+              <input id="cfg-report-dir" name="report_base_dir" type="text" />
+              <small class="field-hint muted">
+                Archive base for run reports. Example: <code>/abs/path/to/Docs/Projects/your-routine-job/reports</code>.
+              </small>
+            </label>
+            <label class="field">
+              <span>catch_up_policy</span>
+              <select id="cfg-catchup" name="catch_up_policy">
+                <option value="skip_missed">skip_missed</option>
+                <option value="run_one">run_one</option>
+              </select>
+              <small class="field-hint muted">
+                Missed cron policy value stored with the scheduler. Example: <code>skip_missed</code>.
+              </small>
+            </label>
+          </div>
+          <div class="actions">
+            <button type="submit" class="primary-button">Save Config</button>
+            <p id="config-feedback" class="feedback" role="status"></p>
+          </div>
+        </form>
+        <div id="next-run-preview" class="muted" style="margin-top:8px"></div>
+      </section>
+
+      <!-- Run History -->
+      <section class="panel">
+        <div class="panel-heading"><h2>Run History</h2></div>
+        <div id="run-history-empty" class="empty-state">No runs yet.</div>
+        <div class="table-shell">
+          <table id="run-history-table" class="run-history-table" hidden>
+            <thead>
+              <tr>
+                <th>Run ID</th>
+                <th>Start</th>
+                <th>End</th>
+                <th>Duration</th>
+                <th>Outcome</th>
+              </tr>
+            </thead>
+            <tbody id="run-history-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+  </body>
+</html>

@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-LOG_DIR="${LOG_DIR:-/var/log/hub}"
-SOCKET_PATH="${HUB_SOCKET_PATH:-/tmp/hub-socks/hub-core.sock}"
+LOG_DIR="${LOG_DIR:-/var/lib/meridian/logs}"
+SOCKET_PATH="${HUB_SOCKET_PATH:-/run/meridian/sockets/hub-core.sock}"
 SOCKET_DIR="$(dirname "${SOCKET_PATH}")"
 RUNTIME_USER="${RUNTIME_USER:-${SUDO_USER:-$(id -un)}}"
 RUNTIME_GROUP="${RUNTIME_GROUP:-$(id -gn "${RUNTIME_USER}" 2>/dev/null || id -gn)}"

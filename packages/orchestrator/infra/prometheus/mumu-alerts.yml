@@ -1,0 +1,45 @@
+groups:
+  - name: mumu-phase1
+    rules:
+      - alert: MumuProvisionErrorsHigh
+        expr: rate(mumu_provision_total{status="error"}[5m]) > 1 / 60
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: Mumu provisioning errors exceed one per minute.
+      - alert: MumuReadOnlyQueryP50High
+        expr: mumu_read_only_query_duration_ms{quantile="0.5"} > 100
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: Mumu read-only query p50 latency exceeds 100ms.
+      - alert: ChatterObservationEvalErrorsHigh
+        expr: rate(chatter_observation_eval_error_total[10m]) > 5 / 60
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: Chatter observation evaluation errors exceed five per minute.
+      - alert: ChatterSandboxRootWriteDeniedHigh
+        expr: rate(chatter_sandbox_root_write_denied_total[10m]) > 10 / 60
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: Chatter read-only root write denials exceed ten per minute.
+      - alert: MumuRestoreFailed
+        expr: rate(mumu_restore_total{status="failed"}[10m]) > 0
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: Mumu savepoint restore is failing.
+      - alert: MumuArchiveLargestFileThresholdReached
+        expr: rate(mumu_archive_largest_file_bucket{bucket="gt_100mb"}[30m]) > 0
+        for: 30m
+        labels:
+          severity: warn
+        annotations:
+          summary: Mumu archive tracked file size reached the largest configured bucket.

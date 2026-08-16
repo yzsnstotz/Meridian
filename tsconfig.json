@@ -7,16 +7,14 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "rootDir": "src",
-    "outDir": "dist",
     "baseUrl": ".",
     "paths": {
-      "@hub/*": ["src/hub/*"],
-      "@interface/*": ["src/interface/*"],
-      "@monitor/*": ["src/monitor/*"],
-      "@shared/*": ["src/shared/*"]
+      "@meridian/contracts": ["packages/contracts/dist/index.d.ts"],
+      "@meridian/contracts/*": ["packages/contracts/dist/*"],
+      "@meridian/runtime": ["packages/runtime/dist/index.d.ts"],
+      "@meridian/runtime/*": ["packages/runtime/dist/*"],
+      "@meridian/supervisor": ["packages/supervisor/dist/index.d.ts"],
+      "@meridian/supervisor/*": ["packages/supervisor/dist/*"]
     }
-  },
-  "include": ["src/**/*.ts"],
-  "exclude": ["dist", "node_modules"]
+  }
 }

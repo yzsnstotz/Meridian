@@ -1,0 +1,201 @@
+import path from "node:path";
+import dotenv from "dotenv";
+import { z } from "zod";
+
+import { resolveMeridianPaths } from "@meridian/contracts";
+
+export const LEGACY_TMP_MERIDIAN_STATE_PATH = "/tmp/meridian-state.json";
+
+const bootstrapPaths = resolveRuntimePaths(process.env);
+dotenv.config({
+  path: process.env.MERIDIAN_ENV_FILE ?? path.join(bootstrapPaths.configDir, ".env"),
+  override: true,
+  quiet: true
+});
+
+export const runtimePaths = resolveRuntimePaths(process.env);
+export const DEFAULT_AGENT_WORKDIR = runtimePaths.workRoot;
+export const DEFAULT_MERIDIAN_STATE_PATH = runtimePaths.hubStatePath;
+
+const optionalEnvString = () => z.string().default("");
+const optionalPathWithDefault = (defaultValue: string) =>
+  z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.string().default(defaultValue)
+  );
+const meridianStatePathWithDefault = () =>
+  z.preprocess((value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+    const trimmed = value.trim();
+    return trimmed === "" || trimmed === LEGACY_TMP_MERIDIAN_STATE_PATH ? undefined : trimmed;
+  }, z.string().default(DEFAULT_MERIDIAN_STATE_PATH).transform((value) => path.resolve(value)));
+const envStringList = () =>
+  z
+    .string()
+    .default("")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+    );
+
+const envBoolean = (defaultValue: boolean) =>
+  z
+    .preprocess(
+      (value) => (typeof value === "string" ? value.trim().toLowerCase() : value),
+      z.enum(["true", "false"]).default(defaultValue ? "true" : "false")
+    )
+    .transform((value) => value === "true");
+
+function normalizeTelegramTokenEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const primaryToken = env.TELEGRAM_BOT_TOKEN?.trim();
+  if (primaryToken) {
+    return env;
+  }
+
+  const tokens = (env.TELEGRAM_BOT_TOKENS ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) {
+    return env;
+  }
+
+  return {
+    ...env,
+    TELEGRAM_BOT_TOKEN: tokens[0],
+    TELEGRAM_BOT_TOKENS: tokens.slice(1).join(",")
+  };
+}
+
+const envSchema = z
+  .object({
+    NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+    LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]).default("debug"),
+    TELEGRAM_BOT_TOKEN: z.string().min(1, "TELEGRAM_BOT_TOKEN is required"),
+    TELEGRAM_BOT_TOKENS: z.string().optional(),
+    ALLOWED_USER_IDS: z
+      .string()
+      .min(1, "ALLOWED_USER_IDS is required")
+      .transform((value) =>
+        value
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+          .map((entry) => Number(entry))
+      )
+      .refine((values) => values.length > 0 && values.every((id) => Number.isInteger(id) && id > 0), {
+        message: "ALLOWED_USER_IDS must be a comma-separated list of positive integers"
+      }),
+    HUB_SOCKET_PATH: z.string().default(runtimePaths.hubSocketPath),
+    HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(10000),
+    HEARTBEAT_MISSED_THRESHOLD: z.coerce.number().int().positive().default(3),
+    MONITOR_SYNC_INTERVAL_MS: z.coerce.number().int().positive().default(1000),
+    MONITOR_PROGRESS_TICK_MS: z.coerce.number().int().positive().default(1000),
+    MONITOR_UPDATE_DEFAULT_INTERVAL_SEC: z.coerce.number().int().positive().default(30),
+    MONITOR_UPDATE_MIN_INTERVAL_SEC: z.coerce.number().int().positive().default(5),
+    MONITOR_UPDATE_MAX_INTERVAL_SEC: z.coerce.number().int().positive().default(600),
+    PANE_CAPTURE_INTERVAL_MS: z.coerce.number().int().positive().default(7000),
+    PANE_BROADCAST_THROTTLE_MS: z.coerce.number().int().positive().default(1000),
+    LOG_DIR: z.string().default(runtimePaths.logDir),
+    LOG_RETENTION_ENABLED: envBoolean(true),
+    LOG_RETENTION_INTERVAL_MS: z.coerce.number().int().positive().default(300000),
+    LOG_ACTIVE_FILE_MAX_BYTES: z.coerce.number().int().positive().default(50 * 1024 * 1024),
+    LOG_ACTIVE_FILE_KEEP_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
+    LOG_SESSION_FILE_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+    LOG_SESSION_FILE_KEEP_BYTES: z.coerce.number().int().positive().default(1024 * 1024),
+    LOG_SESSION_FILE_MAX_AGE_HOURS: z.coerce.number().int().positive().default(168),
+    MERIDIAN_STATE_PATH: meridianStatePathWithDefault(),
+    // Optional override for the credentials storage directory. When unset,
+    // HubServer derives the directory from dirname(MERIDIAN_STATE_PATH)/credentials.
+    MERIDIAN_CREDENTIALS_ROOT: optionalEnvString(),
+    AGENT_WORKDIR: optionalPathWithDefault(DEFAULT_AGENT_WORKDIR),
+    COORDINATOR_SOCKET_PATH: optionalEnvString(),
+    COORDINATOR_INTENTS: envStringList(),
+    WEBHOOK_URL: optionalEnvString(),
+    WEBHOOK_PORT: z.coerce.number().int().positive().default(443),
+    WEBHOOK_SECRET_TOKEN: optionalEnvString(),
+    TELEGRAM_SUMMARY_ONLY: envBoolean(true),
+    TELEGRAM_PUSH_WHITELIST_ONLY: envBoolean(true),
+    WEB_GUI_ENABLED: envBoolean(false),
+    WEB_GUI_PORT: z.coerce.number().int().positive().default(3000),
+    WEB_GUI_HOST: optionalEnvString(),
+    WEB_GUI_TOKEN: optionalEnvString(),
+    WEB_GUI_HTTPS: envBoolean(false),
+    TLS_CERT_PATH: optionalEnvString(),
+    TLS_KEY_PATH: optionalEnvString(),
+    AGENT_REPLY_WAIT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(600),
+    AGENT_REPLY_WAIT_DELAY_MS: z.coerce.number().int().positive().default(500),
+    ANTHROPIC_API_KEY: z.string().optional(),
+    OPENAI_API_KEY: z.string().optional(),
+    GEMINI_API_KEY: z.string().optional(),
+    CURSOR_API_KEY: z.string().optional()
+  })
+  .superRefine((env, ctx) => {
+    if (env.WEB_GUI_ENABLED && !env.WEB_GUI_HOST) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["WEB_GUI_HOST"],
+        message: "WEB_GUI_HOST is required when WEB_GUI_ENABLED=true"
+      });
+    }
+
+    if (env.WEB_GUI_ENABLED && !env.WEB_GUI_TOKEN) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["WEB_GUI_TOKEN"],
+        message: "WEB_GUI_TOKEN is required when WEB_GUI_ENABLED=true"
+      });
+    }
+
+    if (env.WEB_GUI_HTTPS && !env.TLS_CERT_PATH) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["TLS_CERT_PATH"],
+        message: "TLS_CERT_PATH is required when WEB_GUI_HTTPS=true"
+      });
+    }
+
+    if (env.WEB_GUI_HTTPS && !env.TLS_KEY_PATH) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["TLS_KEY_PATH"],
+        message: "TLS_KEY_PATH is required when WEB_GUI_HTTPS=true"
+      });
+    }
+  });
+
+export function parseConfig(env: NodeJS.ProcessEnv = process.env) {
+  const paths = resolveRuntimePaths(env);
+  const parsed = envSchema.safeParse({
+    HUB_SOCKET_PATH: paths.hubSocketPath,
+    LOG_DIR: paths.logDir,
+    MERIDIAN_STATE_PATH: paths.hubStatePath,
+    AGENT_WORKDIR: paths.workRoot,
+    ...normalizeTelegramTokenEnv(env)
+  });
+
+  if (!parsed.success) {
+    const issueSummary = parsed.error.issues
+      .map((issue) => `${issue.path.join(".") || "env"}: ${issue.message}`)
+      .join("; ");
+    throw new Error(`Invalid environment configuration: ${issueSummary}`);
+  }
+
+  return parsed.data;
+}
+
+export const config = parseConfig();
+export type AppConfig = ReturnType<typeof parseConfig>;
+
+function resolveRuntimePaths(env: NodeJS.ProcessEnv) {
+  const normalizedEnv = { ...env };
+  const statePath = normalizedEnv.MERIDIAN_STATE_PATH?.trim();
+  if (!statePath || statePath === LEGACY_TMP_MERIDIAN_STATE_PATH) {
+    delete normalizedEnv.MERIDIAN_STATE_PATH;
+  }
+  return resolveMeridianPaths({ env: normalizedEnv });
+}

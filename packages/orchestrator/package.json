@@ -1,0 +1,37 @@
+{
+  "name": "@meridian/orchestrator",
+  "version": "1.2.0",
+  "private": true,
+  "bin": {
+    "meridian-roles": "./dist/bin/meridian-tool.js",
+    "meridian-migrate-roles-state": "./dist/bin/migrate-roles-state.js"
+  },
+  "description": "Meridian role-layer service — BaseRole framework, Dispatcher, prompt hot-reload, and independent GUI",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "cli": "tsx src/cli/project-policy.ts",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:e2e": "vitest run tests/e2e/scenario-*.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src tests/e2e/scenario-*.ts vitest.config.ts --ext .ts"
+  },
+  "dependencies": {
+    "@meridian/contracts": "1.0.0",
+    "ajv": "^8.20.0",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@typescript-eslint/eslint-plugin": "^8.65.0",
+    "@typescript-eslint/parser": "^8.65.0",
+    "eslint": "^10.8.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

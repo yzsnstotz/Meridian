@@ -1,0 +1,859 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>meridian-roles</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script defer src="/app.js"></script>
+  </head>
+  <body data-page="dashboard">
+    <!-- ── Global Nav ──────────────────────────────────────── -->
+    <nav class="global-nav">
+      <div class="nav-brand">
+        <span class="nav-brand-mark">M</span>
+        meridian-roles
+      </div>
+      <div class="nav-tabs">
+        <button class="nav-tab active" data-tab="dispatchers">Dispatchers<span id="nav-dispatcher-count" class="nav-tab-count" hidden>0</span></button>
+        <button class="nav-tab" data-tab="processes">Processes<span id="nav-process-count" class="nav-tab-count" hidden>0</span><span id="nav-process-leak-dot" class="nav-tab-leak-dot" hidden title="agentapi processes with no matching worker"></span></button>
+        <a class="nav-tab" href="/monitor">System Monitor<span id="nav-monitor-red-dot" class="nav-tab-leak-dot" hidden title="system monitor has a red indicator"></span></a>
+        <a class="nav-tab" href="/api/hub-web-entrance" target="_blank" rel="noopener" title="Open meridian-hub web GUI with the configured access token (HUB_WEB_URL + HUB_WEB_TOKEN env vars)">Hub →</a>
+        <button class="nav-tab" data-tab="schedulers">Schedulers<span id="nav-scheduler-count" class="nav-tab-count" hidden>0</span></button>
+        <button class="nav-tab" data-tab="roles">Roles<span id="nav-role-count" class="nav-tab-count" hidden>0</span></button>
+        <div class="nav-dropdown" id="create-role-menu">
+          <button
+            type="button"
+            class="nav-tab nav-dropdown-trigger"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="create-role-menu-list"
+          >
+            + Create Role
+            <span class="nav-dropdown-caret" aria-hidden="true">▾</span>
+          </button>
+          <ul
+            id="create-role-menu-list"
+            class="nav-dropdown-list"
+            role="menu"
+            hidden
+          >
+            <li role="none">
+              <button type="button" role="menuitem"
+                data-create-role="agent-dispatcher"
+                data-target-tab="dispatchers"
+                data-target-form="start-agent-dispatcher-form">
+                Agent Dispatcher
+              </button>
+            </li>
+            <li role="none">
+              <button type="button" role="menuitem"
+                data-create-role="scheduler"
+                data-target-tab="schedulers"
+                data-target-form="create-scheduler-form">
+                Scheduler
+              </button>
+            </li>
+            <li role="none">
+              <a role="menuitem"
+                data-create-role="chatter"
+                href="/chatter-create.html">
+                Chatter
+              </a>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    <main class="shell">
+      <!-- ════════════════════════════════════════════════════
+           TAB: DISPATCHERS
+           ════════════════════════════════════════════════════ -->
+      <div id="tab-dispatchers" class="tab-panel active">
+
+        <!-- ── Start Dispatcher Form ─────────────────────── -->
+        <section class="panel panel-form">
+          <div class="panel-heading">
+            <div>
+              <h2>Start Agent Dispatcher</h2>
+              <p class="muted">Launch with a dispatch plan. Meridian owns runtime transport; this form sets neutral launch policy.</p>
+            </div>
+            <button type="button" class="ghost-button" data-action="refresh-roles">Refresh</button>
+          </div>
+          <form id="start-agent-dispatcher-form" class="stack">
+            <!-- Plan Paths -->
+            <div class="summary-grid">
+              <label class="field">
+                <span>dispatch_plan_path</span>
+                <input
+                  id="agent-dispatcher-dispatch-plan-path"
+                  name="dispatch_plan_path"
+                  type="text"
+                  placeholder="/abs/path/to/dispatch_plan.md"
+                  required
+                />
+              </label>
+              <label class="field">
+                <span>command_file_path</span>
+                <input
+                  id="agent-dispatcher-command-file-path"
+                  name="command_file_path"
+                  type="text"
+                  placeholder="/abs/path/to/agent_dispatch_command.md"
+                  required
+                />
+              </label>
+            </div>
+
+            <div class="summary-grid">
+              <label class="field">
+                <span>dispatch_repo_root</span>
+                <input
+                  id="agent-dispatcher-dispatch-repo-root"
+                  name="dispatch_repo_root"
+                  type="text"
+                  placeholder="auto-detect from dispatch_plan_path"
+                />
+              </label>
+              <label class="field">
+                <span>docs_root</span>
+                <input
+                  id="agent-dispatcher-docs-root"
+                  name="docs_root"
+                  type="text"
+                  placeholder="auto-detect from dispatch artifacts"
+                />
+              </label>
+            </div>
+
+            <!-- Reply Channels -->
+            <div id="agent-dispatcher-manual-fallback-wrap" class="summary-grid manual-fallback-wrap">
+              <label class="field">
+                <span>manual_reply_channel</span>
+                <select id="agent-dispatcher-manual-channel" name="manual_reply_channel">
+                  <option value="web">web</option>
+                  <option value="telegram">telegram</option>
+                </select>
+              </label>
+
+              <label class="field" id="agent-dispatcher-manual-telegram-user-field" hidden>
+                <span>telegram_user_id</span>
+                <select
+                  id="agent-dispatcher-manual-telegram-user"
+                  name="manual_telegram_user_id"
+                  aria-label="Telegram user id from ALLOWED_USER_IDS"
+                >
+                  <option value="">Custom — type chat id below</option>
+                </select>
+              </label>
+
+              <label class="field" id="agent-dispatcher-manual-bot-field" hidden>
+                <span>manual_reply_bot_id</span>
+                <select id="agent-dispatcher-manual-bot-id" name="manual_reply_bot_id" aria-label="Telegram bot numeric id">
+                  <option value="">Hub default (omit bot_id)</option>
+                </select>
+              </label>
+
+              <label class="field" id="agent-dispatcher-manual-chat-id-field">
+                <span>manual_reply_chat_id</span>
+                <input
+                  id="agent-dispatcher-manual-chat-id"
+                  name="manual_reply_chat_id"
+                  type="text"
+                  placeholder="web:gui-demo"
+                  autocomplete="off"
+                  aria-describedby="agent-dispatcher-manual-chat-id-hint"
+                />
+                <small id="agent-dispatcher-manual-chat-id-hint" class="field-hint muted">
+                  Web: use a composite id such as <code>web:gui-demo</code>. Telegram: pick an operator or enter a custom chat id.
+                </small>
+              </label>
+            </div>
+
+            <!-- Agent Config -->
+            <div class="summary-grid">
+              <label class="field">
+                <span>agent_type</span>
+                <select id="agent-dispatcher-agent-type" name="agent_type">
+                  <option value="claude">claude</option>
+                  <option value="codex">codex</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>model_id</span>
+                <select id="agent-dispatcher-model-id" name="model_id" data-model-select>
+                  <option value="">(provider default)</option>
+                  <optgroup label="codex">
+                    <option value="gpt-5.2-codex">codex: gpt-5.2-codex</option>
+                    <option value="gpt-5.3-codex">codex: gpt-5.3-codex</option>
+                    <option value="gpt-5.4">codex: gpt-5.4</option>
+                    <option value="gpt-5.4 medium">codex: gpt-5.4 medium</option>
+                    <option value="gpt-5.4 high">codex: gpt-5.4 high</option>
+                    <option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>
+                    <option value="gpt-5.5 medium">codex: gpt-5.5 medium</option>
+                    <option value="gpt-5.5 high">codex: gpt-5.5 high</option>
+                    <option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>
+                    <option value="codex-5.3-max">codex: codex-5.3-max</option>
+                  </optgroup>
+                  <optgroup label="claude">
+                    <option value="claude-opus-4-7">claude: claude-opus-4-7</option>
+                    <option value="claude-opus-4-6">claude: claude-opus-4-6</option>
+                    <option value="claude-sonnet-4-6">claude: claude-sonnet-4-6</option>
+                  </optgroup>
+                  <optgroup label="gemini">
+                    <option value="gemini-2.5-pro">gemini: gemini-2.5-pro</option>
+                  </optgroup>
+                </select>
+              </label>
+              <label class="field">
+                <span>mode</span>
+                <select id="agent-dispatcher-mode" name="mode">
+                  <option value="bridge">bridge</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>kill_policy</span>
+                <select id="agent-dispatcher-kill-policy" name="kill_policy">
+                  <option value="always">always</option>
+                  <option value="on_success">on_success</option>
+                  <option value="never">never</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>auto_approve</span>
+                <input
+                  id="agent-dispatcher-auto-approve"
+                  name="auto_approve"
+                  type="checkbox"
+                  checked
+                />
+                <small class="field-hint muted">
+                  Neutral approval policy only. Meridian maps provider-specific launch flags.
+                </small>
+              </label>
+              <label class="field">
+                <span>Credential</span>
+                <select id="agent-dispatcher-credential-id" name="credential_id" data-credential-select>
+                  <option value="">Use default codex login (~/.codex)</option>
+                </select>
+                <small class="field-hint muted">
+                  Overrides the credential set forwarded to /api/spawn. Leave default
+                  unless an operator-issued credential is required.
+                </small>
+              </label>
+            </div>
+
+            <fieldset class="field-group" id="agent-dispatcher-parallel-group">
+              <legend>Parallel Dispatch</legend>
+              <div class="validator-toggle-row">
+                <input
+                  type="checkbox"
+                  id="agent-dispatcher-parallel-enabled"
+                  name="parallel_dispatch_enabled"
+                />
+                <label for="agent-dispatcher-parallel-enabled">Enable dependency-aware parallel worker dispatch</label>
+              </div>
+              <div id="agent-dispatcher-parallel-fields" class="validator-fields" hidden>
+                <label class="field">
+                  <span>max_concurrency</span>
+                  <input
+                    id="agent-dispatcher-parallel-max-concurrency"
+                    name="parallel_dispatch_max_concurrency"
+                    type="number"
+                    min="2"
+                    max="32"
+                    step="1"
+                    value="2"
+                  />
+                </label>
+              </div>
+            </fieldset>
+
+            <!-- Validator Config (Issue #1: accessible at launch time) -->
+            <fieldset class="field-group" id="agent-dispatcher-validator-group">
+              <legend>Validator</legend>
+              <div class="validator-toggle-row">
+                <input type="checkbox" id="agent-dispatcher-validator-enabled" name="validator_enabled" />
+                <label for="agent-dispatcher-validator-enabled">Enable validator for this dispatcher</label>
+              </div>
+              <div id="agent-dispatcher-validator-fields" class="validator-fields" hidden>
+                <label class="field">
+                  <span>validator agent_type</span>
+                  <select id="agent-dispatcher-validator-agent-type" name="validator_agent_type">
+                    <option value="codex" selected>codex</option>
+                    <option value="claude">claude</option>
+                    <option value="gemini">gemini</option>
+                    <option value="cursor">cursor</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>validator mode</span>
+                  <select id="agent-dispatcher-validator-mode" name="validator_mode">
+                    <option value="stateless_call" selected>stateless_call</option>
+                    <option value="bridge">bridge</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>validator model_id</span>
+                  <select id="agent-dispatcher-validator-model-id" name="validator_model_id" data-model-select>
+                    <option value="">(provider default)</option>
+                    <optgroup label="codex">
+                      <option value="gpt-5.2-codex">codex: gpt-5.2-codex</option>
+                      <option value="gpt-5.3-codex">codex: gpt-5.3-codex</option>
+                      <option value="gpt-5.4">codex: gpt-5.4</option>
+                      <option value="gpt-5.4 medium">codex: gpt-5.4 medium</option>
+                      <option value="gpt-5.4 high">codex: gpt-5.4 high</option>
+                      <option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>
+                      <option value="gpt-5.5 medium">codex: gpt-5.5 medium</option>
+                      <option value="gpt-5.5 high">codex: gpt-5.5 high</option>
+                      <option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>
+                      <option value="codex-5.3-max">codex: codex-5.3-max</option>
+                    </optgroup>
+                    <optgroup label="claude">
+                      <option value="claude-opus-4-7">claude: claude-opus-4-7</option>
+                      <option value="claude-opus-4-6">claude: claude-opus-4-6</option>
+                      <option value="claude-sonnet-4-6">claude: claude-sonnet-4-6</option>
+                    </optgroup>
+                    <optgroup label="gemini">
+                      <option value="gemini-2.5-pro">gemini: gemini-2.5-pro</option>
+                    </optgroup>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>threshold_type</span>
+                  <select
+                    id="agent-dispatcher-validator-threshold-type"
+                    name="validator_threshold_type"
+                  >
+                    <option value="score">score</option>
+                    <option value="binary">binary</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>pass_threshold</span>
+                  <input
+                    id="agent-dispatcher-validator-pass-threshold"
+                    name="validator_pass_threshold"
+                    type="number"
+                    min="0" max="1" step="0.05"
+                    value="0.7"
+                  />
+                </label>
+                <label class="field">
+                  <span>max_fix_cycles</span>
+                  <input
+                    id="agent-dispatcher-validator-max-fix-cycles"
+                    name="validator_max_fix_cycles"
+                    type="number"
+                    min="0" max="10" step="1"
+                    value="3"
+                  />
+                </label>
+                <label class="field">
+                  <span>base_branch</span>
+                  <input
+                    id="agent-dispatcher-validator-base-branch"
+                    name="validator_base_branch"
+                    type="text"
+                    value="main"
+                  />
+                </label>
+                <label class="field">
+                  <span>Override credential</span>
+                  <select
+                    id="agent-dispatcher-validator-credential-id"
+                    name="validator_credential_id"
+                    data-credential-select
+                  >
+                    <option value="">Use default codex login (~/.codex)</option>
+                  </select>
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset class="field-group" id="agent-dispatcher-pm-group">
+              <legend>PM Resolver</legend>
+              <div class="validator-toggle-row">
+                <input type="checkbox" id="agent-dispatcher-pm-enabled" name="pm_enabled" checked />
+                <label for="agent-dispatcher-pm-enabled">Enable PM resolver for this dispatcher</label>
+              </div>
+              <div id="agent-dispatcher-pm-fields" class="validator-fields">
+                <label class="field">
+                  <span>pm agent_type</span>
+                  <select id="agent-dispatcher-pm-agent-type" name="pm_agent_type">
+                    <option value="codex" selected>codex</option>
+                    <option value="claude">claude</option>
+                    <option value="gemini">gemini</option>
+                    <option value="cursor">cursor</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>pm mode</span>
+                  <select id="agent-dispatcher-pm-mode" name="pm_mode">
+                    <option value="bridge" selected>bridge</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>pm model_id</span>
+                  <select id="agent-dispatcher-pm-model-id" name="pm_model_id" data-model-select>
+                    <option value="">(provider default)</option>
+                    <optgroup label="codex">
+                      <option value="gpt-5.2-codex">codex: gpt-5.2-codex</option>
+                      <option value="gpt-5.3-codex">codex: gpt-5.3-codex</option>
+                      <option value="gpt-5.4">codex: gpt-5.4</option>
+                      <option value="gpt-5.4 medium">codex: gpt-5.4 medium</option>
+                      <option value="gpt-5.4 high">codex: gpt-5.4 high</option>
+                      <option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>
+                      <option value="gpt-5.5 medium">codex: gpt-5.5 medium</option>
+                      <option value="gpt-5.5 high">codex: gpt-5.5 high</option>
+                      <option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>
+                      <option value="codex-5.3-max">codex: codex-5.3-max</option>
+                    </optgroup>
+                    <optgroup label="claude">
+                      <option value="claude-opus-4-7">claude: claude-opus-4-7</option>
+                      <option value="claude-opus-4-6">claude: claude-opus-4-6</option>
+                      <option value="claude-sonnet-4-6">claude: claude-sonnet-4-6</option>
+                    </optgroup>
+                    <optgroup label="gemini">
+                      <option value="gemini-2.5-pro">gemini: gemini-2.5-pro</option>
+                    </optgroup>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>pm auto_approve</span>
+                  <input id="agent-dispatcher-pm-auto-approve" name="pm_auto_approve" type="checkbox" />
+                </label>
+                <label class="field">
+                  <span>Override credential</span>
+                  <select
+                    id="agent-dispatcher-pm-credential-id"
+                    name="pm_credential_id"
+                    data-credential-select
+                  >
+                    <option value="">Use default codex login (~/.codex)</option>
+                  </select>
+                </label>
+                <label class="field field-wide">
+                  <span>pm user_reply_channels</span>
+                  <textarea id="agent-dispatcher-pm-reply-channels" name="pm_reply_channels" rows="3" placeholder="Blank inherits dispatcher channels"></textarea>
+                </label>
+              </div>
+            </fieldset>
+
+            <!-- System Prompt -->
+            <label class="field">
+              <span>system_prompt</span>
+              <textarea
+                id="agent-dispatcher-system-prompt"
+                class="editor-textarea"
+                name="system_prompt"
+                rows="16"
+                spellcheck="false"
+              ></textarea>
+            </label>
+
+            <div class="actions">
+              <button id="agent-dispatcher-prompt-reset" type="button" class="ghost-button">Reset Default Prompt</button>
+              <p class="muted">Resets to the current default — stays editable before launch.</p>
+            </div>
+
+            <div class="actions">
+              <button type="submit" class="primary-button">Start Agent Dispatcher</button>
+              <p id="agent-dispatcher-feedback" class="feedback" role="status" aria-live="polite"></p>
+            </div>
+          </form>
+        </section>
+
+        <!-- ── Active Dispatchers ────────────────────────── -->
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Active Agent Dispatchers</h2>
+              <p class="muted">Live status, current worker, and latest dispatcher tail.</p>
+            </div>
+          </div>
+          <div id="agent-dispatchers-empty" class="empty-state">No active agent dispatchers.</div>
+          <div id="agent-dispatchers-list" class="card-grid"></div>
+        </section>
+      </div>
+
+      <!-- ════════════════════════════════════════════════════
+           TAB: SCHEDULERS
+           ════════════════════════════════════════════════════ -->
+      <div id="tab-schedulers" class="tab-panel">
+
+        <!-- ── Create Scheduler ──────────────────────────── -->
+        <section class="panel panel-form">
+          <div class="panel-heading">
+            <div>
+              <h2>Create Scheduler</h2>
+              <p class="muted">Register a new routine job scheduler. Point it at a taskspec directory or dispatch plan.</p>
+              <p class="muted">Example: run a dispatch plan every weekday at 09:00 and archive reports under a project reports folder.</p>
+            </div>
+          </div>
+          <form id="create-scheduler-form" class="stack">
+            <div class="summary-grid">
+              <label class="field">
+                <span>taskspec_dir</span>
+                <input
+                  id="new-scheduler-taskspec-dir"
+                  name="taskspec_dir"
+                  type="text"
+                  placeholder="/abs/path/to/taskspec/"
+                />
+                <small class="field-hint muted">
+                  Optional helper. Example: <code>/abs/path/to/your-routine-job/taskspec</code>; fills <code>your-routine-job-plan.md</code> and a sibling reports folder.
+                </small>
+              </label>
+              <label class="field">
+                <span>dispatch_plan_path</span>
+                <input
+                  id="new-scheduler-plan-path"
+                  name="dispatch_plan_path"
+                  type="text"
+                  placeholder="/abs/path/to/dispatch_plan.md"
+                />
+                <small class="field-hint muted">
+                  Required plan file the scheduler resets and runs. Example: <code>/workspace/Docs/Projects/app/branch/feat/taskspec/dispatch_plan.md</code>.
+                </small>
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>agent_type</span>
+                <select id="new-scheduler-agent-type" name="agent_type">
+                  <option value="claude">claude</option>
+                  <option value="codex">codex</option>
+                  <option value="gemini">gemini</option>
+                  <option value="cursor">cursor</option>
+                </select>
+                <small class="field-hint muted">
+                  Dispatcher provider used when the scheduler launches the child dispatcher.
+                </small>
+              </label>
+              <label class="field">
+                <span>model_id</span>
+                <select id="new-scheduler-model-id" name="model_id">
+                  <option value="">provider default</option>
+                  <optgroup label="codex">
+                    <option value="gpt-5.4 medium">codex: gpt-5.4 medium</option>
+                    <option value="gpt-5.5 high">codex: gpt-5.5 high</option>
+                    <option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>
+                  </optgroup>
+                  <optgroup label="claude">
+                    <option value="claude-opus-4-7">claude: claude-opus-4-7</option>
+                    <option value="claude-sonnet-4-6">claude: claude-sonnet-4-6</option>
+                  </optgroup>
+                  <optgroup label="gemini">
+                    <option value="gemini-2.5-pro">gemini: gemini-2.5-pro</option>
+                  </optgroup>
+                </select>
+                <small class="field-hint muted">
+                  Optional dispatcher model override. Leave blank to use the provider default.
+                </small>
+              </label>
+              <label class="field">
+                <span>mode</span>
+                <select id="new-scheduler-agent-mode" name="mode">
+                  <option value="bridge">bridge</option>
+                </select>
+                <small class="field-hint muted">
+                  Launch mode for the scheduler-owned child dispatcher.
+                </small>
+              </label>
+              <label class="field">
+                <span>auto_approve</span>
+                <input
+                  id="new-scheduler-auto-approve"
+                  name="auto_approve"
+                  type="checkbox"
+                  checked
+                />
+                <small class="field-hint muted">
+                  Neutral approval policy only. Meridian maps provider-specific launch flags.
+                </small>
+              </label>
+            </div>
+            <fieldset class="field-group" id="new-scheduler-pm-group">
+              <legend>PM Resolver</legend>
+              <div class="validator-toggle-row">
+                <input type="checkbox" id="new-scheduler-pm-enabled" name="pm_enabled" checked />
+                <label for="new-scheduler-pm-enabled">Enable PM resolver for this scheduler</label>
+              </div>
+              <div id="new-scheduler-pm-fields" class="validator-fields">
+                <label class="field">
+                  <span>pm agent_type</span>
+                  <select id="new-scheduler-pm-agent-type" name="pm_agent_type">
+                    <option value="codex" selected>codex</option>
+                    <option value="claude">claude</option>
+                    <option value="gemini">gemini</option>
+                    <option value="cursor">cursor</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>pm mode</span>
+                  <select id="new-scheduler-pm-mode" name="pm_mode">
+                    <option value="bridge" selected>bridge</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>pm model_id</span>
+                  <select id="new-scheduler-pm-model-id" name="pm_model_id" data-model-select>
+                    <option value="">(provider default)</option>
+                    <optgroup label="codex">
+                      <option value="gpt-5.2-codex">codex: gpt-5.2-codex</option>
+                      <option value="gpt-5.3-codex">codex: gpt-5.3-codex</option>
+                      <option value="gpt-5.4">codex: gpt-5.4</option>
+                      <option value="gpt-5.4 medium">codex: gpt-5.4 medium</option>
+                      <option value="gpt-5.4 high">codex: gpt-5.4 high</option>
+                      <option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>
+                      <option value="gpt-5.5 medium">codex: gpt-5.5 medium</option>
+                      <option value="gpt-5.5 high">codex: gpt-5.5 high</option>
+                      <option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>
+                      <option value="codex-5.3-max">codex: codex-5.3-max</option>
+                    </optgroup>
+                    <optgroup label="claude">
+                      <option value="claude-opus-4-7">claude: claude-opus-4-7</option>
+                      <option value="claude-opus-4-6">claude: claude-opus-4-6</option>
+                      <option value="claude-sonnet-4-6">claude: claude-sonnet-4-6</option>
+                    </optgroup>
+                    <optgroup label="gemini">
+                      <option value="gemini-2.5-pro">gemini: gemini-2.5-pro</option>
+                    </optgroup>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>pm auto_approve</span>
+                  <input id="new-scheduler-pm-auto-approve" name="pm_auto_approve" type="checkbox" />
+                </label>
+                <label class="field field-wide">
+                  <span>pm user_reply_channels</span>
+                  <textarea id="new-scheduler-pm-reply-channels" name="pm_reply_channels" rows="3" placeholder="Blank inherits scheduler channels"></textarea>
+                </label>
+              </div>
+            </fieldset>
+            <div class="summary-grid">
+              <label class="field">
+                <span>scheduler_mode</span>
+                <select id="new-scheduler-mode" name="scheduler_mode">
+                  <option value="none">none</option>
+                  <option value="cron">cron</option>
+                  <option value="interval">interval</option>
+                  <option value="loop">loop</option>
+                </select>
+                <small class="field-hint muted">
+                  Schedule type. Example: <code>cron</code> for calendar time, <code>interval</code> for fixed spacing, <code>loop</code> after each completion.
+                </small>
+              </label>
+              <label class="field">
+                <span>cron_expression</span>
+                <input id="new-scheduler-cron" name="cron_expression" type="text" placeholder="0 9 * * 1-5" />
+                <small class="field-hint muted">
+                  Cron mode only, 5 fields, no seconds. Example: <code>0 9 * * 1-5</code> runs weekdays at 09:00.
+                </small>
+              </label>
+              <label class="field">
+                <span>timezone</span>
+                <input id="new-scheduler-timezone" name="timezone" type="text" placeholder="system (e.g. Asia/Tokyo)" />
+                <small class="field-hint muted">
+                  Timezone for cron math. Example: <code>Asia/Tokyo</code>; use <code>system</code> for the server timezone.
+                </small>
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>interval_seconds</span>
+                <input id="new-scheduler-interval" name="interval_seconds" type="number" min="1" />
+                <small class="field-hint muted">
+                  Interval mode spacing in seconds. Example: <code>3600</code> runs about once per hour.
+                </small>
+              </label>
+              <label class="field">
+                <span>max_cycles</span>
+                <input id="new-scheduler-max-cycles" name="max_cycles" type="number" min="1" />
+                <small class="field-hint muted">
+                  Optional run limit. Example: <code>10</code> stops after 10 completed cycles.
+                </small>
+              </label>
+              <label class="field">
+                <span>delay_between_cycles_seconds</span>
+                <input id="new-scheduler-delay" name="delay_between_cycles_seconds" type="number" min="0" />
+                <small class="field-hint muted">
+                  Loop mode wait after a cycle completes. Example: <code>300</code> waits 5 minutes.
+                </small>
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>scan_run_id_strategy</span>
+                <select id="new-scheduler-scan-run-id-strategy" name="scan_run_id_strategy">
+                  <option value="none">none</option>
+                  <option value="daily-date">daily-date</option>
+                </select>
+                <small class="field-hint muted">
+                  Optional routine-job run id. Use <code>daily-date</code> to publish <code>SCAN_RUN_ID</code> as a date-based value.
+                </small>
+              </label>
+              <label class="field">
+                <span>scan_run_id_prefix</span>
+                <input id="new-scheduler-scan-run-id-prefix" name="scan_run_id_prefix" type="text" value="daily" />
+                <small class="field-hint muted">
+                  Prefix for date-based ids. Example: <code>daily</code> creates <code>daily-YYYY-MM-DD</code>.
+                </small>
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>dispatch_repo_root</span>
+                <input id="new-scheduler-repo-root" name="dispatch_repo_root" type="text" placeholder="/abs/path/to/repo" />
+                <small class="field-hint muted">
+                  Optional worker sandbox repo. Example: <code>/abs/path/to/dispatch-repo</code>.
+                </small>
+              </label>
+              <label class="field">
+                <span>docs_root</span>
+                <input id="new-scheduler-docs-root" name="docs_root" type="text" placeholder="/abs/path/to/Docs/Projects/..." />
+                <small class="field-hint muted">
+                  Optional detached docs root. Example: <code>/abs/path/to/Docs/Projects/your-routine-job</code>.
+                </small>
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>report_base_dir</span>
+                <input id="new-scheduler-report-dir" name="report_base_dir" type="text" placeholder="/abs/path/to/reports" required />
+                <small class="field-hint muted">
+                  Required archive base. Example: <code>/abs/path/to/Docs/Projects/your-routine-job/reports</code>.
+                </small>
+              </label>
+              <label class="field">
+                <span>catch_up_policy</span>
+                <select id="new-scheduler-catchup" name="catch_up_policy">
+                  <option value="skip_missed">skip_missed</option>
+                  <option value="run_one">run_one</option>
+                </select>
+                <small class="field-hint muted">
+                  Missed cron policy value stored with the scheduler. Example: <code>skip_missed</code>.
+                </small>
+              </label>
+            </div>
+            <div class="actions">
+              <button type="submit" class="primary-button">Create Scheduler</button>
+              <p id="create-scheduler-feedback" class="feedback" role="status" aria-live="polite"></p>
+            </div>
+          </form>
+        </section>
+
+        <!-- ── Active Schedulers ─────────────────────────── -->
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Active Schedulers</h2>
+              <p class="muted">Routine job schedulers managing dispatch plan cycles.</p>
+            </div>
+          </div>
+          <div id="schedulers-empty" class="empty-state">No active schedulers.</div>
+          <div id="schedulers-list" class="card-grid"></div>
+        </section>
+      </div>
+
+      <!-- ════════════════════════════════════════════════════
+           TAB: ROLES
+           ════════════════════════════════════════════════════ -->
+      <div id="tab-roles" class="tab-panel">
+        <section class="panel">
+          <div class="panel-heading">
+            <h2>All Active Roles</h2>
+            <p class="muted">Live state read from the persisted role store.</p>
+          </div>
+          <div id="roles-empty" class="empty-state">No active roles.</div>
+          <div id="roles-list" class="card-grid"></div>
+        </section>
+      </div>
+
+      <!-- ════════════════════════════════════════════════════
+           TAB: PROCESSES
+           ════════════════════════════════════════════════════ -->
+      <div id="tab-processes" class="tab-panel">
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Live agentapi / codex / claude processes</h2>
+              <p class="muted">
+                Rows are grouped by their actual owner — each group header
+                names the worker / dispatcher / validator / PM-resolver /
+                stateless Hub-direct call / external session, and shows ONE
+                deduped token total across the group's PIDs. Sub-rows are the
+                individual processes that make up that group (typically
+                <code>agentapi</code> shim → <code>codex</code> node shim →
+                <code>codex</code> native binary, all sharing one LLM session
+                file). Origins:
+                <strong class="origin-tag origin-managed">meridian-roles</strong>
+                <span> — spawned by meridian-roles, parented or bound to a dispatcher;</span>
+                <strong class="origin-tag origin-hub">meridian-hub</strong>
+                <span> — live in Meridian Hub but are not claimed by this Meridian-roles state;</span>
+                <strong class="origin-tag origin-orphan">orphan</strong>
+                <span> — codex/claude survived after its agentapi parent died (treated as a leak);</span>
+                <strong class="origin-tag origin-external">external</strong>
+                <span> — terminal sessions, Claude Code, other tools — NOT spawned by meridian-roles, safe to ignore.</span>
+                <br>
+                <strong class="leak-callout">Pulsing red dot = leak.</strong>
+                Auto-refreshes every 3 seconds. When two sub-rows show the same
+                token numbers, the second is tagged
+                <span class="session-shared muted">↑ same session as PID X</span>
+                so you can see the group is not double-counting.
+              </p>
+            </div>
+            <div id="process-summary" class="process-summary"></div>
+          </div>
+          <label class="process-filter-toggle">
+            <input type="checkbox" id="process-hide-external">
+            Hide external (terminal sessions, Claude Code, unrelated tools)
+          </label>
+          <div id="processes-empty" class="empty-state">No agentapi/codex/claude processes detected on the host.</div>
+          <div id="processes-table-shell" class="table-shell" hidden>
+            <table class="status-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>origin</th>
+                  <th>PID</th>
+                  <th>PPID</th>
+                  <th>agent</th>
+                  <th>thread_id</th>
+                  <th>worker</th>
+                  <th>dispatcher</th>
+                  <th>uptime</th>
+                  <th title="cumulative model tokens for this session — in / out / total. shim + native processes share one session and show the same numbers.">tokens (in / out / total)</th>
+                </tr>
+              </thead>
+              <tbody id="processes-table-body"></tbody>
+            </table>
+          </div>
+          <div id="processes-history-shell" class="table-shell history-shell">
+            <h3 class="history-title">Departed processes (this browser session)</h3>
+            <p class="history-help muted">PIDs that were live in a previous poll but are no longer present. Capped at 100 entries, newest first; clears on page reload.</p>
+            <div id="processes-history-empty" class="empty-state">No departed processes recorded yet. Keep this Processes tab open; only PIDs observed by this page can be captured.</div>
+            <table id="processes-history-table" class="status-table" hidden>
+              <thead>
+                <tr>
+                  <th>PID</th>
+                  <th>origin</th>
+                  <th>agent</th>
+                  <th>thread_id</th>
+                  <th title="final cumulative tokens at last sighting">tokens (final)</th>
+                  <th>session file</th>
+                  <th>last seen</th>
+                  <th>command</th>
+                </tr>
+              </thead>
+              <tbody id="processes-history-body"></tbody>
+            </table>
+          </div>
+          <p id="processes-feedback" class="feedback" role="status" aria-live="polite"></p>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>

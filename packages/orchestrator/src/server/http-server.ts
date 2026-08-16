@@ -1,0 +1,263 @@
+import fsSync from "node:fs";
+import * as fs from "node:fs/promises";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import path from "node:path";
+
+import { GUI_LISTEN_HOST, GUI_PORT } from "../config";
+import type { Logger } from "../roles/base-role";
+import type { ProcessHandlers } from "./process-handlers";
+import type { MetricsHandlers } from "./metrics-handlers";
+import type { PromptHandlers } from "./prompt-handlers";
+import type { RoleHandlers } from "./role-handlers";
+import type { SchedulerHandlers } from "./scheduler-handlers";
+import type { SystemMonitorHandlers } from "./system-monitor";
+import type { AutoProvisionerHandlers } from "../web/auto-provisioner";
+
+export interface HttpServerOptions {
+  port?: number;
+  host?: string;
+  roleHandlers: RoleHandlers;
+  promptHandlers: PromptHandlers;
+  schedulerHandlers?: SchedulerHandlers;
+  processHandlers?: ProcessHandlers;
+  metricsHandlers?: MetricsHandlers;
+  systemMonitorHandlers?: SystemMonitorHandlers;
+  autoProvisionerHandlers?: AutoProvisionerHandlers;
+  publicDir?: string;
+  log?: Logger;
+}
+
+export class HttpServer {
+  private readonly port: number;
+  private readonly host: string | undefined;
+  private readonly publicDir: string;
+  private readonly log: Logger;
+  private readonly roleHandlers: RoleHandlers;
+  private readonly promptHandlers: PromptHandlers;
+  private readonly schedulerHandlers: SchedulerHandlers | null;
+  private readonly processHandlers: ProcessHandlers | null;
+  private readonly metricsHandlers: MetricsHandlers | null;
+  private readonly systemMonitorHandlers: SystemMonitorHandlers | null;
+  private readonly autoProvisionerHandlers: AutoProvisionerHandlers | null;
+  private server: Server | null = null;
+
+  constructor(options: HttpServerOptions) {
+    this.port = options.port ?? GUI_PORT;
+    this.host = normalizeOptionalHost(options.host ?? GUI_LISTEN_HOST);
+    this.publicDir = options.publicDir ?? resolvePublicDir();
+    this.log = options.log ?? console;
+    this.roleHandlers = options.roleHandlers;
+    this.promptHandlers = options.promptHandlers;
+    this.schedulerHandlers = options.schedulerHandlers ?? null;
+    this.processHandlers = options.processHandlers ?? null;
+    this.metricsHandlers = options.metricsHandlers ?? null;
+    this.systemMonitorHandlers = options.systemMonitorHandlers ?? null;
+    this.autoProvisionerHandlers = options.autoProvisionerHandlers ?? null;
+  }
+
+  async listen(): Promise<void> {
+    if (this.server) {
+      return;
+    }
+
+    const server = createServer((request, response) => {
+      void this.handle(request, response);
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      const onListen = () => {
+        server.removeListener("error", reject);
+        resolve();
+      };
+
+      if (this.host) {
+        server.listen(this.port, this.host, onListen);
+        return;
+      }
+
+      server.listen(this.port, onListen);
+    });
+
+    this.server = server;
+    this.log.info("HTTP server listening", {
+      port: this.port,
+      host: this.host ?? "(default)",
+      publicDir: this.publicDir
+    });
+  }
+
+  async close(): Promise<void> {
+    const server = this.server;
+    this.server = null;
+    if (!server) {
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+
+  private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    try {
+      if (await this.promptHandlers.handle(request, response)) {
+        return;
+      }
+
+      if (this.schedulerHandlers && await this.schedulerHandlers.handle(request, response)) {
+        return;
+      }
+
+      if (this.processHandlers && await this.processHandlers.handle(request, response)) {
+        return;
+      }
+
+      if (this.metricsHandlers && await this.metricsHandlers.handle(request, response)) {
+        return;
+      }
+
+      if (this.systemMonitorHandlers && await this.systemMonitorHandlers.handle(request, response)) {
+        return;
+      }
+
+      if (this.autoProvisionerHandlers && await this.autoProvisionerHandlers.handle(request, response)) {
+        return;
+      }
+
+      if (await this.roleHandlers.handle(request, response)) {
+        return;
+      }
+
+      const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+      const asset = mapPublicAsset(pathname);
+      if (!asset) {
+        if (pathname.startsWith("/api/")) {
+          writeJson(response, 404, { error: "Not found" });
+          return;
+        }
+
+        writeText(response, 404, "Not found\n");
+        return;
+      }
+
+      const filePath = path.join(this.publicDir, asset.fileName);
+      const body = await fs.readFile(filePath);
+      response.statusCode = 200;
+      response.setHeader("content-type", asset.contentType);
+      response.setHeader("cache-control", "no-store");
+      response.end(body);
+    } catch (error) {
+      this.log.error("HTTP request failed", {
+        url: request.url,
+        error: error instanceof Error ? error.message : String(error)
+      });
+
+      if (!response.headersSent) {
+        if ((request.url ?? "").startsWith("/api/")) {
+          writeJson(response, 500, { error: "Internal server error" });
+        } else {
+          writeText(response, 500, "Internal server error\n");
+        }
+      } else {
+        response.end();
+      }
+    }
+  }
+}
+
+function resolvePublicDir(): string {
+  const direct = path.resolve(__dirname, "../web/public");
+  const fallback = path.resolve(__dirname, "../../src/web/public");
+
+  return selectPublicDir(direct, fallback);
+}
+
+export function selectPublicDir(direct: string, fallback: string): string {
+  if (hasRequiredPublicAssets(direct)) {
+    return direct;
+  }
+
+  if (hasRequiredPublicAssets(fallback)) {
+    return fallback;
+  }
+
+  return fsSync.existsSync(direct) ? direct : fallback;
+}
+
+function hasRequiredPublicAssets(directory: string): boolean {
+  return ["index.html", "app.js", "style.css", "scheduler.html"].every((fileName) => {
+    try {
+      return fsSync.statSync(path.join(directory, fileName)).isFile();
+    } catch {
+      return false;
+    }
+  });
+}
+
+function normalizeOptionalHost(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+export function mapPublicAsset(pathname: string): { fileName: string; contentType: string } | null {
+  if (pathname === "/" || pathname === "/index.html") {
+    return { fileName: "index.html", contentType: "text/html; charset=utf-8" };
+  }
+
+  if (pathname === "/monitor" || pathname === "/monitor.html") {
+    return { fileName: "monitor.html", contentType: "text/html; charset=utf-8" };
+  }
+
+  if (pathname === "/chatter-create" || pathname === "/chatter-create.html") {
+    return { fileName: "chatter-create.html", contentType: "text/html; charset=utf-8" };
+  }
+
+  if (/^\/role\/scheduler-[^/]+$/.test(pathname)) {
+    return { fileName: "scheduler.html", contentType: "text/html; charset=utf-8" };
+  }
+
+  if (/^\/role\/[^/]+$/.test(pathname)) {
+    return { fileName: "role.html", contentType: "text/html; charset=utf-8" };
+  }
+
+  if (/^\/role\/[^/]+\/prompts$/.test(pathname)) {
+    return { fileName: "prompts.html", contentType: "text/html; charset=utf-8" };
+  }
+
+  if (/^\/role\/[^/]+\/config$/.test(pathname)) {
+    return { fileName: "config.html", contentType: "text/html; charset=utf-8" };
+  }
+
+  if (/^\/scheduler\/[^/]+$/.test(pathname)) {
+    return { fileName: "scheduler.html", contentType: "text/html; charset=utf-8" };
+  }
+
+  if (pathname === "/app.js") {
+    return { fileName: "app.js", contentType: "text/javascript; charset=utf-8" };
+  }
+
+  if (pathname === "/monitor.js") {
+    return { fileName: "monitor.js", contentType: "text/javascript; charset=utf-8" };
+  }
+
+  if (pathname === "/style.css") {
+    return { fileName: "style.css", contentType: "text/css; charset=utf-8" };
+  }
+
+  return null;
+}
+
+function writeJson(response: ServerResponse, statusCode: number, body: unknown): void {
+  response.statusCode = statusCode;
+  response.setHeader("content-type", "application/json; charset=utf-8");
+  response.setHeader("cache-control", "no-store");
+  response.end(`${JSON.stringify(body)}\n`);
+}
+
+function writeText(response: ServerResponse, statusCode: number, body: string): void {
+  response.statusCode = statusCode;
+  response.setHeader("content-type", "text/plain; charset=utf-8");
+  response.setHeader("cache-control", "no-store");
+  response.end(body);
+}
