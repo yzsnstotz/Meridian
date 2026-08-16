@@ -51,6 +51,16 @@ if (IS_EPHEMERAL_STATE_FILE_PATH) {
 export const FALLBACK_HEURISTICS_ENABLED =
   (process.env.MERIDIAN_FALLBACK_HEURISTICS_ENABLED ?? "true").toLowerCase() !== "false";
 
+// Kill-switch for automatic watchdog-driven bare parallel continuation. Read
+// dynamically so an operator can change it without rebuilding the service.
+// Defaults on because parallel_dispatch.enabled is already the plan-level
+// opt-in; the breaker still guards repeated no-op continuations.
+const DISPATCH_AUTO_PARALLEL_DISABLE_VALUES = new Set(["false", "0", "off", "no"]);
+export function isDispatchAutoParallelEnabled(): boolean {
+  const raw = (process.env.MERIDIAN_DISPATCH_AUTO_PARALLEL ?? "true").trim().toLowerCase();
+  return !DISPATCH_AUTO_PARALLEL_DISABLE_VALUES.has(raw);
+}
+
 function loadEnvFiles(configDir: string): void {
   const explicitEnvKeys = new Set(Object.keys(process.env));
   const explicitEnvFile = normalizeOptionalEnvValue(process.env.MERIDIAN_ENV_FILE);

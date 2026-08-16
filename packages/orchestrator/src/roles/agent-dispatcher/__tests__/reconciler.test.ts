@@ -2578,6 +2578,168 @@ describe("reconcile", () => {
       })
     );
   });
+
+  it("does not treat PM resolver history appended after retry start as worker output", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const harness = await createHarness();
+    const startedAt = "2026-04-03T12:20:00.000Z";
+    const pmTimestamp = "2026-04-03T12:21:00.000Z";
+    const outputPath = await harness.writeOutput("reports/BATCH-4-GATE.md", [
+      "# BATCH-4-GATE Report",
+      "",
+      "## Attempt 1 - 2026-04-03T12:00:00.000Z - role: worker",
+      "",
+      "### Outcome",
+      "",
+      "`needs_pm`.",
+      "",
+      "---",
+      "",
+      "## PM Resolver Report - BATCH-4-GATE",
+      "",
+      "- PM Thread: pm-thread-1",
+      "- Status: completed",
+      "- Issue: manual_intervention_required",
+      "- Source: watchdog",
+      `- Timestamp: ${pmTimestamp}`,
+      "- Message: manual intervention required: BATCH-4-GATE reported a blocking failure",
+      "",
+      "Resolved by retry."
+    ].join("\n"));
+    await fsp.utimes(outputPath, new Date(pmTimestamp), new Date(pmTimestamp));
+
+    harness.store.save(buildState({
+      workers: {
+        "BATCH-4-GATE": buildRunningWorker("worker-thread-b4", outputPath, startedAt)
+      }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildMissingThreadResult(message.thread_id));
+
+    const report = await reconcile(harness.store, hubClient);
+
+    expect(harness.store.load().workers["BATCH-4-GATE"]?.status).toBe("abandoned");
+    expect(report.changed).toContainEqual(
+      expect.objectContaining({
+        workerId: "BATCH-4-GATE",
+        from: "running",
+        to: "abandoned",
+        trigger: "thread_missing:no_evidence"
+      })
+    );
+    expect(report.changed).not.toContainEqual(
+      expect.objectContaining({
+        trigger: expect.stringContaining("output_artifact")
+      })
+    );
+  });
+
+  // Section ownership is decided at the `##` level. Each case below writes a
+  // report whose ONLY post-retry-start timestamp sits inside the named
+  // section, then asserts whether that counts as worker output. Nearest-
+  // heading resolution against a fixed title allowlist failed every case
+  // except the first.
+  async function runSectionOwnershipCase(sectionBody: string[]): Promise<{
+    status: string | undefined;
+    changed: Awaited<ReturnType<typeof reconcile>>["changed"];
+  }> {
+    const harness = await createHarness();
+    const startedAt = "2026-04-03T12:20:00.000Z";
+    const appendedAt = "2026-04-03T12:21:00.000Z";
+    const outputPath = await harness.writeOutput("reports/C-08.md", [
+      "# C-08 Report",
+      "",
+      "## Attempt 1 - 2026-04-03T12:00:00.000Z - role: worker",
+      "",
+      "`needs_pm`.",
+      "",
+      "---",
+      "",
+      ...sectionBody
+    ].join("\n"));
+    await fsp.utimes(outputPath, new Date(appendedAt), new Date(appendedAt));
+
+    harness.store.save(buildState({
+      workers: { "C-08": buildRunningWorker("worker-thread-c8", outputPath, startedAt) }
+    }));
+
+    const { hubClient } = createHubClient((message) => buildMissingThreadResult(message.thread_id));
+    const report = await reconcile(harness.store, hubClient);
+    return { status: harness.store.load().workers["C-08"]?.status, changed: report.changed };
+  }
+
+  const NO_EVIDENCE = expect.objectContaining({ trigger: "thread_missing:no_evidence" });
+
+  it("attributes a timestamp under a role sub-heading to its enclosing ## section", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    // The fresh timestamp sits under `### PM Decision`, not directly under the
+    // `##`. Resolving to the nearest heading returned "PM Decision" and lost
+    // the parent's ownership, so this read as worker output.
+    const { status, changed } = await runSectionOwnershipCase([
+      "## PM Resolver Report - C-08",
+      "",
+      "### PM Decision",
+      "",
+      "- Timestamp: 2026-04-03T12:21:00.000Z",
+      "- Retry authorised."
+    ]);
+
+    expect(status).toBe("abandoned");
+    expect(changed).toContainEqual(NO_EVIDENCE);
+  });
+
+  it("recognises a PM Clarification section as role history", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    // The exact heading `pm-clarification-writer.ts` emits on the v1.23.0
+    // auto-delegate path — appended to the worker's own report.
+    const { status, changed } = await runSectionOwnershipCase([
+      "## PM Clarification — Auto-delegated to V-01 (validator cycle 2)",
+      "",
+      "### Decision",
+      "",
+      "Acceptance delegated. Recorded 2026-04-03T12:21:00.000Z."
+    ]);
+
+    expect(status).toBe("abandoned");
+    expect(changed).toContainEqual(NO_EVIDENCE);
+  });
+
+  it("recognises the dated PM Resolver heading variant as role history", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    const { status, changed } = await runSectionOwnershipCase([
+      "## PM Resolver — 2026-04-03 — role: pm-resolver",
+      "",
+      "Reconciled at 2026-04-03T12:21:00.000Z."
+    ]);
+
+    expect(status).toBe("abandoned");
+    expect(changed).toContainEqual(NO_EVIDENCE);
+  });
+
+  it("does not swallow the worker's own Validation section", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(FIXED_NOW));
+
+    // Anti-regression for the widened role-token test: `Validation` is a
+    // worker-authored section and must not match `Validator\b`. If it did,
+    // genuine worker output would be discarded as role history.
+    const { status, changed } = await runSectionOwnershipCase([
+      "## Validation",
+      "",
+      "- Re-ran acceptance at 2026-04-03T12:21:00.000Z — all green."
+    ]);
+
+    expect(status).not.toBe("abandoned");
+    expect(changed).not.toContainEqual(NO_EVIDENCE);
+  });
 });
 
 async function createHarness() {

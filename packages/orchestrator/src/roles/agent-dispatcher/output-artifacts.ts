@@ -233,7 +233,15 @@ function fileExistsWithSize(
 
   try {
     const stats = artifactFs.statSync(filePath);
-    return stats.size > 0 && outputArtifactBelongsToAttempt(stats, startedAtMs);
+    if (stats.size <= 0 || !outputArtifactBelongsToAttempt(stats, startedAtMs)) {
+      return false;
+    }
+
+    if (startedAtMs !== null && path.extname(filePath).toLowerCase() === ".md") {
+      return markdownArtifactHasWorkerAttemptActivity(filePath, startedAtMs, artifactFs);
+    }
+
+    return true;
   } catch {
     return false;
   }
@@ -319,6 +327,103 @@ function outputArtifactBelongsToAttempt(stats: fs.Stats, startedAtMs: number | n
   }
 
   return stats.mtimeMs >= startedAtMs;
+}
+
+function markdownArtifactHasWorkerAttemptActivity(
+  filePath: string,
+  startedAtMs: number,
+  artifactFs: OutputArtifactFs
+): boolean {
+  let content: string;
+  try {
+    content = artifactFs.readFileSync(filePath, "utf8");
+  } catch {
+    return true;
+  }
+
+  const timestampPattern = /\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)\b/g;
+  let sawFreshTimestamp = false;
+  let lastFreshTimestampIndex = -1;
+  let m: RegExpExecArray | null;
+  while ((m = timestampPattern.exec(content)) !== null) {
+    const timestamp = Date.parse(m[1]!);
+    if (Number.isNaN(timestamp) || timestamp < startedAtMs) {
+      continue;
+    }
+
+    sawFreshTimestamp = true;
+    lastFreshTimestampIndex = m.index;
+    const heading = findEnclosingSectionHeading(content, m.index);
+    if (!heading || !isNonWorkerHistoryHeading(heading)) {
+      return true;
+    }
+  }
+
+  if (sawFreshTimestamp && hasWorkerHeadingAfter(content, lastFreshTimestampIndex)) {
+    return true;
+  }
+
+  // Timestamped append-only reports often receive PM/validator history after a
+  // retry starts. When every fresh timestamp belongs to those non-worker
+  // history sections, do not let the mtime alone masquerade as worker output.
+  // Markerless reports without parseable timestamps retain the historical mtime
+  // fallback used for output recovery.
+  return !sawFreshTimestamp;
+}
+
+// Section ownership is decided at the `##` level, never at the nearest heading
+// of any depth. Role-appended blocks nest their own sub-headings — a real
+// report carries `### PM Decision`, `### PM Changes` and `### Validator
+// Feedback Addressed` underneath a `## PM Resolver Report` — so resolving to
+// the nearest heading returns the sub-heading and the parent's ownership is
+// lost. Measured on one round's reports, nearest-heading resolution left 37%
+// of role-owned heading occurrences unattributed, including every sub-heading
+// of the one section shape the original allowlist did match.
+const SECTION_HEADING_PATTERN = /^##\s+(.+?)\s*$/gm;
+
+function findEnclosingSectionHeading(content: string, index: number): string | null {
+  const prefix = content.slice(0, index);
+  const headingPattern = new RegExp(SECTION_HEADING_PATTERN.source, "gm");
+  let heading: string | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = headingPattern.exec(prefix)) !== null) {
+    heading = m[1]?.trim() ?? null;
+  }
+  return heading;
+}
+
+// Matched against the role token that opens a `##` section, not against a
+// fixed list of full titles. The set of blocks a PM resolver, validator,
+// operator or the dispatcher may append is open-ended and drifts with each
+// writer — `## PM Resolver Report - <ID>`, `## PM Resolver — <date> — role:
+// pm-resolver` and `## PM Clarification — Auto-delegated to <target>` are all
+// live shapes, and a title allowlist caught only the first. The worker's own
+// sections are the finite, contract-defined set (`## Attempt N`, `## Applied
+// Laws`, `## Referenced Learnings Applied`, `## Blocker`, `## Validation`,
+// `## Outcome`, …) and none of them opens with one of these tokens — verified
+// against every `##` heading in one round's reports before widening this.
+//
+// `\b` after `Validator` is load-bearing: the worker's own `## Validation`
+// section must not be swallowed by it.
+function isNonWorkerHistoryHeading(heading: string): boolean {
+  return /^(?:PM|Validator|Operator|Owner|Dispatcher)\b/i.test(heading.trim());
+}
+
+function hasWorkerHeadingAfter(content: string, index: number): boolean {
+  if (index < 0) {
+    return false;
+  }
+
+  const suffix = content.slice(index);
+  const headingPattern = new RegExp(SECTION_HEADING_PATTERN.source, "gm");
+  let m: RegExpExecArray | null;
+  while ((m = headingPattern.exec(suffix)) !== null) {
+    const heading = m[1]?.trim() ?? "";
+    if (heading.length > 0 && !isNonWorkerHistoryHeading(heading)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

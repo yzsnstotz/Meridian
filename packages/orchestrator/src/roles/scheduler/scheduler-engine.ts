@@ -23,6 +23,7 @@ import { continueDispatchWorker, type ContinueDispatchPlanRow, type ContinueDisp
 import { LifecycleStore, hubResultContainsBlockSignal, hubResultContainsFailureSignal, isNonCompletionContent } from "../agent-dispatcher/lifecycle-store";
 import { isHubTransportEvidence, isMissingThreadEvidence } from "../agent-dispatcher/missing-thread";
 import { resolveServiceContinueWorkerFromWorkerRows } from "../agent-dispatcher/service-continuation";
+import { createCapsuleMaterializationGate } from "../agent-dispatcher/capsule-materialization";
 import { SchedulerStateStore } from "./scheduler-state-store";
 import { nextCronFire } from "./cron-parser";
 import {
@@ -495,7 +496,18 @@ export class SchedulerEngine {
   private resolveServiceContinueWorker(workers: DispatchStatusWorker[]): string | null {
     try {
       const lifecycleState = new LifecycleStore(this.resolveDispatchThreadsPath()).load();
-      return resolveServiceContinueWorkerFromWorkerRows(workers, lifecycleState);
+      // Materialization precondition. The scheduler picks exactly ONE worker per
+      // cycle, so without the gate a row whose capsule is still `⏳ 待物化` would
+      // be re-selected every cycle and every one of its siblings would starve
+      // behind it — the deadlock shape this precondition must not create. The
+      // gate is read-only here; the fill runs inside `continueDispatchWorker`,
+      // which this path reaches for whichever row it does select.
+      const capsuleGate = createCapsuleMaterializationGate(
+        this.config.dispatch_plan_path,
+        lifecycleState,
+        { log: this.log }
+      );
+      return resolveServiceContinueWorkerFromWorkerRows(workers, lifecycleState, { capsuleGate });
     } catch (error) {
       this.log.warn("Scheduler: failed to resolve next worker for continuation", {
         schedulerThreadId: this.schedulerThreadId,

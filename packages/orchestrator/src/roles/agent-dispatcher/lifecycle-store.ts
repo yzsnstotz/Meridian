@@ -15,7 +15,8 @@ import {
   type PmResolverIssueState,
   type PmResolverLifecycleState,
   type PmResolverLifecycleStatus,
-  type PmResolverResultState
+  type PmResolverResultState,
+  type ValidationStateIdentity
 } from "../../types";
 import {
   outputArtifactHasPassingDecision,
@@ -666,7 +667,19 @@ export class LifecycleStore {
       from_status: previousStatus,
       note: note?.trim() ? note.trim() : null
     });
-    reconcilePmResolversForRecoveredWorker(state, workerId, this.log, this.now);
+    // Pin the reconcile pass to the SAME instant as `human_resolution.resolved_at`.
+    //
+    // The escalation-freeze release condition is
+    // `human_resolution.resolved_at >= escalationEntry.last_seen_at`, and this
+    // reconcile promotes the escalation entry (status "failed") to "completed"
+    // while rewriting its `last_seen_at`. With an independent `this.now()` call
+    // the rewritten `last_seen_at` can land 1+ ms AFTER `resolved_at` — which
+    // makes the release condition permanently false and wedges the row forever.
+    // Millisecond-granularity ISO timestamps hide this most of the time, which
+    // is exactly what makes it worth pinning rather than leaving to luck. This
+    // is not a second release mechanism; it just stops the writer from racing
+    // the reader.
+    reconcilePmResolversForRecoveredWorker(state, workerId, this.log, () => nowIso);
     this.save(state);
   }
 
@@ -725,7 +738,7 @@ export class LifecycleStore {
   transitionToAwaitingValidation(
     workerId: string,
     maxFixCycles: number,
-    options: { clearHubResult?: boolean; trigger?: string } = {}
+    options: { clearHubResult?: boolean; trigger?: string; resetCycle?: boolean } = {}
   ): void {
     this.mutate((state) => {
       const worker = state.workers[workerId];
@@ -747,7 +760,15 @@ export class LifecycleStore {
         worker.hub_result = null;
       }
       worker.validation = {
-        current_cycle: worker.validation?.current_cycle ?? 0,
+        // `resetCycle` is the operator-initiated re-validation path. Without
+        // it, `resume-worker --action validate` on a row that already
+        // exhausted its budget seeds a NEW max_fix_cycles while carrying the
+        // OLD current_cycle forward, so the very next pre-spawn check sees
+        // e.g. 5 >= 3, fails the row for "max_cycles_exhausted", and never
+        // spawns a validator at all. The operator asked for a fresh judgment;
+        // give them a fresh counter. The completion-intercept path leaves
+        // this unset, so cycles keep accumulating there as before.
+        current_cycle: options.resetCycle ? 0 : (worker.validation?.current_cycle ?? 0),
         max_fix_cycles: maxFixCycles,
         // Preserve any existing validator_thread_id. The previous behavior
         // unconditionally reset to null, which combined with a duplicate
@@ -853,7 +874,8 @@ export class LifecycleStore {
     workerId: string,
     score: number,
     feedback: string,
-    validatorThreadId: string
+    validatorThreadId: string,
+    stateIdentity?: ValidationStateIdentity | null
   ): void {
     this.mutate((state) => {
       const worker = state.workers[workerId];
@@ -862,7 +884,72 @@ export class LifecycleStore {
       const prevStatus = worker.status;
       worker.status = "fix_requested";
       recordValidationOutcome(workerId, worker, score, feedback, validatorThreadId, this.now);
+      // Snapshot the state this cycle was judged against, so the NEXT cycle
+      // can prove whether the rework changed anything at all. Optional: a
+      // caller that could not compute an identity leaves the prior snapshot
+      // in place rather than clearing it, because a stale comparand is still
+      // gated behind `determinate` on both sides.
+      if (stateIdentity) {
+        worker.validation.state_identity = stateIdentity;
+      }
       this.logTransition(workerId, prevStatus, "fix_requested", "validation_below_threshold");
+    });
+  }
+
+  /**
+   * The wasted-work exit: the validator asked for another fix cycle, but the
+   * row's observable state is byte-identical to the state the previous cycle
+   * already judged. Another cycle would re-derive the same objection set at
+   * the cost of a worker resume plus a full validator session, so the row is
+   * parked at `blocked` — which is exactly what
+   * `resolveManualInterventionWorker` picks up to route the row to the PM
+   * resolver, and what `isEligibleServiceContinueRow` /
+   * `isRetryableTerminalWorker` refuse to auto-relaunch.
+   *
+   * Deliberately NOT `failed`: a `failed` row is only routed to PM once its
+   * validation budget is exhausted (`hasExhaustedValidationCycles`), and this
+   * row is being stopped BEFORE that. `blocked` is the state whose whole
+   * meaning is "a human or PM decision is required".
+   *
+   * The worker thread is left alive on purpose (no kill-policy kill here), so
+   * PM can resume the existing session instead of paying for a fresh spawn —
+   * matching how every other `blocked` row behaves.
+   */
+  transitionToValidationStalled(
+    workerId: string,
+    reason: string,
+    validationResult: ValidationTransitionResult,
+    stateIdentity: ValidationStateIdentity
+  ): void {
+    this.mutate((state) => {
+      const worker = state.workers[workerId];
+      if (!worker || !worker.validation) return;
+
+      const prevStatus = worker.status;
+      worker.status = "blocked";
+      recordValidationOutcome(
+        workerId,
+        worker,
+        validationResult.score,
+        validationResult.feedback,
+        validationResult.validatorThreadId,
+        this.now
+      );
+      worker.validation.state_identity = stateIdentity;
+      this.logTransition(workerId, prevStatus, "blocked", reason);
+    });
+  }
+
+  /**
+   * Records the state fingerprint without touching status or cycle counters.
+   * Used to seed the comparand on paths that do not themselves transition.
+   */
+  recordValidationStateIdentity(workerId: string, stateIdentity: ValidationStateIdentity): void {
+    this.mutate((state) => {
+      const worker = state.workers[workerId];
+      if (!worker?.validation) return;
+
+      worker.validation.state_identity = stateIdentity;
     });
   }
 

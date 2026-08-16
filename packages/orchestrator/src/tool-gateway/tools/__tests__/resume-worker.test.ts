@@ -192,6 +192,37 @@ describe("resume-worker tool", () => {
     expect(harness.lifecycleStore.load().workers["N-04"]?.retry_count).toBe(0);
   });
 
+  it("clears an exhausted validation cycle budget on retry so the next completion is judged", async () => {
+    const harness = await createHarness();
+    const state = harness.lifecycleStore.load();
+    state.workers["N-04"] = {
+      ...state.workers["N-04"]!,
+      status: "failed",
+      validation: {
+        current_cycle: 5,
+        max_fix_cycles: 5,
+        validator_thread_id: null,
+        last_score: 0,
+        last_feedback: "judged against the superseded contract",
+        history: [],
+        spawn_failure_count: 0,
+        last_spawn_failure_at: null
+      }
+    };
+    harness.lifecycleStore.save(state);
+
+    await executeResumeWorkerAction(
+      { planPath: harness.planPath, workerId: "N-04", action: "retry" },
+      { lifecycleStoreFactory: () => harness.lifecycleStore, killThread: async () => ({ ok: true }) }
+    );
+
+    // A retry means the worker's INPUT changed. A budget accrued against the
+    // old input must not survive it, or isValidationCycleBudgetExhausted fails
+    // the row on completion and no validator ever spawns.
+    const validation = harness.lifecycleStore.load().workers["N-04"]?.validation;
+    expect(validation ?? null).toBeNull();
+  });
+
   it("clears a prior failure hub result when retrying a failed worker", async () => {
     const harness = await createHarness();
     const state = harness.lifecycleStore.load();
@@ -726,3 +757,33 @@ async function createHarness(): Promise<{
     lifecycleStore
   };
 }
+
+describe("validate after budget exhaustion (regression: instant re-fail, no validator)", () => {
+  it("resets current_cycle so the pre-spawn budget check cannot fire immediately", async () => {
+    // `--action validate` used to seed a new max_fix_cycles while carrying the
+    // old current_cycle forward: a row at 5/5 became 5/3 and was failed for
+    // "max_cycles_exhausted" before any validator spawned. Observed on C-02,
+    // whose code work the validator had already accepted.
+    const harness = await createHarness();
+    const state = harness.lifecycleStore.load();
+    state.workers["N-04"]!.status = "failed";
+    state.workers["N-04"]!.validation = {
+      current_cycle: 5,
+      max_fix_cycles: 5,
+      validator_thread_id: null,
+      last_score: 0.5,
+      last_feedback: "phantom finding",
+      history: []
+    };
+    harness.lifecycleStore.save(state);
+
+    await executeResumeWorkerAction(
+      { planPath: harness.planPath, workerId: "N-04", action: "validate" },
+      { lifecycleStoreFactory: () => harness.lifecycleStore, killThread: async () => ({ ok: true }) }
+    );
+
+    const validation = harness.lifecycleStore.load().workers["N-04"]?.validation;
+    expect(validation?.current_cycle).toBe(0);
+    expect(validation?.max_fix_cycles).toBeGreaterThan(0);
+  });
+});

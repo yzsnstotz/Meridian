@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { A2AClient } from "../../../a2a/client";
-import type { HubMessage, HubResult } from "../../../types";
+import type { DispatchWorkerState, HubMessage, HubResult, LifecycleStatus } from "../../../types";
 import killTool from "../../../tool-gateway/tools/kill";
 import * as activeToolProcess from "../active-tool-process";
 import { continueDispatchWorker } from "../continue-worker";
@@ -16,6 +16,7 @@ import {
 } from "../lifecycle-store";
 import { reconciliationFs } from "../reconciler";
 import { ReconciliationWatchdog } from "../watchdog";
+import type { DispatcherStallInfo } from "../watchdog";
 
 const tempDirectories = new Set<string>();
 const FIXED_NOW = "2026-04-03T14:00:00.000Z";
@@ -1003,6 +1004,755 @@ describe("ReconciliationWatchdog", () => {
         continueWorkerId: "W-02"
       })
     );
+  });
+
+  describe("parallel slot fill while a worker is running", () => {
+    // The `blockingRunningWorkers.length > 0 → return` guard treats "a worker
+    // is running" as "there is nothing to start". With parallel_dispatch that
+    // made ONE running worker suppress continuation for all of
+    // max_concurrency, so a plan could only ever advance one row at a time —
+    // the second of the three serial choke points behind 0.86/3 mean
+    // concurrency over a 20.1h round. The guard itself is untouched (stall
+    // recovery stays suppressed); this is a separate narrow exit.
+    async function createRunningWorkerFixture() {
+      const harness = await createHarness();
+      await fsp.writeFile(
+        path.join(harness.directory, "dispatch_plan.md"),
+        [
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "| --- | --- | --- | --- | --- | --- | --- |",
+          "| ✅ | 1 | W-00 | Finished gate | CODEX | — | Done. |",
+          "| 🔄 | 2 | W-01 | Running worker | CODEX | W-00 | In flight. |",
+          "| ⬜ | 2 | W-02 | Independent sibling | CODEX | W-00 | Ready to continue. |"
+        ].join("\n"),
+        "utf8"
+      );
+
+      const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+      store.save({
+        ...buildEmptyDispatchThreadStateV2(),
+        dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+        workers: {
+          "W-00": {
+            thread_id: "w-thread-00",
+            trace_id: null,
+            started_at: "2026-04-03T12:00:00.000Z",
+            last_seen_at: "2026-04-03T12:10:00.000Z",
+            status: "completed",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          },
+          "W-01": {
+            thread_id: "w-thread-01",
+            trace_id: null,
+            started_at: "2026-04-03T13:50:00.000Z",
+            last_seen_at: "2026-04-03T13:59:00.000Z",
+            status: "running",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          },
+          "W-02": {
+            thread_id: "placeholder",
+            trace_id: null,
+            started_at: "2026-04-03T12:10:00.000Z",
+            last_seen_at: "2026-04-03T12:10:00.000Z",
+            status: "pending",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          }
+        }
+      });
+
+      const { hubClient } = createHubClient((message) => buildStatusResult(message.thread_id, "running"));
+      return { harness, hubClient };
+    }
+
+    afterEach(() => {
+      delete process.env.MERIDIAN_DISPATCH_AUTO_PARALLEL;
+    });
+
+    it("requests a bare parallel continue when slots are free", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+
+      const { harness, hubClient } = await createRunningWorkerFixture();
+      const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+      const watchdog = new ReconciliationWatchdog({
+        resolveActiveDispatchPlanPaths: async () => [path.join(harness.directory, "dispatch_plan.md")],
+        hubClient,
+        log: silentLog(),
+        intervalMs: 60_000,
+        onDispatcherStalled: stallCallback,
+        resolveParallelDispatchForPlan: async () => ({ enabled: true, maxConcurrency: 3 })
+      });
+
+      await watchdog.sweep();
+
+      expect(stallCallback).toHaveBeenCalledTimes(1);
+      expect(stallCallback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          dispatchPlanPath: path.join(harness.directory, "dispatch_plan.md"),
+          dispatcherStatus: "running_parallel_slots_free",
+          pendingWorkerCount: 1,
+          // Bare — this is the whole point. A workerId here would force the
+          // targeted branch and leave parallel_dispatch dead config.
+          continueWorkerId: null,
+          parallelSlotFill: true
+        })
+      );
+    });
+
+    it("does not request a slot fill when running workers already fill max_concurrency", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+
+      const { harness, hubClient } = await createRunningWorkerFixture();
+      const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+      const watchdog = new ReconciliationWatchdog({
+        resolveActiveDispatchPlanPaths: async () => [path.join(harness.directory, "dispatch_plan.md")],
+        hubClient,
+        log: silentLog(),
+        intervalMs: 60_000,
+        onDispatcherStalled: stallCallback,
+        resolveParallelDispatchForPlan: async () => ({ enabled: true, maxConcurrency: 1 })
+      });
+
+      await watchdog.sweep();
+
+      expect(stallCallback).not.toHaveBeenCalled();
+    });
+
+    it("does not request a slot fill for a dispatcher that never opted into parallel dispatch", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+
+      const { harness, hubClient } = await createRunningWorkerFixture();
+      const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+      const watchdog = new ReconciliationWatchdog({
+        resolveActiveDispatchPlanPaths: async () => [path.join(harness.directory, "dispatch_plan.md")],
+        hubClient,
+        log: silentLog(),
+        intervalMs: 60_000,
+        onDispatcherStalled: stallCallback,
+        resolveParallelDispatchForPlan: async () => ({ enabled: false, maxConcurrency: 1 })
+      });
+
+      await watchdog.sweep();
+
+      expect(stallCallback).not.toHaveBeenCalled();
+    });
+
+    it("does not request a slot fill when the dep is not wired at all (pre-fix behaviour)", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+
+      const { harness, hubClient } = await createRunningWorkerFixture();
+      const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+      const watchdog = new ReconciliationWatchdog({
+        resolveActiveDispatchPlanPaths: async () => [path.join(harness.directory, "dispatch_plan.md")],
+        hubClient,
+        log: silentLog(),
+        intervalMs: 60_000,
+        onDispatcherStalled: stallCallback
+      });
+
+      await watchdog.sweep();
+
+      expect(stallCallback).not.toHaveBeenCalled();
+    });
+
+    it("honours the MERIDIAN_DISPATCH_AUTO_PARALLEL kill-switch at call time", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+      process.env.MERIDIAN_DISPATCH_AUTO_PARALLEL = "false";
+
+      const { harness, hubClient } = await createRunningWorkerFixture();
+      const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+      const watchdog = new ReconciliationWatchdog({
+        resolveActiveDispatchPlanPaths: async () => [path.join(harness.directory, "dispatch_plan.md")],
+        hubClient,
+        log: silentLog(),
+        intervalMs: 60_000,
+        onDispatcherStalled: stallCallback,
+        resolveParallelDispatchForPlan: async () => ({ enabled: true, maxConcurrency: 3 })
+      });
+
+      await watchdog.sweep();
+      expect(stallCallback).not.toHaveBeenCalled();
+
+      // Re-read per tick, not at module load: flipping the env back must take
+      // effect on the very next sweep without a restart of the watchdog object.
+      process.env.MERIDIAN_DISPATCH_AUTO_PARALLEL = "true";
+      await watchdog.sweep();
+      expect(stallCallback).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("parallel slot fill with zero running workers", () => {
+    // `resolveBlockingRunningWorkers` counts only lifecycle status === "running",
+    // so a row held in `awaiting_validation` reads as ZERO running — and the
+    // first cut of the slot-fill path lived inside the `running > 0` branch, so
+    // it never fired here. The sweep fell through to targeted stall recovery,
+    // which services exactly one row per tick. Observed on the deployed build
+    // (2026-08-10 16:52 restart): BATCH-7-GATE awaiting_validation, C-02 and
+    // C-04a pending with satisfied dependencies, max_concurrency 3, running 0,
+    // "Watchdog requesting parallel slot fill" fired 0 times over 8+ minutes.
+    //
+    // It was also circular: 144729f's validator deferral only engages under
+    // `isParallelAutoContinue`, which needs a bare continue, whose only
+    // producer was the running>0 branch. A validator-held plan with nothing
+    // running could never bootstrap into parallel mode at all.
+    const planPathOf = (directory: string) => path.join(directory, "dispatch_plan.md");
+
+    async function createValidatorHeldFixture() {
+      const harness = await createHarness();
+      await fsp.writeFile(
+        planPathOf(harness.directory),
+        [
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "| --- | --- | --- | --- | --- | --- | --- |",
+          "| ✅ | 6 | W-00 | Finished gate | CODEX | — | Done. |",
+          "| 🔍 | 7 | BATCH-7-GATE | Held by a validator | CODEX | W-00 | Report written. |",
+          "| ⬜ | 7 | C-02 | Independent, deps satisfied | CODEX | W-00 | Ready to continue. |"
+        ].join("\n"),
+        "utf8"
+      );
+
+      const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+      store.save({
+        ...buildEmptyDispatchThreadStateV2(),
+        dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+        workers: {
+          "W-00": {
+            thread_id: "w-thread-00",
+            trace_id: null,
+            started_at: "2026-04-03T12:00:00.000Z",
+            last_seen_at: "2026-04-03T12:10:00.000Z",
+            status: "completed",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          },
+          // Held by a live validator, so `hasPendingValidatorOrchestration` is
+          // false and this row is NOT counted by resolveBlockingRunningWorkers.
+          "BATCH-7-GATE": {
+            thread_id: "w-thread-gate",
+            trace_id: null,
+            started_at: "2026-04-03T13:00:00.000Z",
+            last_seen_at: "2026-04-03T13:30:00.000Z",
+            status: "awaiting_validation",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0,
+            validation: {
+              current_cycle: 0,
+              max_fix_cycles: 3,
+              validator_thread_id: "validator-thread-gate",
+              last_score: null,
+              last_feedback: null,
+              history: []
+            }
+          },
+          "C-02": {
+            thread_id: "placeholder",
+            trace_id: null,
+            started_at: "2026-04-03T12:10:00.000Z",
+            last_seen_at: "2026-04-03T12:10:00.000Z",
+            status: "pending",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          }
+        }
+      });
+
+      const { hubClient } = createHubClient((message) =>
+        buildStatusResult(message.thread_id, message.thread_id === "d-01" ? "idle" : "running")
+      );
+      return { harness, hubClient, store };
+    }
+
+    afterEach(() => {
+      delete process.env.MERIDIAN_DISPATCH_AUTO_PARALLEL;
+    });
+
+    it("requests a bare parallel continue while a validator holds a row and nothing is running", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+
+      const { harness, hubClient } = await createValidatorHeldFixture();
+      const stallCallback = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+
+      const watchdog = new ReconciliationWatchdog({
+        resolveActiveDispatchPlanPaths: async () => [planPathOf(harness.directory)],
+        hubClient,
+        log: silentLog(),
+        intervalMs: 60_000,
+        onDispatcherStalled: stallCallback,
+        resolveParallelDispatchForPlan: async () => ({ enabled: true, maxConcurrency: 3 })
+      });
+
+      await watchdog.sweep();
+
+      expect(stallCallback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          dispatchPlanPath: planPathOf(harness.directory),
+          dispatcherStatus: "idle_parallel_slots_free",
+          pendingWorkerCount: 1,
+          // Bare — the whole point. A workerId here forces the targeted branch
+          // and leaves parallel_dispatch dead config.
+          continueWorkerId: null,
+          parallelSlotFill: true
+        })
+      );
+    });
+
+    it("falls through to ordinary stall recovery when the bare continue starts nothing", async () => {
+      // Non-negotiable: a dispatcher with zero running workers may be genuinely
+      // stalled, and hub probe / relaunch / role reactivation / PM-resolver
+      // spawn is the only thing that recovers it. Unlike the running>0 branch,
+      // the slot-fill request here must NOT swallow the tick.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+
+      const { harness, hubClient } = await createValidatorHeldFixture();
+      const stallCallback = vi.fn<(info: DispatcherStallInfo) => Promise<void>>().mockResolvedValue(undefined);
+
+      const watchdog = new ReconciliationWatchdog({
+        resolveActiveDispatchPlanPaths: async () => [planPathOf(harness.directory)],
+        hubClient,
+        log: silentLog(),
+        intervalMs: 60_000,
+        onDispatcherStalled: stallCallback,
+        resolveParallelDispatchForPlan: async () => ({ enabled: true, maxConcurrency: 3 })
+      });
+
+      await watchdog.sweep();
+
+      expect(stallCallback).toHaveBeenCalledTimes(2);
+      expect(stallCallback.mock.calls[0]?.[0]).toMatchObject({
+        parallelSlotFill: true,
+        continueWorkerId: null
+      });
+      const recoveryCall = stallCallback.mock.calls[1]?.[0] as { parallelSlotFill?: boolean; continueWorkerId: string | null; dispatcherStatus: string };
+      expect(recoveryCall.parallelSlotFill).toBeUndefined();
+      expect(recoveryCall.continueWorkerId).toBe("C-02");
+      expect(recoveryCall.dispatcherStatus).toBe("idle");
+    });
+
+    it("skips stall recovery when the bare parallel continue actually launched a worker", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+
+      const { harness, hubClient, store } = await createValidatorHeldFixture();
+      // Simulate the launcher: the bare continue flips C-02 to running. The
+      // watchdog re-reads the lifecycle store rather than trusting the void
+      // callback return, so this is what it observes.
+      const stallCallback = vi.fn<(info: DispatcherStallInfo) => Promise<void>>().mockImplementation(async () => {
+        const current = store.load();
+        current.workers["C-02"] = {
+          ...current.workers["C-02"]!,
+          thread_id: "w-thread-c02",
+          status: "running",
+          started_at: "2026-04-03T13:59:00.000Z",
+          last_seen_at: "2026-04-03T13:59:00.000Z"
+        };
+        store.save(current);
+      });
+
+      const watchdog = new ReconciliationWatchdog({
+        resolveActiveDispatchPlanPaths: async () => [planPathOf(harness.directory)],
+        hubClient,
+        log: silentLog(),
+        intervalMs: 60_000,
+        onDispatcherStalled: stallCallback,
+        resolveParallelDispatchForPlan: async () => ({ enabled: true, maxConcurrency: 3 })
+      });
+
+      await watchdog.sweep();
+
+      expect(stallCallback).toHaveBeenCalledTimes(1);
+      expect(stallCallback.mock.calls[0]?.[0]).toMatchObject({ parallelSlotFill: true });
+    });
+
+    it("leaves the zero-running path untouched when the kill-switch is off", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+      process.env.MERIDIAN_DISPATCH_AUTO_PARALLEL = "false";
+
+      const { harness, hubClient } = await createValidatorHeldFixture();
+      const stallCallback = vi.fn<(info: DispatcherStallInfo) => Promise<void>>().mockResolvedValue(undefined);
+
+      const watchdog = new ReconciliationWatchdog({
+        resolveActiveDispatchPlanPaths: async () => [planPathOf(harness.directory)],
+        hubClient,
+        log: silentLog(),
+        intervalMs: 60_000,
+        onDispatcherStalled: stallCallback,
+        resolveParallelDispatchForPlan: async () => ({ enabled: true, maxConcurrency: 3 })
+      });
+
+      await watchdog.sweep();
+
+      expect(stallCallback).toHaveBeenCalledTimes(1);
+      expect(stallCallback.mock.calls[0]?.[0]).toMatchObject({
+        continueWorkerId: "C-02",
+        dispatcherStatus: "idle"
+      });
+    });
+
+    it("leaves the zero-running path untouched for a non-parallel dispatcher", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+
+      const { harness, hubClient } = await createValidatorHeldFixture();
+      const stallCallback = vi.fn<(info: DispatcherStallInfo) => Promise<void>>().mockResolvedValue(undefined);
+
+      const watchdog = new ReconciliationWatchdog({
+        resolveActiveDispatchPlanPaths: async () => [planPathOf(harness.directory)],
+        hubClient,
+        log: silentLog(),
+        intervalMs: 60_000,
+        onDispatcherStalled: stallCallback,
+        resolveParallelDispatchForPlan: async () => ({ enabled: false, maxConcurrency: 3 })
+      });
+
+      await watchdog.sweep();
+
+      expect(stallCallback).toHaveBeenCalledTimes(1);
+      expect(stallCallback.mock.calls[0]?.[0]).toMatchObject({ continueWorkerId: "C-02" });
+    });
+  });
+
+  describe("parallel slot occupancy accounting", () => {
+    // The slot-fill gate used to compare `max_concurrency` against the NARROW
+    // running count (`resolveBlockingRunningWorkers`, status === "running"
+    // only). Three things hold a Hub lane while contributing zero to that
+    // number:
+    //   1. `awaiting_validation` — a validator agent is scoring the row on
+    //      `validation.validator_thread_id`;
+    //   2. `fix_requested` — reserved; the row flips back to `running` the
+    //      moment feedback is delivered (observed live inside the same second);
+    //   3. an active PM resolver thread (thread-id-reservation.ts already says
+    //      so in prose — it reserves those ids against spawn collisions).
+    // Result on a real round: peak concurrency 4 against `max_concurrency: 3`.
+    //
+    // Every test below comes in a pair on ONE fixture, changing only
+    // `maxConcurrency`. The pairing is the point: the strict half proves
+    // over-dispatch is refused, and the loose half is the regression guard for
+    // the under-dispatch fix — an occupied-but-not-running lane must still
+    // leave the REMAINING slots fillable, or we are back to 0.751/3 mean
+    // concurrency and 38.7% zero-worker time.
+    const planPathOf = (directory: string) => path.join(directory, "dispatch_plan.md");
+
+    function buildWorkerState(
+      status: LifecycleStatus,
+      overrides: Partial<DispatchWorkerState> = {}
+    ): DispatchWorkerState {
+      return {
+        thread_id: "w-thread",
+        trace_id: null,
+        started_at: "2026-04-03T13:00:00.000Z",
+        last_seen_at: "2026-04-03T13:30:00.000Z",
+        status,
+        expected_outputs: [],
+        hub_result: null,
+        command_preamble: null,
+        retry_count: 0,
+        ...overrides
+      };
+    }
+
+    function createWatchdog(
+      directory: string,
+      hubClient: A2AClient,
+      stallCallback: ReturnType<typeof vi.fn>,
+      maxConcurrency: number
+    ) {
+      return new ReconciliationWatchdog({
+        resolveActiveDispatchPlanPaths: async () => [planPathOf(directory)],
+        hubClient,
+        log: silentLog(),
+        intervalMs: 60_000,
+        onDispatcherStalled: stallCallback,
+        resolveParallelDispatchForPlan: async () => ({ enabled: true, maxConcurrency })
+      });
+    }
+
+    function slotFillCalls(stallCallback: ReturnType<typeof vi.fn>): DispatcherStallInfo[] {
+      return stallCallback.mock.calls
+        .map((call) => call[0] as DispatcherStallInfo)
+        .filter((info) => info.parallelSlotFill === true);
+    }
+
+    afterEach(() => {
+      delete process.env.MERIDIAN_DISPATCH_AUTO_PARALLEL;
+    });
+
+    // ---------------------------------------------------------------------
+    // 1. awaiting_validation alongside a running worker (the `mode: "running"`
+    //    entry point). Narrow count is 1; true occupancy is 2.
+    // ---------------------------------------------------------------------
+    async function createRunningPlusValidatorFixture() {
+      const harness = await createHarness();
+      await fsp.writeFile(
+        planPathOf(harness.directory),
+        [
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "| --- | --- | --- | --- | --- | --- | --- |",
+          "| ✅ | 1 | W-00 | Finished gate | CODEX | — | Done. |",
+          "| 🔄 | 2 | W-01 | Running worker | CODEX | W-00 | In flight. |",
+          "| 🔍 | 2 | BATCH-GATE | Held by a validator | CODEX | W-00 | Report written. |",
+          "| ⬜ | 2 | C-02 | Independent sibling | CODEX | W-00 | Ready to continue. |"
+        ].join("\n"),
+        "utf8"
+      );
+
+      const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+      store.save({
+        ...buildEmptyDispatchThreadStateV2(),
+        dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+        workers: {
+          "W-00": buildWorkerState("completed", { thread_id: "w-thread-00" }),
+          "W-01": buildWorkerState("running", { thread_id: "w-thread-01" }),
+          "BATCH-GATE": buildWorkerState("awaiting_validation", {
+            thread_id: "w-thread-gate",
+            validation: {
+              current_cycle: 0,
+              max_fix_cycles: 3,
+              validator_thread_id: "validator-thread-gate",
+              last_score: null,
+              last_feedback: null,
+              history: []
+            }
+          }),
+          "C-02": buildWorkerState("pending", { thread_id: "placeholder" })
+        }
+      });
+
+      const { hubClient } = createHubClient((message) =>
+        buildStatusResult(message.thread_id, message.thread_id === "d-01" ? "running" : "running")
+      );
+      return { harness, hubClient };
+    }
+
+    it("refuses a slot fill when running + awaiting_validation already fill max_concurrency", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+
+      const { harness, hubClient } = await createRunningPlusValidatorFixture();
+      const stallCallback = vi.fn<(info: DispatcherStallInfo) => Promise<void>>().mockResolvedValue(undefined);
+
+      // Pre-fix this fired: the narrow count was 1, so 1 < 2 read as "one slot
+      // free" and C-02 was admitted as a THIRD agent against max_concurrency 2.
+      await createWatchdog(harness.directory, hubClient, stallCallback, 2).sweep();
+
+      expect(slotFillCalls(stallCallback)).toHaveLength(0);
+      // The `blockingRunningWorkers > 0` branch still returns without touching
+      // stall recovery, exactly as before — a running worker means progress.
+      expect(stallCallback).not.toHaveBeenCalled();
+    });
+
+    it("still fills the remaining slot when a validator holds only one of three lanes", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+
+      const { harness, hubClient } = await createRunningPlusValidatorFixture();
+      const stallCallback = vi.fn<(info: DispatcherStallInfo) => Promise<void>>().mockResolvedValue(undefined);
+
+      await createWatchdog(harness.directory, hubClient, stallCallback, 3).sweep();
+
+      expect(slotFillCalls(stallCallback)).toHaveLength(1);
+      expect(slotFillCalls(stallCallback)[0]).toMatchObject({
+        dispatcherStatus: "running_parallel_slots_free",
+        continueWorkerId: null,
+        parallelSlotFill: true
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // 2. fix_requested with nothing running (the `mode: "idle"` entry point).
+    //    Narrow count is 0 — which is exactly why the idle path must stay on
+    //    the narrow count — but the lane is reserved.
+    // ---------------------------------------------------------------------
+    async function createFixRequestedFixture() {
+      const harness = await createHarness();
+      await fsp.writeFile(
+        planPathOf(harness.directory),
+        [
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "| --- | --- | --- | --- | --- | --- | --- |",
+          "| ✅ | 1 | W-00 | Finished gate | CODEX | — | Done. |",
+          "| 🔁 | 2 | C-04a | Validator asked for a fix | CODEX | W-00 | Feedback pending delivery. |",
+          "| ⬜ | 2 | C-02 | Independent sibling | CODEX | W-00 | Ready to continue. |"
+        ].join("\n"),
+        "utf8"
+      );
+
+      const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+      store.save({
+        ...buildEmptyDispatchThreadStateV2(),
+        dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+        workers: {
+          "W-00": buildWorkerState("completed", { thread_id: "w-thread-00" }),
+          "C-04a": buildWorkerState("fix_requested", {
+            thread_id: "w-thread-c04a",
+            validation: {
+              current_cycle: 1,
+              max_fix_cycles: 3,
+              validator_thread_id: "validator-thread-c04a",
+              last_score: null,
+              last_feedback: "please fix the failing gate",
+              history: []
+            }
+          }),
+          "C-02": buildWorkerState("pending", { thread_id: "placeholder" })
+        }
+      });
+
+      const { hubClient } = createHubClient((message) =>
+        buildStatusResult(message.thread_id, message.thread_id === "d-01" ? "idle" : "running")
+      );
+      return { harness, hubClient };
+    }
+
+    it("refuses a slot fill when a fix_requested row reserves the only lane", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+
+      const { harness, hubClient } = await createFixRequestedFixture();
+      const stallCallback = vi.fn<(info: DispatcherStallInfo) => Promise<void>>().mockResolvedValue(undefined);
+
+      // fix_requested auto-transitions back to `running` on
+      // `validator_feedback_delivered`, which the very next continueDispatcher
+      // tick performs — so treating this as a free lane admits a second agent
+      // against max_concurrency 1 for as long as feedback delivery takes.
+      await createWatchdog(harness.directory, hubClient, stallCallback, 1).sweep();
+
+      expect(slotFillCalls(stallCallback)).toHaveLength(0);
+      // Non-negotiable: the idle path must still fall through to ordinary stall
+      // recovery, otherwise the fix_requested row itself never gets serviced.
+      expect(stallCallback).toHaveBeenCalledTimes(1);
+      const recoveryCall = stallCallback.mock.calls[0]?.[0] as DispatcherStallInfo;
+      expect(recoveryCall.continueWorkerId).toBe("C-04a");
+      expect(recoveryCall.parallelSlotFill).toBeUndefined();
+    });
+
+    it("still fills the free lane when a fix_requested row reserves one of two", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+
+      const { harness, hubClient } = await createFixRequestedFixture();
+      const stallCallback = vi.fn<(info: DispatcherStallInfo) => Promise<void>>().mockResolvedValue(undefined);
+
+      await createWatchdog(harness.directory, hubClient, stallCallback, 2).sweep();
+
+      expect(slotFillCalls(stallCallback)).toHaveLength(1);
+      expect(slotFillCalls(stallCallback)[0]).toMatchObject({
+        dispatcherStatus: "idle_parallel_slots_free",
+        continueWorkerId: null
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // 3. An active PM resolver thread. The worker it owns is `blocked`, which
+    //    is deliberately NOT slot-occupying (a wedged row must not burn a lane
+    //    for hours) — the resolver thread is the live agent, so it is the one
+    //    that counts.
+    // ---------------------------------------------------------------------
+    async function createPmResolverFixture(pmStatus: "running" | "completed") {
+      const harness = await createHarness();
+      await fsp.writeFile(
+        planPathOf(harness.directory),
+        [
+          "| Status | Batch | Worker | Task | Model | Depends On | Notes |",
+          "| --- | --- | --- | --- | --- | --- | --- |",
+          "| ✅ | 1 | W-00 | Finished gate | CODEX | — | Done. |",
+          "| ⬜ | 2 | C-02 | Independent sibling | CODEX | W-00 | Ready to continue. |"
+        ].join("\n"),
+        "utf8"
+      );
+
+      const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+      store.save({
+        ...buildEmptyDispatchThreadStateV2(),
+        dispatcher: { thread_id: "d-01", started_at: "2026-04-03T12:00:00.000Z", status: "running" },
+        workers: {
+          "W-00": buildWorkerState("completed", { thread_id: "w-thread-00" }),
+          "C-02": buildWorkerState("pending", { thread_id: "placeholder" })
+        },
+        pm_resolvers: [
+          {
+            thread_id: "pm-thread-01",
+            status: pmStatus,
+            started_at: "2026-04-03T13:58:00.000Z",
+            last_seen_at: "2026-04-03T13:59:30.000Z",
+            agent_type: "codex",
+            model_id: "gpt-5.5 xhigh",
+            mode: "bridge",
+            auto_approve: true,
+            issue: {
+              status: "manual_intervention_required",
+              worker_id: "W-BLOCKED",
+              message: "manual intervention required",
+              error: null,
+              source: "dispatcher"
+            },
+            result: null,
+            error: null,
+            transport_error: null,
+            marker_outcome: null,
+            marker_pm_action: null
+          }
+        ]
+      });
+
+      const { hubClient } = createHubClient((message) =>
+        buildStatusResult(message.thread_id, message.thread_id === "d-01" ? "idle" : "running")
+      );
+      return { harness, hubClient };
+    }
+
+    it("refuses a slot fill when an active PM resolver thread holds the only lane", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+
+      const { harness, hubClient } = await createPmResolverFixture("running");
+      const stallCallback = vi.fn<(info: DispatcherStallInfo) => Promise<void>>().mockResolvedValue(undefined);
+
+      await createWatchdog(harness.directory, hubClient, stallCallback, 1).sweep();
+
+      expect(slotFillCalls(stallCallback)).toHaveLength(0);
+    });
+
+    it("fills the lane once that PM resolver has finished", async () => {
+      // Same fixture, same max_concurrency — only the resolver's status
+      // differs. This is what proves the resolver thread is what was counted,
+      // rather than something incidental about the fixture.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(FIXED_NOW));
+
+      const { harness, hubClient } = await createPmResolverFixture("completed");
+      const stallCallback = vi.fn<(info: DispatcherStallInfo) => Promise<void>>().mockResolvedValue(undefined);
+
+      await createWatchdog(harness.directory, hubClient, stallCallback, 1).sweep();
+
+      expect(slotFillCalls(stallCallback)).toHaveLength(1);
+    });
   });
 
   it("continues when only the stale synthetic dispatcher worker is still marked running", async () => {
@@ -3136,6 +3886,410 @@ describe("ReconciliationWatchdog PM-resolver exhausted self-loop guard", () => {
     await watchdog.sweep();
 
     expect(log.info.mock.calls.filter(([m]) => m === "dispatcher_pm_resolver_exhausted")).toHaveLength(2);
+  });
+});
+
+// Regression: unification-layer-decoupling-2026-08-06 / BATCH-8-GATE. The
+// watchdog is the automatic driver of targeted continues, and it has three
+// doors into one: the service-continue resolver, the VALIDATION-continue
+// resolver, and the manual-intervention resolver. The parked row cycled back
+// through the validation door four times (fix_requested -> relaunch -> validate
+// -> fix_requested) while `human_resolution` stayed null.
+describe("ReconciliationWatchdog human-escalation freeze", () => {
+  const FROZEN_PLAN = [
+    "| Status | Batch | Worker | Model | Depends_On | Task |",
+    "| --- | --- | --- | --- | --- | --- |",
+    // Markdown reads ✅ (synced before the validator sent it back), so the ONLY
+    // resolver that can select this row is the validation-continue one.
+    "| ✅ | 1 | BATCH-8-GATE | gpt-5.5::xhigh | — | escalated gate |",
+    ""
+  ].join("\n");
+
+  async function setupFrozenHarness(options: {
+    humanResolution?: { resolved_at: string; note: string | null };
+    workerStatus?: LifecycleStatus;
+  } = {}) {
+    const harness = await createHarness("watchdog-human-escalation-");
+    const planPath = path.join(harness.directory, "dispatch_plan.md");
+    await fsp.writeFile(planPath, FROZEN_PLAN, "utf8");
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: {
+        thread_id: "agent-dispatcher-unification",
+        started_at: "2026-08-06T18:00:00.000Z",
+        status: "pending"
+      },
+      workers: {
+        "BATCH-8-GATE": {
+          thread_id: "codex_71",
+          trace_id: null,
+          started_at: "2026-08-06T21:02:11.000Z",
+          last_seen_at: "2026-08-06T22:40:00.000Z",
+          status: options.workerStatus ?? "fix_requested",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 1,
+          ...(options.humanResolution ? { human_resolution: options.humanResolution } : {})
+        }
+      },
+      pm_resolvers: [
+        {
+          thread_id: "codex_69",
+          status: "failed",
+          started_at: "2026-08-06T20:50:00.000Z",
+          last_seen_at: "2026-08-06T20:58:53.000Z",
+          agent_type: "codex",
+          model_id: null,
+          mode: "bridge",
+          auto_approve: true,
+          issue: {
+            status: "manual_intervention_required",
+            worker_id: "BATCH-8-GATE",
+            message: "manual intervention required",
+            error: null,
+            source: "watchdog"
+          },
+          result: null,
+          error: null,
+          transport_error: null,
+          marker_outcome: "escalated",
+          marker_pm_action: "escalate_human"
+        }
+      ]
+    });
+    return { harness, planPath, store };
+  }
+
+  function buildWatchdog(planPath: string, log: ReturnType<typeof silentLog>, onDispatcherStalled?: ReturnType<typeof vi.fn>) {
+    const { hubClient } = createHubClient(() => ({
+      trace_id: "trace",
+      thread_id: "agent-dispatcher-unification",
+      source: "codex",
+      status: "success",
+      content: "",
+      attachments: [],
+      timestamp: FIXED_NOW
+    }));
+    return new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [planPath],
+      hubClient,
+      log,
+      intervalMs: 60_000,
+      ...(onDispatcherStalled ? { onDispatcherStalled } : {})
+    });
+  }
+
+  it("never selects a frozen row through the validation-continue door", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-06T23:00:00.000Z"));
+
+    const { planPath } = await setupFrozenHarness();
+    const onDispatcherStalled = vi.fn(async () => {});
+    const log = silentLog();
+
+    await buildWatchdog(planPath, log, onDispatcherStalled).sweep();
+
+    expect(onDispatcherStalled).not.toHaveBeenCalled();
+  });
+
+  it("selects it again once /human-resolve releases the escalation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-06T23:00:00.000Z"));
+
+    const { planPath } = await setupFrozenHarness({
+      humanResolution: { resolved_at: "2026-08-06T22:50:00.000Z", note: "operator released" }
+    });
+    const onDispatcherStalled = vi.fn(async () => {});
+    const log = silentLog();
+
+    await buildWatchdog(planPath, log, onDispatcherStalled).sweep();
+
+    expect(onDispatcherStalled).toHaveBeenCalledWith(expect.objectContaining({
+      continueWorkerId: "BATCH-8-GATE"
+    }));
+  });
+
+  it("emits dispatcher_awaiting_human_resolution as a throttled heartbeat, not once and never again", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-06T23:00:00.000Z"));
+
+    const { planPath } = await setupFrozenHarness();
+    const log = silentLog();
+    const watchdog = buildWatchdog(planPath, log);
+
+    await watchdog.sweep();
+    await watchdog.sweep();
+    await watchdog.sweep();
+
+    const parkedCalls = () => log.info.mock.calls.filter(
+      ([message]) => message === "dispatcher_awaiting_human_resolution"
+    );
+    expect(parkedCalls()).toHaveLength(1);
+    expect(parkedCalls()[0]?.[1]).toEqual(expect.objectContaining({
+      event: "dispatcher_awaiting_human_resolution",
+      dispatchPlanPath: planPath,
+      workerId: "BATCH-8-GATE",
+      pmResolverThreadId: "codex_69",
+      escalatedAt: "2026-08-06T20:58:53.000Z",
+      lastHumanResolvedAt: null
+    }));
+
+    // Inside the throttle window: still one line.
+    vi.setSystemTime(new Date("2026-08-06T23:10:00.000Z"));
+    await watchdog.sweep();
+    expect(parkedCalls()).toHaveLength(1);
+
+    // Past the window: the park is still live, so it must be re-announced.
+    vi.setSystemTime(new Date("2026-08-06T23:20:00.000Z"));
+    await watchdog.sweep();
+    expect(parkedCalls()).toHaveLength(2);
+  });
+
+  it("stops announcing once the escalation is released", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-06T23:00:00.000Z"));
+
+    const { planPath, store } = await setupFrozenHarness();
+    const log = silentLog();
+    const watchdog = buildWatchdog(planPath, log);
+
+    await watchdog.sweep();
+    expect(log.info.mock.calls.filter(([m]) => m === "dispatcher_awaiting_human_resolution")).toHaveLength(1);
+
+    const released = store.load();
+    released.workers["BATCH-8-GATE"]!.human_resolution = {
+      resolved_at: "2026-08-06T23:05:00.000Z",
+      note: null
+    };
+    store.save(released);
+
+    vi.setSystemTime(new Date("2026-08-07T00:00:00.000Z"));
+    await watchdog.sweep();
+
+    expect(log.info.mock.calls.filter(([m]) => m === "dispatcher_awaiting_human_resolution")).toHaveLength(1);
+  });
+
+  // Regression: W1-03 / C-04b, observed 2026-08-10. Both rows were escalated to
+  // a human, then concluded by another route (operator retry, PM
+  // force_complete) that never stamps `human_resolution` — so the escalation
+  // entry stayed unreleased and the heartbeat re-announced them on every sweep,
+  // one of them with `parkedForMs: 204240274` (~56h). A permanent backlog of
+  // long-concluded rows is exactly what drowns the signal the heartbeat exists
+  // to give.
+  it.each(["completed", "skipped"] as const)(
+    "never heartbeats a %s row whose escalation was never formally released",
+    async (workerStatus) => {
+      vi.useFakeTimers();
+      // Two days after the escalation — the W1-03 shape.
+      vi.setSystemTime(new Date("2026-08-08T23:00:00.000Z"));
+
+      const { planPath } = await setupFrozenHarness({ workerStatus });
+      const log = silentLog();
+      const watchdog = buildWatchdog(planPath, log);
+
+      await watchdog.sweep();
+      vi.setSystemTime(new Date("2026-08-09T23:00:00.000Z"));
+      await watchdog.sweep();
+
+      expect(log.info.mock.calls.filter(([m]) => m === "dispatcher_awaiting_human_resolution")).toHaveLength(0);
+    }
+  );
+
+  it("still heartbeats a blocked row — a blocked escalation is the genuine park", async () => {
+    vi.useFakeTimers();
+    // Same two-day-old escalation as the suppressed case above: the difference
+    // is the row's STATE, never its age.
+    vi.setSystemTime(new Date("2026-08-08T23:00:00.000Z"));
+
+    const { planPath } = await setupFrozenHarness({ workerStatus: "blocked" });
+    const log = silentLog();
+
+    await buildWatchdog(planPath, log).sweep();
+
+    const parked = log.info.mock.calls.filter(([m]) => m === "dispatcher_awaiting_human_resolution");
+    expect(parked).toHaveLength(1);
+    expect(parked[0]?.[1]).toEqual(expect.objectContaining({
+      workerId: "BATCH-8-GATE",
+      escalatedAt: "2026-08-06T20:58:53.000Z"
+    }));
+  });
+});
+
+// Regression: unification-layer-decoupling-2026-08-06 / I-02..I-06. The
+// watchdog is the automatic driver of targeted continues, so a row whose
+// Context Capsule is still `⏳ 待物化` must never become `continueWorkerId` —
+// and while it is parked, the operator must be told, because the markdown reads
+// ⬜ and the lifecycle reads `pending`: indistinguishable from ordinary queueing
+// without a signal.
+describe("ReconciliationWatchdog materialization precondition", () => {
+  const PLACEHOLDER =
+    "⏳ **待物化** —— 依赖行：I-01。其实际 SHA 由 `BATCH-98-GATE`（本波 Integrator）在派发本波前填入。";
+
+  const HELD_PLAN = [
+    "| Status | Batch | Worker | Model | Depends_On | Task |",
+    "| --- | --- | --- | --- | --- | --- |",
+    "| ✅ | 9 | I-01 | gpt-5.5::xhigh | — | contract |",
+    "| ⬜ | 9 | I-02 | gpt-5.5::xhigh | I-01 | resolver |",
+    ""
+  ].join("\n");
+
+  async function setupHeldHarness(options: { materialized?: boolean } = {}) {
+    const harness = await createHarness("watchdog-materialization-");
+    const planPath = path.join(harness.directory, "dispatch_plan.md");
+    await fsp.writeFile(planPath, HELD_PLAN, "utf8");
+    await fsp.mkdir(path.join(harness.directory, "context"), { recursive: true });
+    await fsp.writeFile(
+      path.join(harness.directory, "context", "I-02-context.md"),
+      [
+        "# I-02 Context Capsule",
+        "",
+        "## Upstream Inputs",
+        "",
+        options.materialized
+          ? "I-01@7712e542d71d0f48e1cf81f0922547d72b46ef00"
+          : PLACEHOLDER,
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const store = new LifecycleStore(path.join(harness.directory, "dispatch_threads.json"));
+    store.save({
+      ...buildEmptyDispatchThreadStateV2(),
+      dispatcher: {
+        thread_id: "agent-dispatcher-uld",
+        started_at: "2026-08-11T09:00:00.000Z",
+        status: "pending"
+      },
+      workers: {
+        "I-01": {
+          thread_id: "codex_10",
+          trace_id: null,
+          started_at: "2026-08-11T09:10:00.000Z",
+          last_seen_at: "2026-08-11T09:40:00.000Z",
+          status: "completed",
+          expected_outputs: [],
+          hub_result: null,
+          command_preamble: null,
+          retry_count: 0
+        }
+      },
+      pm_resolvers: []
+    });
+
+    return { harness, planPath, store };
+  }
+
+  function buildWatchdog(planPath: string, log: ReturnType<typeof silentLog>, onDispatcherStalled?: ReturnType<typeof vi.fn>) {
+    const { hubClient } = createHubClient(() => ({
+      trace_id: "trace",
+      thread_id: "agent-dispatcher-uld",
+      source: "codex",
+      status: "success",
+      content: "",
+      attachments: [],
+      timestamp: FIXED_NOW
+    }));
+    return new ReconciliationWatchdog({
+      resolveActiveDispatchPlanPaths: async () => [planPath],
+      hubClient,
+      log,
+      intervalMs: 60_000,
+      ...(onDispatcherStalled ? { onDispatcherStalled } : {})
+    });
+  }
+
+  it("never selects a row whose capsule is still unmaterialized", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-11T10:00:00.000Z"));
+
+    const { planPath } = await setupHeldHarness();
+    const onDispatcherStalled = vi.fn(async () => {});
+    const log = silentLog();
+
+    await buildWatchdog(planPath, log, onDispatcherStalled).sweep();
+
+    expect(onDispatcherStalled).not.toHaveBeenCalledWith(expect.objectContaining({
+      continueWorkerId: "I-02"
+    }));
+  });
+
+  it("selects the same row once its capsule carries no placeholder", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-11T10:00:00.000Z"));
+
+    const { planPath } = await setupHeldHarness({ materialized: true });
+    const onDispatcherStalled = vi.fn(async () => {});
+    const log = silentLog();
+
+    await buildWatchdog(planPath, log, onDispatcherStalled).sweep();
+
+    expect(onDispatcherStalled).toHaveBeenCalledWith(expect.objectContaining({
+      continueWorkerId: "I-02"
+    }));
+  });
+
+  it("emits dispatcher_awaiting_materialization as a throttled heartbeat naming the reason", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-11T10:00:00.000Z"));
+
+    const { planPath } = await setupHeldHarness();
+    const log = silentLog();
+    const watchdog = buildWatchdog(planPath, log);
+
+    await watchdog.sweep();
+    await watchdog.sweep();
+
+    const parkedCalls = () => log.info.mock.calls.filter(
+      ([message]) => message === "dispatcher_awaiting_materialization"
+    );
+    expect(parkedCalls()).toHaveLength(1);
+    expect(parkedCalls()[0]?.[1]).toEqual(expect.objectContaining({
+      event: "dispatcher_awaiting_materialization",
+      dispatchPlanPath: planPath,
+      workerId: "I-02",
+      // The watchdog's gate is READ-ONLY: it never attempts the derivation, so
+      // it must not claim PM is owed anything. `awaiting_fill` is the honest
+      // answer — the continue tick performs the fill, and only THAT path can
+      // report `awaiting_pm`, because only it knows the derivation was tried
+      // and failed.
+      reason: "awaiting_fill"
+    }));
+
+    // Inside the throttle window: still one line.
+    vi.setSystemTime(new Date("2026-08-11T10:10:00.000Z"));
+    await watchdog.sweep();
+    expect(parkedCalls()).toHaveLength(1);
+
+    // Past the window: the park is still live, so it must be re-announced.
+    vi.setSystemTime(new Date("2026-08-11T10:20:00.000Z"));
+    await watchdog.sweep();
+    expect(parkedCalls()).toHaveLength(2);
+  });
+
+  it("stops announcing once the capsule is materialized", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-11T10:00:00.000Z"));
+
+    const { harness, planPath } = await setupHeldHarness();
+    const log = silentLog();
+    const watchdog = buildWatchdog(planPath, log);
+
+    await watchdog.sweep();
+    expect(log.info.mock.calls.filter(([m]) => m === "dispatcher_awaiting_materialization")).toHaveLength(1);
+
+    await fsp.writeFile(
+      path.join(harness.directory, "context", "I-02-context.md"),
+      "# I-02 Context Capsule\n\n## Upstream Inputs\n\nI-01@7712e542d71d0f48e1cf81f0922547d72b46ef00\n",
+      "utf8"
+    );
+
+    vi.setSystemTime(new Date("2026-08-11T11:00:00.000Z"));
+    await watchdog.sweep();
+
+    expect(log.info.mock.calls.filter(([m]) => m === "dispatcher_awaiting_materialization")).toHaveLength(1);
   });
 });
 

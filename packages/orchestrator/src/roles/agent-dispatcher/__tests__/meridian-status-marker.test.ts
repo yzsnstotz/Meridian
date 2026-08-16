@@ -77,13 +77,28 @@ describe("parseMeridianStatusMarker", () => {
     expect(parseMeridianStatusMarker("just a plain narrative reply")).toBeNull();
   });
 
-  it("returns null when block is malformed (no closing <<<END>>>)", () => {
+  // Contract changed 2026-08-10: a TRAILING block with no closer is now
+  // parsed rather than discarded. Discarding it stranded rows in `running`
+  // with no transition and no PM routing (four incidents on
+  // agent-dispatcher-abd83457). The fields are the worker's final word; a
+  // missing or mistyped closer does not make them less authoritative.
+  it("parses a trailing block even with no closing <<<END>>>", () => {
     const reply = [
       "<<<MERIDIAN-STATUS>>>",
       "role: worker",
       "worker_id: N-04",
       "outcome: complete"
     ].join("\n");
+
+    expect(parseMeridianStatusMarker(reply)).toMatchObject({
+      role: "worker",
+      worker_id: "N-04",
+      outcome: "complete"
+    });
+  });
+
+  it("returns null when an unterminated block carries no valid fields", () => {
+    const reply = ["<<<MERIDIAN-STATUS>>>", "just narrative, nothing parseable"].join("\n");
 
     expect(parseMeridianStatusMarker(reply)).toBeNull();
   });
@@ -384,5 +399,56 @@ describe("parseValidatorBlocking", () => {
       { criterion: "branch task/r-04 missing" },
       { criterion: "tests not green" }
     ]);
+  });
+});
+
+describe("terminator tolerance (regression: rows stranded in `running`)", () => {
+  const body = [
+    "worker_id: C-08",
+    "role: worker",
+    "outcome: needs_pm",
+    "notes: contract and files-owned gap"
+  ].join("\n");
+
+  it("parses a block closed with two angle brackets", () => {
+    // Observed on agent-dispatcher-abd83457: C-07, C-08 and C-09 all typed
+    // `<<<END>>`; the strict matcher found zero blocks, so no lifecycle
+    // transition and no PM routing ever happened.
+    const marker = parseMeridianStatusMarker(`done.\n\n<<<MERIDIAN-STATUS>>>\n${body}\n<<<END>>`);
+    expect(marker).toMatchObject({ worker_id: "C-08", role: "worker", outcome: "needs_pm" });
+  });
+
+  it("parses a block closed with four angle brackets", () => {
+    const marker = parseMeridianStatusMarker(`done.\n\n<<<MERIDIAN-STATUS>>>\n${body}\n<<<END>>>>`);
+    expect(marker).toMatchObject({ worker_id: "C-08", outcome: "needs_pm" });
+  });
+
+  it("parses a trailing block whose terminator is missing entirely", () => {
+    const marker = parseMeridianStatusMarker(`done.\n\n<<<MERIDIAN-STATUS>>>\n${body}`);
+    expect(marker).toMatchObject({ worker_id: "C-08", outcome: "needs_pm" });
+  });
+
+  it("still parses the canonical three-bracket terminator", () => {
+    const marker = parseMeridianStatusMarker(`done.\n\n<<<MERIDIAN-STATUS>>>\n${body}\n<<<END>>>`);
+    expect(marker).toMatchObject({ worker_id: "C-08", outcome: "needs_pm" });
+  });
+
+  it("falls back to the last VALID block when a stray opener trails it", () => {
+    const text = [
+      "<<<MERIDIAN-STATUS>>>",
+      "worker_id: C-08",
+      "role: worker",
+      "outcome: complete",
+      "report_path: /tmp/C-08.md",
+      "<<<END>>>",
+      "",
+      "PS: the format is <<<MERIDIAN-STATUS>>> and then narrative with no fields"
+    ].join("\n");
+    const marker = parseMeridianStatusMarker(text);
+    expect(marker).toMatchObject({ worker_id: "C-08", outcome: "complete" });
+  });
+
+  it("returns null when no marker fields are present at all", () => {
+    expect(parseMeridianStatusMarker("just narrative, no marker")).toBeNull();
   });
 });

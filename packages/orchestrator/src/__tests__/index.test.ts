@@ -10,12 +10,17 @@ vi.mock("../roles/agent-dispatcher/pm-resolver", () => ({
 
 import {
   buildWatchdogPmResolverIssueKey,
+  evaluateBreakerForWatchdog,
   hasPmResolverHandledCurrentWorkerIssue,
   maybeStartPmResolverForWatchdogRecovery,
   resolveRetryExhaustedWorkerNeedingPm,
   tryContinueDispatchWorker,
   type WatchdogContinueDispatcher
 } from "../index";
+import {
+  DispatcherWorkerBreaker,
+  PARALLEL_CONTINUE_BREAKER_KEY
+} from "../roles/agent-dispatcher/circuit-breaker";
 import { startPmResolver } from "../roles/agent-dispatcher/pm-resolver";
 import { StateStore } from "../state-store";
 import type { AppState, DispatchThreadStateV2 } from "../types";
@@ -156,6 +161,294 @@ describe("watchdog direct dispatcher recovery", () => {
         }
       ]
     });
+  });
+});
+
+describe("watchdog bare parallel continue", () => {
+  // `tryContinueDispatchWorker` used to hard-return null without a workerId,
+  // and the watchdog's onDispatcherStalled handler always supplied
+  // `info.continueWorkerId`. The automatic path was therefore always targeted,
+  // `isParallelAutoContinue` (`!workerId && parallel_dispatch.enabled`) could
+  // never be true on an automatic tick, and `parallel_dispatch.enabled: true`
+  // was dead config outside a human-issued bare continue.
+  let tempDirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(tempDirs.map((directory) => fs.rm(directory, { recursive: true, force: true })));
+    tempDirs = [];
+    vi.restoreAllMocks();
+  });
+
+  async function createParallelDispatcherFixture(options: {
+    threadId: string;
+    parallelEnabled?: boolean;
+  }): Promise<{ dispatchPlanPath: string; stateStore: StateStore }> {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-bare-parallel-"));
+    tempDirs.push(tempDir);
+
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const stateStore = new StateStore(path.join(tempDir, "state.json"));
+    await stateStore.save({
+      roles: [
+        {
+          threadId: options.threadId,
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: {
+            dispatch_plan_path: dispatchPlanPath,
+            command_file_path: path.join(tempDir, "dispatch_command.md"),
+            user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+            agent_type: "codex",
+            mode: "bridge",
+            kill_policy: "always",
+            parallel_dispatch: {
+              enabled: options.parallelEnabled ?? true,
+              max_concurrency: 3
+            }
+          }
+        }
+      ],
+      promptStore: {}
+    });
+
+    return { dispatchPlanPath, stateStore };
+  }
+
+  it("issues a bare continue so the parallel launcher can fill free slots", async () => {
+    const { dispatchPlanPath, stateStore } = await createParallelDispatcherFixture({
+      threadId: "agent-dispatcher-bare-parallel"
+    });
+    const continueDispatcher = vi.fn<WatchdogContinueDispatcher>().mockResolvedValue({
+      ok: true,
+      status: "continued_parallel",
+      message: "continued parallel: R-02, R-03",
+      started_workers: ["R-02", "R-03"]
+    });
+
+    await expect(
+      tryContinueDispatchWorker(
+        stateStore,
+        dispatchPlanPath,
+        null,
+        continueDispatcher,
+        silentLog(),
+        { allowBareParallelContinue: true }
+      )
+    ).resolves.toEqual({
+      status: "continued_parallel",
+      workerId: null,
+      message: "continued parallel: R-02, R-03",
+      bare: true
+    });
+
+    // The worker_id argument must be absent, not null — that is precisely what
+    // makes `isParallelAutoContinue` true on the far side.
+    expect(continueDispatcher).toHaveBeenCalledWith("agent-dispatcher-bare-parallel", undefined);
+  });
+
+  it("does nothing without a workerId when the bare path is not permitted", async () => {
+    const { dispatchPlanPath, stateStore } = await createParallelDispatcherFixture({
+      threadId: "agent-dispatcher-bare-parallel-off"
+    });
+    const continueDispatcher = vi.fn<WatchdogContinueDispatcher>();
+
+    await expect(
+      tryContinueDispatchWorker(stateStore, dispatchPlanPath, null, continueDispatcher, silentLog())
+    ).resolves.toBeNull();
+    expect(continueDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("does not issue a bare continue when the dispatcher never opted into parallel dispatch", async () => {
+    const { dispatchPlanPath, stateStore } = await createParallelDispatcherFixture({
+      threadId: "agent-dispatcher-bare-parallel-serial",
+      parallelEnabled: false
+    });
+    const continueDispatcher = vi.fn<WatchdogContinueDispatcher>();
+
+    await expect(
+      tryContinueDispatchWorker(
+        stateStore,
+        dispatchPlanPath,
+        null,
+        continueDispatcher,
+        silentLog(),
+        { allowBareParallelContinue: true }
+      )
+    ).resolves.toBeNull();
+    expect(continueDispatcher).not.toHaveBeenCalled();
+  });
+
+  it("leaves targeted continuation byte-for-byte unchanged", async () => {
+    const { dispatchPlanPath, stateStore } = await createParallelDispatcherFixture({
+      threadId: "agent-dispatcher-bare-parallel-targeted"
+    });
+    const continueDispatcher = vi.fn<WatchdogContinueDispatcher>().mockResolvedValue({
+      ok: true,
+      status: "continued",
+      message: "continued R-01",
+      worker: "R-01"
+    });
+
+    await expect(
+      tryContinueDispatchWorker(
+        stateStore,
+        dispatchPlanPath,
+        "R-01",
+        continueDispatcher,
+        silentLog(),
+        { allowBareParallelContinue: true }
+      )
+    ).resolves.toEqual({
+      status: "continued",
+      workerId: "R-01",
+      message: "continued R-01"
+    });
+    expect(continueDispatcher).toHaveBeenCalledWith("agent-dispatcher-bare-parallel-targeted", "R-01");
+  });
+});
+
+describe("watchdog circuit breaker gating of the bare parallel continue", () => {
+  // Safety-critical: `evaluateBreakerForWatchdog` returned null for a null
+  // candidateWorkerId, and its caller only trips on
+  // `breakerVerdict && !breakerVerdict.allowed`. A bare continue would
+  // therefore have run COMPLETELY ungated — the same shape that drove
+  // agent-dispatcher-67f6a3fc to ~3,500 wasted LLM dispatches.
+  let tempDirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(tempDirs.map((directory) => fs.rm(directory, { recursive: true, force: true })));
+    tempDirs = [];
+  });
+
+  async function writeLifecycle(workers: DispatchThreadStateV2["workers"]): Promise<string> {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-bare-breaker-"));
+    tempDirs.push(tempDir);
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    await fs.writeFile(
+      path.join(tempDir, "dispatch_threads.json"),
+      JSON.stringify({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-bare-breaker",
+          started_at: "2026-08-09T00:00:00.000Z",
+          status: "running"
+        },
+        workers,
+        last_reconciled_at: null
+      }),
+      "utf8"
+    );
+    return dispatchPlanPath;
+  }
+
+  function buildWorker(overrides: Partial<DispatchThreadStateV2["workers"][string]>): DispatchThreadStateV2["workers"][string] {
+    return {
+      thread_id: "codex_01",
+      trace_id: null,
+      started_at: "2026-08-09T00:00:00.000Z",
+      last_seen_at: "2026-08-09T00:00:00.000Z",
+      status: "running",
+      expected_outputs: [],
+      hub_result: null,
+      command_preamble: null,
+      retry_count: 0,
+      ...overrides
+    } as DispatchThreadStateV2["workers"][string];
+  }
+
+  it("returns no verdict for a null worker when no bare continue will be attempted", async () => {
+    const dispatchPlanPath = await writeLifecycle({ "R-01": buildWorker({}) });
+    const breaker = new DispatcherWorkerBreaker();
+
+    await expect(
+      evaluateBreakerForWatchdog(dispatchPlanPath, null, "agent-dispatcher-x", breaker, silentLog())
+    ).resolves.toBeNull();
+    // Gating a tick that dispatches nothing would let unrelated hub-relaunch
+    // ticks accumulate toward a spurious force-pause.
+    expect(breaker.snapshot()).toEqual({});
+  });
+
+  it("trips a bare continue that repeatedly no-ops", async () => {
+    const dispatchPlanPath = await writeLifecycle({
+      "R-01": buildWorker({}),
+      "R-02": buildWorker({ thread_id: "", status: "pending", started_at: "" })
+    });
+    const breaker = new DispatcherWorkerBreaker({ windowMs: 600_000, threshold: 4 });
+
+    for (let i = 0; i < 3; i += 1) {
+      const verdict = await evaluateBreakerForWatchdog(
+        dispatchPlanPath,
+        null,
+        "agent-dispatcher-bare-trip",
+        breaker,
+        silentLog(),
+        { bareParallelContinue: true }
+      );
+      expect(verdict).toMatchObject({ allowed: true, countAfter: i + 1 });
+    }
+
+    await expect(
+      evaluateBreakerForWatchdog(
+        dispatchPlanPath,
+        null,
+        "agent-dispatcher-bare-trip",
+        breaker,
+        silentLog(),
+        { bareParallelContinue: true }
+      )
+    ).resolves.toMatchObject({ allowed: false, countAfter: 4 });
+
+    expect(breaker.snapshot()["agent-dispatcher-bare-trip"]?.[PARALLEL_CONTINUE_BREAKER_KEY]?.count).toBe(4);
+  });
+
+  it("resets the counter when a bare continue actually launched a worker", async () => {
+    const idlePlanPath = await writeLifecycle({
+      "R-01": buildWorker({}),
+      "R-02": buildWorker({ thread_id: "", status: "pending", started_at: "" })
+    });
+    const breaker = new DispatcherWorkerBreaker({ windowMs: 600_000, threshold: 4 });
+
+    for (let i = 0; i < 3; i += 1) {
+      await evaluateBreakerForWatchdog(
+        idlePlanPath,
+        null,
+        "agent-dispatcher-bare-progress",
+        breaker,
+        silentLog(),
+        { bareParallelContinue: true }
+      );
+    }
+    expect(breaker.snapshot()["agent-dispatcher-bare-progress"]?.[PARALLEL_CONTINUE_BREAKER_KEY]?.count).toBe(3);
+
+    // R-02 launched: the plan sig moves, so the next gate starts a fresh window.
+    await fs.writeFile(
+      path.join(path.dirname(idlePlanPath), "dispatch_threads.json"),
+      JSON.stringify({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-bare-breaker",
+          started_at: "2026-08-09T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "R-01": buildWorker({}),
+          "R-02": buildWorker({ thread_id: "codex_02", status: "running", started_at: "2026-08-09T01:00:00.000Z" })
+        },
+        last_reconciled_at: null
+      }),
+      "utf8"
+    );
+
+    await expect(
+      evaluateBreakerForWatchdog(
+        idlePlanPath,
+        null,
+        "agent-dispatcher-bare-progress",
+        breaker,
+        silentLog(),
+        { bareParallelContinue: true }
+      )
+    ).resolves.toMatchObject({ allowed: true, countAfter: 1 });
   });
 });
 

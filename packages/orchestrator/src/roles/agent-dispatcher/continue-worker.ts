@@ -2,8 +2,18 @@ import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import path from "node:path";
 
+import {
+  describeCapsuleMaterializationHold,
+  evaluateCapsuleMaterializationForLaunch,
+  type CapsuleMaterializationHold
+} from "./capsule-materialization";
 import { resolveCredentialForSpawn } from "./credential-resolution";
 import { resolveConfiguredDispatchRepoRoot } from "./dispatch-paths";
+import {
+  describeHumanEscalationFreeze,
+  findUnreleasedHumanEscalation,
+  type HumanEscalationFreeze
+} from "./human-escalation-freeze";
 import { LifecycleStore } from "./lifecycle-store";
 import {
   parseDispatchModelCode,
@@ -55,6 +65,24 @@ export interface ContinueDispatchWorkerResult {
   threadId?: string;
   error?: string;
   localToolBootstrapFailure?: boolean;
+  /**
+   * Set when the launch was refused because the row sits under an unreleased
+   * `escalate_human` escalation. Distinguishes "a human owes us a decision"
+   * from a real launch failure, so callers can report it as parked rather than
+   * broken (and so it is never retried into a loop).
+   */
+  humanEscalationFreeze?: HumanEscalationFreeze;
+  /**
+   * Set when the launch was refused by the dispatch materialization
+   * precondition: the row's Context Capsule still carries `⏳ 待物化`, or
+   * `plan.json` declares a card/capsule for the row that is not on disk
+   * (`spec_not_written`), or `plan.json` itself cannot be read
+   * (`spec_manifest_unreadable`). Like `humanEscalationFreeze`, this is a PARKED
+   * row, not a broken one: callers must report it as such and must never retry
+   * it into a loop — retrying cannot help, only a completed dependency, PM, or
+   * an author writing the missing file can.
+   */
+  capsuleMaterializationHold?: CapsuleMaterializationHold;
   resumeResult?: ResumeWorkerResult;
 }
 
@@ -87,7 +115,32 @@ export async function continueDispatchWorker(
     const lifecycleStore = new LifecycleStore(
       path.join(path.dirname(config.dispatch_plan_path), "dispatch_threads.json")
     );
-    const currentWorkerState = lifecycleStore.load().workers[workerId];
+    const lifecycleStateForLaunch = lifecycleStore.load();
+
+    // Escalation-freeze backstop. Callers are expected to have filtered this
+    // row out already (see `isEligibleServiceContinueRow` and the targeted
+    // guard in continueDispatcherForRole), but this is the single funnel every
+    // launch reaches — the serial continue, the parallel slot filler, and the
+    // scheduler role all land here — so a new caller cannot reintroduce the
+    // bug through another door. Refuse rather than launch: a row escalated to
+    // a human with no `/human-resolve` acknowledgement must not be spawned,
+    // retried, or fed validator feedback.
+    //
+    // Deliberately placed BEFORE the completed/skipped short-circuit's sibling
+    // branches but AFTER it in effect is not required — a completed row is not
+    // launched either way — yet keeping the freeze first makes the refusal
+    // unconditional and easy to reason about.
+    const humanEscalationFreeze = findUnreleasedHumanEscalation(lifecycleStateForLaunch, workerId);
+    if (humanEscalationFreeze) {
+      return {
+        ok: false,
+        workerId,
+        error: describeHumanEscalationFreeze(humanEscalationFreeze),
+        humanEscalationFreeze
+      };
+    }
+
+    const currentWorkerState = lifecycleStateForLaunch.workers[workerId];
     if (currentWorkerState?.status === "completed" || currentWorkerState?.status === "skipped") {
       return {
         ok: true,
@@ -136,6 +189,38 @@ export async function continueDispatchWorker(
         ok: false,
         workerId,
         error: `validation max cycles exhausted for worker ${workerId}`
+      };
+    }
+
+    // ─── Dispatch materialization precondition ─────────────────────────────
+    //
+    // Positioned here on purpose: every short-circuit above returns an EXISTING
+    // thread (completed, skipped, fix_requested with a live thread, running) —
+    // none of them launches anything, and parking a completed row would be
+    // wrong. Everything below this line is a launch.
+    //
+    // Both halves run here rather than only at the tick level, because this is
+    // the single funnel every launch path reaches — serial continue, parallel
+    // slot filler, watchdog stall recovery (via continueDispatcher), targeted
+    // operator continue, and the scheduler engine. A future caller that skips
+    // the tick-level sweep still gets both the fill and the refusal.
+    //
+    // There is deliberately no retry, no fallback, and no "launch anyway"
+    // branch: if the capsule still carries `⏳ 待物化`, launching produces a
+    // worker that self-reports `blocked` within one turn and burns a PM
+    // resolver. Parking and naming the gap is the only correct answer.
+    const capsuleMaterializationHold = evaluateCapsuleMaterializationForLaunch({
+      dispatchPlanPath: config.dispatch_plan_path,
+      workerId,
+      lifecycleState: lifecycleStateForLaunch,
+      repoRoot: resolveConfiguredDispatchRepoRoot(config)
+    });
+    if (capsuleMaterializationHold) {
+      return {
+        ok: false,
+        workerId,
+        error: describeCapsuleMaterializationHold(capsuleMaterializationHold),
+        capsuleMaterializationHold
       };
     }
 

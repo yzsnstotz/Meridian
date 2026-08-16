@@ -9,6 +9,8 @@ import {
   applyValidatorVerdictFromContent,
   deliverValidatorFeedback,
   executeValidationCycle,
+  isGateRow,
+  isUnvalidatedGateRow,
   parseValidatorOutputFromJson,
   type ValidatorOrchestratorDeps
 } from "../validator-orchestrator";
@@ -1470,3 +1472,92 @@ function buildPlanRow(): DispatchContinuationPlanRow {
     notes: "awaiting validation"
   };
 }
+
+describe("isGateRow / isUnvalidatedGateRow — gate rows may not be retired unvalidated", () => {
+  it("recognises wave gates, legacy-zero valves and INTEGRATE as gate rows", () => {
+    for (const worker of [
+      "BATCH-0-GATE",
+      "BATCH-10-GATE",
+      "LEGACY-ZERO-GATE",
+      "FINAL-LEGACY-ZERO-GATE",
+      "INTEGRATE",
+      "batch-1-gate"
+    ]) {
+      expect(isGateRow({ worker }), worker).toBe(true);
+    }
+  });
+
+  it("does not treat environment or implementation rows as gates", () => {
+    for (const worker of ["PRE-FLIGHT", "POST-FLIGHT", "W1-03", "W0-05", "C-01", "GATEKEEPER", ""]) {
+      expect(isGateRow({ worker }), worker).toBe(false);
+    }
+  });
+
+  it("flags a gate row that has never been validated", () => {
+    expect(isUnvalidatedGateRow({ worker: "BATCH-0-GATE" }, undefined)).toBe(true);
+    expect(isUnvalidatedGateRow({ worker: "BATCH-0-GATE" }, { history: [] })).toBe(true);
+  });
+
+  it("releases the carve-out once any validation attempt exists — no override loop", () => {
+    expect(isUnvalidatedGateRow({ worker: "BATCH-0-GATE" }, { history: [{ cycle: 1 }] })).toBe(false);
+  });
+
+  it("never constrains non-gate rows regardless of validation history", () => {
+    expect(isUnvalidatedGateRow({ worker: "W1-03" }, undefined)).toBe(false);
+    expect(isUnvalidatedGateRow({ worker: "W1-03" }, { history: [] })).toBe(false);
+  });
+});
+
+describe("task branch resolution (regression: validators diffed a ref that never existed)", () => {
+  it("recovers the branch from the dispatch plan when the row lost it", async () => {
+    const contexts: string[] = [];
+    const harness = await createHarness({
+      buildPrompt: (context) => {
+        contexts.push(context.taskBranch);
+        return buildDefaultValidatorPrompt(context);
+      }
+    });
+    await fs.writeFile(harness.deps.dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Worker | Batch | Tier | Model | Depends On | Branch | Task |",
+      "|---|---|---|---|---|---|---|---|",
+      "| ✅ | N-02 | 1 | T1 | CODEX | — | uld-mvp-2026-08-06/N-02 | Build Complete |"
+    ].join("\n"), "utf8");
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-branch-recovered" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-branch-recovered",
+      status: "success",
+      runState: "completed",
+      content: '{"score":0.9,"feedback":"ok"}',
+      raw: {}
+    });
+    const rowWithoutBranch = { ...buildPlanRow() } as DispatchContinuationPlanRow;
+    delete (rowWithoutBranch as { branch?: string | null }).branch;
+    await executeValidationCycle(harness.deps, "N-02", rowWithoutBranch);
+    expect(contexts[0]).toBe("uld-mvp-2026-08-06/N-02");
+    expect(contexts[0]).not.toBe("task/n-02");
+  });
+
+  it("falls back to the legacy synthetic branch only when the plan has no Branch column", async () => {
+    const contexts: string[] = [];
+    const harness = await createHarness({
+      buildPrompt: (context) => {
+        contexts.push(context.taskBranch);
+        return buildDefaultValidatorPrompt(context);
+      }
+    });
+    harness.spawn.mockResolvedValueOnce({ threadId: "validator-thread-legacy-branch" });
+    harness.run.mockResolvedValueOnce({
+      threadId: "validator-thread-legacy-branch",
+      status: "success",
+      runState: "completed",
+      content: '{"score":0.9,"feedback":"ok"}',
+      raw: {}
+    });
+    const rowWithoutBranch = { ...buildPlanRow() } as DispatchContinuationPlanRow;
+    delete (rowWithoutBranch as { branch?: string | null }).branch;
+    await executeValidationCycle(harness.deps, "N-02", rowWithoutBranch);
+    expect(contexts[0]).toBe("task/n-02");
+  });
+});

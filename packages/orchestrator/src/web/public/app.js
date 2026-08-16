@@ -4921,6 +4921,17 @@ function formatContinueResult(result) {
       return message || "still blocked";
     case "manual_intervention_required":
       return message || "manual intervention required";
+    // Parked behind an unreleased PM `escalate_human`. Distinct from
+    // `still_blocked` on purpose: nothing automatic will ever clear it, only
+    // the HUMAN-resolve action on the worker detail panel.
+    case "awaiting_human_resolution":
+      return message || "awaiting human resolution";
+    // Parked behind a Context Capsule that still carries `⏳ 待物化`. Distinct
+    // from `still_blocked` for the same reason as above: this one clears either
+    // when the named dependency completes (automatic) or when PM writes the
+    // sections the dispatcher cannot derive — never by retrying.
+    case "awaiting_materialization":
+      return message || "awaiting materialization";
     case "local_tool_bootstrap_failed":
       return message || "local tool bootstrap failed";
     case "validation_in_progress":

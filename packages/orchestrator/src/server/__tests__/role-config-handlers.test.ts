@@ -1581,6 +1581,303 @@ describe("role config handlers", () => {
     }
   });
 
+  it("fills free parallel slots while another row sits in manual intervention", async () => {
+    // Regression: both `resolveManualInterventionWorker` early returns sit
+    // ABOVE the parallel launcher, so a SINGLE wedged row froze every other row
+    // in the plan — no eligible, dependency-satisfied, completely unrelated row
+    // could start regardless of how many of max_concurrency slots were idle.
+    // Measured on the 20.1h clawso round with max_concurrency 3: mean worker
+    // concurrency 0.86/3, 5.8h with DAG-ready rows and zero workers running.
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-parallel-manual-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, { dispatchPlanPath });
+    const launchDispatchWorker = vi.fn(async ({ workerId }: LaunchDispatchWorkerConfig) => ({
+      ok: true,
+      workerId,
+      threadId: `thread-${workerId.toLowerCase()}`,
+      traceId: `trace-${workerId.toLowerCase()}`
+    }));
+
+    try {
+      await fs.writeFile(dispatchPlanPath, [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        "| ✅ | 0 | PRE-FLIGHT | Ready | CODEX | — | TaskSpec | done |",
+        "| ⛔ BLOCKED | 1 | R-01 | Wedged row | CODEX | PRE-FLIGHT | TaskSpec | needs a human |",
+        "| ⬜ | 1 | R-02 | Independent sibling | CODEX | PRE-FLIGHT | TaskSpec | ready |"
+      ].join("\n"), "utf8");
+      lifecycleStore.save({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-parallel-manual",
+          started_at: "2026-08-09T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "R-01": buildLifecycleWorker({
+            thread_id: "worker-thread-r01",
+            status: "blocked",
+            started_at: "2026-08-09T00:00:00.000Z",
+            last_seen_at: "2026-08-09T00:00:00.000Z"
+          })
+        },
+        last_reconciled_at: null
+      });
+
+      const harness = createHarness(undefined, undefined, [], null, null, null, null, launchDispatchWorker);
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-parallel-manual",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: path.join(tempDir, "agent_dispatch_command.md"),
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        parallel_dispatch: {
+          enabled: true,
+          max_concurrency: 3
+        }
+      });
+
+      const result = await harness.roleHandlers.continueDispatcher("agent-dispatcher-parallel-manual");
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "continued_parallel",
+        started_workers: ["R-02"]
+      });
+      expect(launchDispatchWorker.mock.calls.map((call) => call[0].workerId)).toEqual(["R-02"]);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("still reports the manual intervention when no parallel slot candidate exists", async () => {
+    // The deferral must not swallow the finding. `manual_intervention_required`
+    // is the status the watchdog keys on to spawn a PM resolver
+    // (PM_RESOLVER_WATCHDOG_STATUSES), so on a tick that launched nothing it
+    // has to surface exactly as it did before the deferral existed.
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-parallel-manual-only-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, { dispatchPlanPath });
+    const launchDispatchWorker = vi.fn(async ({ workerId }: LaunchDispatchWorkerConfig) => ({
+      ok: true,
+      workerId,
+      threadId: `thread-${workerId.toLowerCase()}`,
+      traceId: `trace-${workerId.toLowerCase()}`
+    }));
+
+    try {
+      await fs.writeFile(dispatchPlanPath, [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        "| ✅ | 0 | PRE-FLIGHT | Ready | CODEX | — | TaskSpec | done |",
+        "| ⛔ BLOCKED | 1 | R-01 | Wedged row | CODEX | PRE-FLIGHT | TaskSpec | needs a human |",
+        "| ⬜ | 2 | R-03 | Downstream of R-01 | CODEX | R-01 | TaskSpec | waits |"
+      ].join("\n"), "utf8");
+      lifecycleStore.save({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-parallel-manual-only",
+          started_at: "2026-08-09T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "R-01": buildLifecycleWorker({
+            thread_id: "worker-thread-r01",
+            status: "blocked",
+            started_at: "2026-08-09T00:00:00.000Z",
+            last_seen_at: "2026-08-09T00:00:00.000Z"
+          })
+        },
+        last_reconciled_at: null
+      });
+
+      const harness = createHarness(undefined, undefined, [], null, null, null, null, launchDispatchWorker);
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-parallel-manual-only",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: path.join(tempDir, "agent_dispatch_command.md"),
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        parallel_dispatch: {
+          enabled: true,
+          max_concurrency: 3
+        }
+      });
+
+      const result = await harness.roleHandlers.continueDispatcher("agent-dispatcher-parallel-manual-only");
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "manual_intervention_required",
+        worker: "R-01"
+      });
+      expect(launchDispatchWorker).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps targeted continue short-circuiting on manual intervention", async () => {
+    // Anti-regression twin: the deferral is scoped to bare parallel continues.
+    // Operators drive single-row intervention through the targeted form and
+    // rely on it answering about the wedged row and starting nothing, so with a
+    // worker_id supplied the response must be byte-for-byte what it always was
+    // — even though this fixture has a launchable independent sibling.
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-targeted-manual-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, { dispatchPlanPath });
+    const launchDispatchWorker = vi.fn(async ({ workerId }: LaunchDispatchWorkerConfig) => ({
+      ok: true,
+      workerId,
+      threadId: `thread-${workerId.toLowerCase()}`,
+      traceId: `trace-${workerId.toLowerCase()}`
+    }));
+
+    try {
+      await fs.writeFile(dispatchPlanPath, [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        "| ✅ | 0 | PRE-FLIGHT | Ready | CODEX | — | TaskSpec | done |",
+        "| ⛔ BLOCKED | 1 | R-01 | Wedged row | CODEX | PRE-FLIGHT | TaskSpec | needs a human |",
+        "| ⬜ | 1 | R-02 | Independent sibling | CODEX | PRE-FLIGHT | TaskSpec | ready |"
+      ].join("\n"), "utf8");
+      lifecycleStore.save({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-targeted-manual",
+          started_at: "2026-08-09T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "R-01": buildLifecycleWorker({
+            thread_id: "worker-thread-r01",
+            status: "blocked",
+            started_at: "2026-08-09T00:00:00.000Z",
+            last_seen_at: "2026-08-09T00:00:00.000Z"
+          })
+        },
+        last_reconciled_at: null
+      });
+
+      const harness = createHarness(undefined, undefined, [], null, null, null, null, launchDispatchWorker);
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-targeted-manual",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: path.join(tempDir, "agent_dispatch_command.md"),
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        parallel_dispatch: {
+          enabled: true,
+          max_concurrency: 3
+        }
+      });
+
+      const result = await harness.roleHandlers.continueDispatcher("agent-dispatcher-targeted-manual", "R-02");
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "manual_intervention_required",
+        worker: "R-01"
+      });
+      expect(launchDispatchWorker).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("never relaunches the manual-intervention row itself when filling parallel slots", async () => {
+    // The plan markdown lags the lifecycle store across a sync, so a wedged row
+    // can read ⬜ while its lifecycle entry says `blocked` — and ⬜ with
+    // satisfied dependencies is exactly what `isEligibleServiceContinueRow`
+    // admits. Before manual intervention became deferrable the launcher was
+    // simply unreachable in that state; now it must exclude the flagged row
+    // explicitly, otherwise every tick re-dispatches the wedged worker.
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-parallel-manual-stale-"));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, { dispatchPlanPath });
+    const launchDispatchWorker = vi.fn(async ({ workerId }: LaunchDispatchWorkerConfig) => ({
+      ok: true,
+      workerId,
+      threadId: `thread-${workerId.toLowerCase()}`,
+      traceId: `trace-${workerId.toLowerCase()}`
+    }));
+
+    try {
+      await fs.writeFile(dispatchPlanPath, [
+        "# Dispatch Plan",
+        "",
+        "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+        "|--------|-------|--------|------|-------|------------|----------------|-------|",
+        "| ✅ | 0 | PRE-FLIGHT | Ready | CODEX | — | TaskSpec | done |",
+        "| ⬜ | 1 | R-01 | Stale row, lifecycle says blocked | CODEX | PRE-FLIGHT | TaskSpec | ready |",
+        "| ⬜ | 1 | R-02 | Independent sibling | CODEX | PRE-FLIGHT | TaskSpec | ready |"
+      ].join("\n"), "utf8");
+      lifecycleStore.save({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-parallel-manual-stale",
+          started_at: "2026-08-09T00:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "R-01": buildLifecycleWorker({
+            thread_id: "worker-thread-r01",
+            status: "blocked",
+            started_at: "2026-08-09T00:00:00.000Z",
+            last_seen_at: "2026-08-09T00:00:00.000Z"
+          })
+        },
+        last_reconciled_at: null
+      });
+
+      const harness = createHarness(undefined, undefined, [], null, null, null, null, launchDispatchWorker);
+      await createRole(harness.roleHandlers, {
+        thread_id: "agent-dispatcher-parallel-manual-stale",
+        role_type: "agent-dispatcher",
+        dispatch_plan_path: dispatchPlanPath,
+        command_file_path: path.join(tempDir, "agent_dispatch_command.md"),
+        user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+        agent_type: "codex",
+        mode: "bridge",
+        kill_policy: "always",
+        parallel_dispatch: {
+          enabled: true,
+          max_concurrency: 3
+        }
+      });
+
+      const result = await harness.roleHandlers.continueDispatcher("agent-dispatcher-parallel-manual-stale");
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "continued_parallel",
+        started_workers: ["R-02"]
+      });
+      expect(launchDispatchWorker.mock.calls.map((call) => call[0].workerId)).toEqual(["R-02"]);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not start dependency-blocked workers even when parallel slots are available", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "meridian-roles-continue-parallel-deps-"));
     const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
@@ -6703,6 +7000,465 @@ describe("role config handlers", () => {
 
     expect(result.ok).toBe(true);
     expect(result.status).toBe("active");
+  });
+});
+
+// Regression: unification-layer-decoupling-2026-08-06 / BATCH-8-GATE.
+// `dispatcher_pm_resolver_exhausted` fired at 21:02:11Z ("PM resolver terminal
+// without resolve; operator action required") and the SAME second the launcher
+// transitioned the row pending -> running as ordinary queued work. It then
+// burned 4 validator cycles and 4 worker attempts over ~2h against an
+// unsatisfiable acceptance contract while gating 25 downstream rows, with
+// `human_resolution` null throughout. The escalation freeze now covers launch
+// and continuation, not only PM spawn.
+describe("continue-dispatcher escalation freeze", () => {
+  const ESCALATED_AT = "2026-08-06T20:58:53.000Z";
+
+  function buildEscalation(workerId: string, overrides: Record<string, unknown> = {}) {
+    return {
+      thread_id: `pm-${workerId.toLowerCase()}`,
+      status: "failed" as const,
+      started_at: "2026-08-06T20:50:00.000Z",
+      last_seen_at: ESCALATED_AT,
+      agent_type: "codex",
+      model_id: null,
+      mode: "bridge",
+      auto_approve: true,
+      issue: {
+        status: "manual_intervention_required",
+        worker_id: workerId,
+        message: "manual intervention required",
+        error: null,
+        source: "watchdog"
+      },
+      result: null,
+      error: null,
+      transport_error: null,
+      marker_outcome: "escalated" as const,
+      marker_pm_action: "escalate_human" as const,
+      ...overrides
+    };
+  }
+
+  async function setupFrozenPlan(options: {
+    slug: string;
+    humanResolution?: { resolved_at: string; note: string | null };
+    pmOverrides?: Record<string, unknown>;
+    includeSibling?: boolean;
+    parallel?: boolean;
+  }) {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `meridian-roles-freeze-${options.slug}-`));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const sidecarPath = path.join(tempDir, "dispatch_threads.json");
+    const lifecycleStore = new LifecycleStore(sidecarPath, { dispatchPlanPath });
+    const launchDispatchWorker = vi.fn(async ({ workerId }: LaunchDispatchWorkerConfig) => ({
+      ok: true,
+      threadId: `thread-${workerId.toLowerCase()}`
+    }));
+
+    const rows = [
+      "| ✅ | 0 | PRE-FLIGHT | Ready | CODEX | — | TaskSpec | done |",
+      "| ⬜ | 1 | BATCH-8-GATE | Escalated row | CODEX | PRE-FLIGHT | TaskSpec | ready |"
+    ];
+    if (options.includeSibling) {
+      rows.push("| ⬜ | 1 | C-02 | Independent sibling | CODEX | PRE-FLIGHT | TaskSpec | ready |");
+    }
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      ...rows
+    ].join("\n"), "utf8");
+
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: `dispatcher-thread-${options.slug}`,
+        started_at: "2026-08-06T20:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "BATCH-8-GATE": buildLifecycleWorker({
+          thread_id: "",
+          status: "pending",
+          started_at: "2026-08-06T20:00:00.000Z",
+          last_seen_at: "2026-08-06T21:02:11.000Z",
+          ...(options.humanResolution ? { human_resolution: options.humanResolution } : {})
+        })
+      },
+      pm_resolvers: [buildEscalation("BATCH-8-GATE", options.pmOverrides ?? {})],
+      last_reconciled_at: null
+    });
+
+    const harness = createHarness(undefined, undefined, [], null, null, null, null, launchDispatchWorker);
+    const threadId = `agent-dispatcher-${options.slug}`;
+    await createRole(harness.roleHandlers, {
+      thread_id: threadId,
+      role_type: "agent-dispatcher",
+      dispatch_plan_path: dispatchPlanPath,
+      command_file_path: path.join(tempDir, "agent_dispatch_command.md"),
+      user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+      agent_type: "codex",
+      mode: "bridge",
+      kill_policy: "always",
+      ...(options.parallel
+        ? { parallel_dispatch: { enabled: true, max_concurrency: 3 } }
+        : {})
+    });
+
+    return { tempDir, threadId, harness, launchDispatchWorker, lifecycleStore };
+  }
+
+  it("answers a TARGETED continue with awaiting_human_resolution and launches nothing", async () => {
+    const ctx = await setupFrozenPlan({ slug: "targeted" });
+
+    try {
+      const result = await ctx.harness.roleHandlers.continueDispatcher(ctx.threadId, "BATCH-8-GATE");
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "awaiting_human_resolution",
+        worker: "BATCH-8-GATE",
+        pm_resolver_thread_ids: ["pm-batch-8-gate"]
+      });
+      expect(result.message).toContain("human-resolve");
+      expect(ctx.launchDispatchWorker).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(ctx.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("answers a BARE continue with awaiting_human_resolution when the frozen row is all that is left", async () => {
+    const ctx = await setupFrozenPlan({ slug: "bare" });
+
+    try {
+      const result = await ctx.harness.roleHandlers.continueDispatcher(ctx.threadId);
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "awaiting_human_resolution",
+        worker: "BATCH-8-GATE"
+      });
+      expect(ctx.launchDispatchWorker).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(ctx.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not deadlock the tick: unrelated rows still launch in parallel around a frozen row", async () => {
+    const ctx = await setupFrozenPlan({ slug: "parallel", includeSibling: true, parallel: true });
+
+    try {
+      const result = await ctx.harness.roleHandlers.continueDispatcher(ctx.threadId);
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "continued_parallel",
+        started_workers: ["C-02"]
+      });
+      expect(ctx.launchDispatchWorker.mock.calls.map((call) => call[0].workerId)).toEqual(["C-02"]);
+    } finally {
+      await fs.rm(ctx.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("serially picks the sibling instead of the frozen row", async () => {
+    const ctx = await setupFrozenPlan({ slug: "serial-sibling", includeSibling: true });
+
+    try {
+      const result = await ctx.harness.roleHandlers.continueDispatcher(ctx.threadId);
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "continued",
+        worker: "C-02"
+      });
+      expect(ctx.launchDispatchWorker.mock.calls.map((call) => call[0].workerId)).toEqual(["C-02"]);
+    } finally {
+      await fs.rm(ctx.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("launches the row normally after /human-resolve stamps a newer resolved_at", async () => {
+    const ctx = await setupFrozenPlan({
+      slug: "released",
+      humanResolution: { resolved_at: "2026-08-06T23:10:00.000Z", note: "acceptance relaxed by operator" }
+    });
+
+    try {
+      const result = await ctx.harness.roleHandlers.continueDispatcher(ctx.threadId, "BATCH-8-GATE");
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "continued",
+        worker: "BATCH-8-GATE"
+      });
+      expect(ctx.launchDispatchWorker.mock.calls.map((call) => call[0].workerId)).toEqual(["BATCH-8-GATE"]);
+    } finally {
+      await fs.rm(ctx.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("releases through the real /human-resolve endpoint", async () => {
+    const ctx = await setupFrozenPlan({ slug: "endpoint" });
+
+    try {
+      await expect(ctx.harness.roleHandlers.continueDispatcher(ctx.threadId, "BATCH-8-GATE"))
+        .resolves.toMatchObject({ status: "awaiting_human_resolution" });
+
+      await invokeJson(
+        ctx.harness.roleHandlers,
+        "POST",
+        `/api/roles/${ctx.threadId}/worker/BATCH-8-GATE/human-resolve`,
+        { note: "operator took the row over" }
+      );
+
+      const afterRelease = await ctx.harness.roleHandlers.continueDispatcher(ctx.threadId, "BATCH-8-GATE");
+      expect(afterRelease.status).not.toBe("awaiting_human_resolution");
+    } finally {
+      await fs.rm(ctx.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a row with a non-escalation PM outcome completely unaffected", async () => {
+    const ctx = await setupFrozenPlan({
+      slug: "non-escalation",
+      pmOverrides: { status: "completed", marker_outcome: "resolved", marker_pm_action: "retry" }
+    });
+
+    try {
+      const result = await ctx.harness.roleHandlers.continueDispatcher(ctx.threadId, "BATCH-8-GATE");
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "continued",
+        worker: "BATCH-8-GATE"
+      });
+      expect(ctx.launchDispatchWorker.mock.calls.map((call) => call[0].workerId)).toEqual(["BATCH-8-GATE"]);
+    } finally {
+      await fs.rm(ctx.tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// The dispatch materialization precondition, at the handler level.
+//
+// Live incident (clawso unification-layer-decoupling-2026-08-06, wave 9): rows
+// I-02..I-06 depend on I-01, also wave 9. Their capsules carried
+// `⏳ **待物化**` in `## Upstream Inputs` because BATCH-8-GATE — the previous
+// Gate, and the actor the round templates make responsible for filling them —
+// correctly refused to invent I-01's SHA before I-01 had run (§1.48/§4.11).
+// After I-01 finished, no Gate ever ran again before those rows. All five
+// launched against unmaterialized capsules, all five self-reported `blocked`
+// within one turn, each consumed a PM resolver, and an operator filled the
+// capsules by hand.
+//
+// These tests pin the two halves at the seam that actually decides it: the row
+// is not launched, and the answer says so distinctly from ordinary queueing.
+describe("continue-dispatcher materialization precondition", () => {
+  const UPSTREAM_PLACEHOLDER =
+    "⏳ **待物化** —— 依赖行：I-01。其实际 SHA 由 `BATCH-98-GATE`（本波 Integrator）在派发本波前填入。";
+
+  async function setupUnmaterializedPlan(options: {
+    slug: string;
+    /** Adds I-07, an independent row whose capsule is already materialized. */
+    includeSibling?: boolean;
+    parallel?: boolean;
+    /** Materialize I-02's own capsule, i.e. the fixed state. */
+    materializeTarget?: boolean;
+    /** Lifecycle status for the intra-wave dependency I-01. */
+    dependencyStatus?: DispatchWorkerState["status"];
+  }) {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `meridian-roles-materialize-${options.slug}-`));
+    const dispatchPlanPath = path.join(tempDir, "dispatch_plan.md");
+    const contextDir = path.join(tempDir, "context");
+    await fs.mkdir(contextDir, { recursive: true });
+    const lifecycleStore = new LifecycleStore(path.join(tempDir, "dispatch_threads.json"), { dispatchPlanPath });
+    const launchDispatchWorker = vi.fn(async ({ workerId }: LaunchDispatchWorkerConfig) => ({
+      ok: true,
+      threadId: `thread-${workerId.toLowerCase()}`
+    }));
+
+    const rows = [
+      "| ✅ | 9 | I-01 | Contract | CODEX | — | TaskSpec | done |",
+      "| ⬜ | 9 | I-02 | Resolver | CODEX | I-01 | TaskSpec | ready |"
+    ];
+    if (options.includeSibling) {
+      rows.push("| ⬜ | 9 | I-07 | Promotion | CODEX | — | TaskSpec | ready |");
+    }
+
+    await fs.writeFile(dispatchPlanPath, [
+      "# Dispatch Plan",
+      "",
+      "| Status | Batch | Worker | Task | Model | Depends On | PRDs to Attach | Notes |",
+      "|--------|-------|--------|------|-------|------------|----------------|-------|",
+      ...rows
+    ].join("\n"), "utf8");
+
+    const buildCapsule = (upstream: string) => [
+      "# Context Capsule",
+      "",
+      "## Upstream Inputs",
+      "",
+      upstream,
+      "",
+      "## Required Decisions",
+      "",
+      "None required.",
+      ""
+    ].join("\n");
+
+    await fs.writeFile(
+      path.join(contextDir, "I-02-context.md"),
+      buildCapsule(options.materializeTarget
+        ? "I-01@7712e542d71d0f48e1cf81f0922547d72b46ef00"
+        : UPSTREAM_PLACEHOLDER),
+      "utf8"
+    );
+    if (options.includeSibling) {
+      await fs.writeFile(
+        path.join(contextDir, "I-07-context.md"),
+        buildCapsule("I-01@7712e542d71d0f48e1cf81f0922547d72b46ef00"),
+        "utf8"
+      );
+    }
+
+    lifecycleStore.save({
+      version: 2,
+      dispatcher: {
+        thread_id: `dispatcher-thread-${options.slug}`,
+        started_at: "2026-08-11T09:00:00.000Z",
+        status: "running"
+      },
+      workers: {
+        "I-01": buildLifecycleWorker({
+          thread_id: "thread-i-01",
+          status: options.dependencyStatus ?? "running",
+          started_at: "2026-08-11T09:10:00.000Z",
+          last_seen_at: "2026-08-11T09:40:00.000Z"
+        })
+      },
+      pm_resolvers: [],
+      last_reconciled_at: null
+    });
+
+    const harness = createHarness(undefined, undefined, [], null, null, null, null, launchDispatchWorker);
+    const threadId = `agent-dispatcher-${options.slug}`;
+    await createRole(harness.roleHandlers, {
+      thread_id: threadId,
+      role_type: "agent-dispatcher",
+      dispatch_plan_path: dispatchPlanPath,
+      command_file_path: path.join(tempDir, "agent_dispatch_command.md"),
+      user_reply_channels: [{ channel: "telegram", chat_id: "telegram:ops" }],
+      agent_type: "codex",
+      mode: "bridge",
+      kill_policy: "always",
+      ...(options.parallel
+        ? { parallel_dispatch: { enabled: true, max_concurrency: 3 } }
+        : {})
+    });
+
+    return { tempDir, threadId, harness, launchDispatchWorker, contextDir };
+  }
+
+  it("answers a TARGETED continue with awaiting_materialization and launches nothing", async () => {
+    const ctx = await setupUnmaterializedPlan({ slug: "targeted" });
+
+    try {
+      const result = await ctx.harness.roleHandlers.continueDispatcher(ctx.threadId, "I-02");
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "awaiting_materialization",
+        worker: "I-02"
+      });
+      expect(result.message).toContain("I-01");
+      expect(ctx.launchDispatchWorker).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(ctx.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("answers a BARE continue with awaiting_materialization when the held row is all that is left", async () => {
+    const ctx = await setupUnmaterializedPlan({ slug: "bare", dependencyStatus: "completed" });
+
+    try {
+      const result = await ctx.harness.roleHandlers.continueDispatcher(ctx.threadId);
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "awaiting_materialization",
+        worker: "I-02"
+      });
+      expect(ctx.launchDispatchWorker).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(ctx.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not deadlock the tick: an unrelated materialized row still launches in parallel", async () => {
+    const ctx = await setupUnmaterializedPlan({ slug: "parallel", includeSibling: true, parallel: true, dependencyStatus: "completed" });
+
+    try {
+      const result = await ctx.harness.roleHandlers.continueDispatcher(ctx.threadId);
+
+      expect(result).toMatchObject({
+        ok: true,
+        status: "continued_parallel",
+        started_workers: ["I-07"]
+      });
+      expect(ctx.launchDispatchWorker.mock.calls.map((call) => call[0].workerId)).toEqual(["I-07"]);
+    } finally {
+      await fs.rm(ctx.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("serially picks the materialized sibling instead of the held row", async () => {
+    const ctx = await setupUnmaterializedPlan({ slug: "serial-sibling", includeSibling: true, dependencyStatus: "completed" });
+
+    try {
+      const result = await ctx.harness.roleHandlers.continueDispatcher(ctx.threadId);
+
+      expect(result).toMatchObject({ ok: true, status: "continued", worker: "I-07" });
+      expect(ctx.launchDispatchWorker.mock.calls.map((call) => call[0].workerId)).toEqual(["I-07"]);
+    } finally {
+      await fs.rm(ctx.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("launches a row whose capsule carries no placeholder, exactly as before", async () => {
+    const ctx = await setupUnmaterializedPlan({ slug: "materialized", materializeTarget: true, dependencyStatus: "completed" });
+
+    try {
+      const result = await ctx.harness.roleHandlers.continueDispatcher(ctx.threadId, "I-02");
+
+      expect(result).toMatchObject({ ok: true, status: "continued", worker: "I-02" });
+      expect(ctx.launchDispatchWorker.mock.calls.map((call) => call[0].workerId)).toEqual(["I-02"]);
+    } finally {
+      await fs.rm(ctx.tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps holding — never launches anyway — when the dependency is complete but no ref can be resolved", async () => {
+    // I-01 is `completed`, so the trigger condition is met, but this plan has no
+    // Branch column: there is no ref to read a SHA from. The precondition must
+    // route to PM rather than fabricate one or fall back to launching.
+    const ctx = await setupUnmaterializedPlan({ slug: "underivable", dependencyStatus: "completed" });
+
+    try {
+      const result = await ctx.harness.roleHandlers.continueDispatcher(ctx.threadId, "I-02");
+
+      expect(result).toMatchObject({ ok: true, status: "awaiting_materialization", worker: "I-02" });
+      // The message must name PM, not promise a fill that can never happen.
+      expect(result.message).toContain("PM must write");
+      expect(ctx.launchDispatchWorker).not.toHaveBeenCalled();
+      const capsule = await fs.readFile(path.join(ctx.contextDir, "I-02-context.md"), "utf8");
+      expect(capsule).toContain("待物化");
+    } finally {
+      await fs.rm(ctx.tempDir, { recursive: true, force: true });
+    }
   });
 });
 

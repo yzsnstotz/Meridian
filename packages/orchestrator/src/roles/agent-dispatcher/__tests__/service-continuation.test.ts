@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  countEligiblePendingServiceContinueWorkersFromWorkerRows,
   isPmResolverExhaustedForManualIntervention,
   resolveEligibleServiceContinueWorkers,
   resolveExhaustedPmResolverWorkers,
+  resolveHumanEscalationParkedWorkers,
+  resolveHumanEscalationParkedWorkersFromWorkerRows,
   resolveManualInterventionWorker,
   resolveServiceContinueWorker
 } from "../service-continuation";
@@ -404,12 +407,19 @@ describe("service continuation", () => {
     expect(resolveManualInterventionWorker(rows, createLifecycleState())).toBe("N-12");
   });
 
-  it("does not flag manual intervention for a validator-decided terminal-failed worker (max cycles exhausted)", () => {
+  it("routes a validation-exhausted worker to PM exactly once, then goes quiet", () => {
     // Mirrors agent-dispatcher-9fd97803 / M-01: validator scored 0.5 across
     // all 3 cycles, transitionToValidationFailed("max_cycles_exhausted")
     // stamped status=failed, but resolveDisplayStatus still renders the
     // plan row as ⛔ BLOCKED because the synthesized output_artifact
     // hub_result contains block signals from earlier attempts.
+    //
+    // Contract changed 2026-08-10: budget exhaustion means a finding the
+    // worker could not fix — usually a spec/capsule defect, which is PM's
+    // job — so the row is surfaced ONCE. Previously it was skipped
+    // unconditionally and nobody was told at all (C-02 and C-09 on
+    // agent-dispatcher-abd83457 each sat dead for hours). The second tick
+    // still goes quiet, which is what keeps the M-01 wedge fixed.
     const rows = [
       { status: "⛔ BLOCKED", batch: "4", worker: "M-01", model: "CODEX", depends_on: "—" },
       { status: "🔍", batch: "4", worker: "M-02", model: "CODEX", depends_on: "—" }
@@ -437,6 +447,37 @@ describe("service continuation", () => {
         status: "awaiting_validation"
       }
     });
+
+    // First tick after exhaustion: PM has never been told — surface it.
+    expect(resolveManualInterventionWorker(rows, lifecycleState)).toBe("M-01");
+
+    // Once a PM resolver exists for the issue — running, completed or failed —
+    // fall back to the old quiet behaviour so continue ticks stop re-flagging
+    // it and downstream workers are not blocked.
+    lifecycleState.pm_resolvers = [
+      {
+        thread_id: "pm-thread-m01",
+        status: "running",
+        started_at: "2026-05-10T01:05:00.000Z",
+        last_seen_at: "2026-05-10T01:05:00.000Z",
+        agent_type: "codex",
+        model_id: null,
+        mode: "bridge",
+        auto_approve: true,
+        issue: {
+          status: "manual_intervention_required",
+          worker_id: "M-01",
+          message: "manual intervention required",
+          error: null,
+          source: "watchdog"
+        },
+        result: null,
+        error: null,
+        transport_error: null,
+        marker_outcome: null,
+        marker_pm_action: null
+      } as PmResolverLifecycleState
+    ];
 
     expect(resolveManualInterventionWorker(rows, lifecycleState)).toBeNull();
   });
@@ -684,6 +725,137 @@ describe("service continuation", () => {
       ];
 
       expect(resolveExhaustedPmResolverWorkers(rows, state).sort()).toEqual(["M-09", "R-04"]);
+    });
+  });
+
+  // Regression: unification-layer-decoupling-2026-08-06 / BATCH-8-GATE. The
+  // dispatcher correctly refused another PM resolver ("PM resolver terminal
+  // without resolve; operator action required") and in the same second the
+  // launcher picked the row up as ordinary pending work, because the escalation
+  // freeze gated PM SPAWN only. Every candidate resolver funnels through
+  // `isEligibleServiceContinueRow`, so the gate lives there.
+  describe("escalation freeze covers worker launch, not just PM spawn", () => {
+    const buildEscalation = (workerId: string, overrides: Partial<PmResolverLifecycleState> = {}): PmResolverLifecycleState => ({
+      thread_id: `pm-${workerId.toLowerCase()}`,
+      status: "failed",
+      started_at: "2026-08-06T20:50:00.000Z",
+      last_seen_at: "2026-08-06T20:58:53.000Z",
+      agent_type: "codex",
+      model_id: null,
+      mode: "bridge",
+      auto_approve: true,
+      issue: {
+        status: "manual_intervention_required",
+        worker_id: workerId,
+        message: "manual intervention required",
+        error: null,
+        source: "watchdog"
+      },
+      result: null,
+      error: null,
+      transport_error: null,
+      marker_outcome: "escalated",
+      marker_pm_action: "escalate_human",
+      ...overrides
+    });
+
+    const planRows = [
+      { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+      { status: "⬜", batch: "1", worker: "BATCH-8-GATE", model: "CODEX", depends_on: "PRE-FLIGHT" },
+      { status: "⬜", batch: "1", worker: "C-02", model: "CODEX", depends_on: "PRE-FLIGHT" }
+    ];
+
+    const workerRows = [
+      { status: "✅", batch: "0", worker_id: "PRE-FLIGHT", model: "CODEX", depends_on: [] },
+      { status: "⬜", batch: "1", worker_id: "BATCH-8-GATE", model: "CODEX", depends_on: ["PRE-FLIGHT"] },
+      { status: "⬜", batch: "1", worker_id: "C-02", model: "CODEX", depends_on: ["PRE-FLIGHT"] }
+    ];
+
+    it("excludes the frozen row from serial and parallel candidate selection", () => {
+      const state = createLifecycleState({ "BATCH-8-GATE": { status: "pending" } });
+      state.pm_resolvers = [buildEscalation("BATCH-8-GATE")];
+
+      expect(resolveServiceContinueWorker(planRows, state)).toBe("C-02");
+      expect(resolveEligibleServiceContinueWorkers(planRows, state, { limit: 5 })).toEqual(["C-02"]);
+    });
+
+    it("does not count the frozen row as eligible pending work", () => {
+      const state = createLifecycleState({ "BATCH-8-GATE": { status: "pending" } });
+      state.pm_resolvers = [buildEscalation("BATCH-8-GATE")];
+
+      expect(countEligiblePendingServiceContinueWorkersFromWorkerRows(workerRows, state)).toBe(1);
+    });
+
+    it("launches the row normally once /human-resolve stamps a newer resolved_at", () => {
+      const state = createLifecycleState({
+        "BATCH-8-GATE": {
+          status: "pending",
+          human_resolution: { resolved_at: "2026-08-06T23:10:00.000Z", note: "descoped by operator" }
+        }
+      });
+      state.pm_resolvers = [buildEscalation("BATCH-8-GATE")];
+
+      expect(resolveEligibleServiceContinueWorkers(planRows, state, { limit: 5 }))
+        .toEqual(["BATCH-8-GATE", "C-02"]);
+      expect(countEligiblePendingServiceContinueWorkersFromWorkerRows(workerRows, state)).toBe(2);
+      expect(resolveHumanEscalationParkedWorkers(planRows, state)).toEqual([]);
+    });
+
+    it("leaves a row with a non-escalation PM outcome completely unaffected", () => {
+      const state = createLifecycleState({ "BATCH-8-GATE": { status: "pending" } });
+      state.pm_resolvers = [buildEscalation("BATCH-8-GATE", {
+        status: "completed",
+        marker_outcome: "resolved",
+        marker_pm_action: "retry"
+      })];
+
+      expect(resolveEligibleServiceContinueWorkers(planRows, state, { limit: 5 }))
+        .toEqual(["BATCH-8-GATE", "C-02"]);
+      expect(resolveHumanEscalationParkedWorkers(planRows, state)).toEqual([]);
+    });
+
+    it("blocks the implicit single-🔄-row continuation path", () => {
+      const rows = [
+        { status: "✅", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+        { status: "🔄", batch: "1", worker: "BATCH-8-GATE", model: "CODEX", depends_on: "PRE-FLIGHT" }
+      ];
+      const state = createLifecycleState({ "BATCH-8-GATE": { status: "failed", thread_id: "" } });
+      state.pm_resolvers = [buildEscalation("BATCH-8-GATE")];
+
+      expect(resolveServiceContinueWorker(rows, state)).toBeNull();
+    });
+
+    it("blocks the PRE-FLIGHT gate path", () => {
+      const rows = [
+        { status: "⬜", batch: "0", worker: "PRE-FLIGHT", model: "CODEX", depends_on: "—" },
+        { status: "⬜", batch: "1", worker: "C-02", model: "CODEX", depends_on: "PRE-FLIGHT" }
+      ];
+      const state = createLifecycleState({ "PRE-FLIGHT": { status: "pending" } });
+      state.pm_resolvers = [buildEscalation("PRE-FLIGHT")];
+
+      expect(resolveServiceContinueWorker(rows, state)).toBeNull();
+    });
+
+    it("surfaces the parked rows in plan order for operator reporting", () => {
+      const state = createLifecycleState({
+        "BATCH-8-GATE": { status: "pending" },
+        "C-02": { status: "pending" }
+      });
+      state.pm_resolvers = [buildEscalation("C-02"), buildEscalation("BATCH-8-GATE")];
+
+      expect(resolveHumanEscalationParkedWorkers(planRows, state).map((freeze) => freeze.workerId))
+        .toEqual(["BATCH-8-GATE", "C-02"]);
+      expect(resolveHumanEscalationParkedWorkersFromWorkerRows(workerRows, state).map((freeze) => freeze.workerId))
+        .toEqual(["BATCH-8-GATE", "C-02"]);
+    });
+
+    it("ignores a stale PM escalation for a worker that is not in the plan", () => {
+      const state = createLifecycleState({ "BATCH-8-GATE": { status: "pending" } });
+      state.pm_resolvers = [buildEscalation("GHOST-ROW")];
+
+      expect(resolveHumanEscalationParkedWorkers(planRows, state)).toEqual([]);
+      expect(resolveEligibleServiceContinueWorkers(planRows, state, { limit: 5 }))
+        .toEqual(["BATCH-8-GATE", "C-02"]);
     });
   });
 });

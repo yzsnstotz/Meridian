@@ -2,19 +2,21 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 
-import { GUI_PORT, RECONCILE_INTERVAL_MS } from "./config";
+import { GUI_PORT, RECONCILE_INTERVAL_MS, isDispatchAutoParallelEnabled } from "./config";
 import { A2AClient } from "./a2a/client";
 import { A2AServer } from "./a2a/server";
 import { resolveOtherDispatcherPlanPaths } from "./roles/agent-dispatcher/cross-plan-paths";
 import {
   DispatcherWorkerBreaker,
+  PARALLEL_CONTINUE_BREAKER_KEY,
+  computePlanLifecycleSig,
   computeWorkerLifecycleSig
 } from "./roles/agent-dispatcher/circuit-breaker";
 import {
   isPmResolverNoProgressStale,
   LifecycleStore
 } from "./roles/agent-dispatcher/lifecycle-store";
-import { parseMeridianStatusMarker } from "./roles/agent-dispatcher/meridian-status-marker";
+import { findUnreleasedHumanEscalation } from "./roles/agent-dispatcher/human-escalation-freeze";
 import { startPmResolver } from "./roles/agent-dispatcher/pm-resolver";
 import { reconcile } from "./roles/agent-dispatcher/reconciler";
 import { findMostRecentOutputArtifactMtimeMs } from "./roles/agent-dispatcher/output-artifacts";
@@ -252,6 +254,24 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
       });
       return roleState?.status === PAUSED_ROLE_STATUS;
     },
+    // Feeds the parallel slot-fill path only (see maybeRequestParallelSlotFill).
+    // Returning null keeps the watchdog's pre-existing behaviour for that plan.
+    resolveParallelDispatchForPlan: async (dispatchPlanPath) => {
+      const state = await loadAppState(stateStore);
+      for (const role of state.roles) {
+        if (role.roleType !== "agent-dispatcher") {
+          continue;
+        }
+        const config = parseAgentDispatcherConfig(role);
+        if (config?.dispatch_plan_path === dispatchPlanPath) {
+          return {
+            enabled: config.parallel_dispatch.enabled,
+            maxConcurrency: config.parallel_dispatch.max_concurrency
+          };
+        }
+      }
+      return null;
+    },
     resolveKillPolicyForDispatchPlan: async (dispatchPlanPath) => {
       const state = await loadAppState(stateStore);
       for (const role of state.roles) {
@@ -280,17 +300,28 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
         return;
       }
 
+      // Bare parallel continue: no candidate worker, but `parallel_dispatch`
+      // may still have free slots to fill. This is the only way the automatic
+      // path can reach `isParallelAutoContinue` in continueDispatcherForRole.
+      // Kept as a precomputed flag because the breaker gate below needs to know
+      // whether a dispatch is actually going to be attempted — gating a tick
+      // that dispatches nothing would let hub-relaunch ticks accumulate toward
+      // a spurious force-pause.
+      const bareParallelContinue = !info.continueWorkerId && isDispatchAutoParallelEnabled();
+
       // Circuit breaker gate: bound how often the watchdog can re-fire
       // continueDispatcher against the same stuck worker. A worker that's
       // genuinely making progress will see its lifecycleSig change and the
       // breaker counter reset; only true loops accumulate to the trip
-      // threshold (10 calls / 10 min by default).
+      // threshold (10 calls / 10 min by default). The bare path is gated the
+      // same way, keyed on PARALLEL_CONTINUE_BREAKER_KEY with a whole-plan sig.
       const breakerVerdict = await evaluateBreakerForWatchdog(
         info.dispatchPlanPath,
         info.continueWorkerId,
         threadId,
         dispatcherWorkerBreaker,
-        log
+        log,
+        { bareParallelContinue }
       );
       if (breakerVerdict && !breakerVerdict.allowed) {
         await handleBreakerTrip(
@@ -311,14 +342,16 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
         info.dispatchPlanPath,
         info.continueWorkerId,
         roleHandlers.continueDispatcher,
-        log
+        log,
+        { allowBareParallelContinue: bareParallelContinue }
       );
       if (directRecovery) {
         log.info("Watchdog stall: handled recovery through dispatcher continuation", {
           threadId,
           workerId: directRecovery.workerId,
           status: directRecovery.status,
-          message: directRecovery.message
+          message: directRecovery.message,
+          ...(directRecovery.bare ? { bare: true } : {})
         });
         await maybeStartPmResolverForWatchdogRecovery(
           stateStore,
@@ -327,6 +360,16 @@ export async function startMeridianRolesService(): Promise<MeridianRolesService>
           watchdogPmResolverIssueKeys,
           log
         );
+        return;
+      }
+
+      // Parallel slot-fill is not a stall report: worker(s) are running and the
+      // hub session is healthy, we only wanted the idle slots filled. Falling
+      // through to relaunching the hub session or reactivating the role here
+      // would resurrect exactly the loop the `blockingRunningWorkers` guard in
+      // the watchdog exists to prevent, so this path always stops here —
+      // whether or not the bare continue found anything to launch.
+      if (info.parallelSlotFill) {
         return;
       }
 
@@ -929,18 +972,53 @@ async function resolveThreadIdForDispatchPlanPath(
 }
 
 // Reads the worker's current lifecycle entry to derive a stable signature, then
-// asks the breaker whether the next watchdog continuation is allowed. Returns
-// null when there's no candidate workerId — the breaker only meaningfully gates
-// per-worker continuations.
-async function evaluateBreakerForWatchdog(
+// asks the breaker whether the next watchdog continuation is allowed.
+//
+// With no candidate workerId there are two cases. When the caller is about to
+// issue a BARE parallel continue (`bareParallelContinue`), the continuation is
+// real work that must be gated — an ungated continue loop is what drove
+// agent-dispatcher-67f6a3fc to ~3,500 wasted LLM dispatches — so it is keyed on
+// the reserved PARALLEL_CONTINUE_BREAKER_KEY with a whole-plan signature. When
+// the caller is not going to continue anything (no workerId, bare path off),
+// return null as before: gating a path that performs no dispatch would let
+// unrelated hub-relaunch ticks accumulate toward a force-pause.
+export async function evaluateBreakerForWatchdog(
   dispatchPlanPath: string,
   candidateWorkerId: string | null,
   dispatcherThreadId: string,
   breaker: DispatcherWorkerBreaker,
-  log: typeof console
+  log: typeof console,
+  options: { bareParallelContinue?: boolean } = {}
 ): Promise<{ allowed: boolean; countAfter: number; lifecycleSig: string } | null> {
   if (!candidateWorkerId) {
-    return null;
+    if (!options.bareParallelContinue) {
+      return null;
+    }
+
+    let planSig: string;
+    try {
+      const lifecycleState = new LifecycleStore(
+        path.join(path.dirname(dispatchPlanPath), DISPATCH_THREADS_FILENAME)
+      ).load();
+      planSig = computePlanLifecycleSig(lifecycleState.workers);
+    } catch (error) {
+      // Unreadable lifecycle file: fall back to a constant sig. That is the
+      // STRICTER direction — the sig can never change, so repeated bare
+      // continues accumulate and trip. Degrading toward "trip sooner" is the
+      // right bias for a path whose whole justification is loop containment.
+      log.warn("Watchdog stall: parallel breaker fell back to constant plan sig", {
+        dispatchPlanPath,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      planSig = computePlanLifecycleSig(null);
+    }
+
+    return breaker.shouldAllow(
+      dispatcherThreadId,
+      PARALLEL_CONTINUE_BREAKER_KEY,
+      planSig,
+      Date.now()
+    );
   }
   let startedAt: string | null = null;
   let status: string | null = null;
@@ -1051,6 +1129,18 @@ export interface WatchdogContinueResult {
   status: ContinueDispatcherResponse["status"];
   workerId: string | null;
   message: string;
+  /** True when this came from a bare (worker_id-less) parallel continue. */
+  bare?: boolean;
+}
+
+export interface TryContinueDispatchWorkerOptions {
+  /**
+   * Permits a BARE `continueDispatcher(threadId)` when no candidate workerId is
+   * available. Off by default so every existing caller keeps the historical
+   * "no workerId → do nothing" contract; the watchdog turns it on only after
+   * clearing the kill-switch and the breaker.
+   */
+  allowBareParallelContinue?: boolean;
 }
 
 const PM_RESOLVER_WATCHDOG_STATUSES = new Set<ContinueDispatcherResponse["status"]>([
@@ -1254,57 +1344,40 @@ export function hasPmResolverHandledCurrentWorkerIssue(
   const worker = state.workers[normalizedWorkerId];
   const workerStartedAt = worker?.started_at;
   const workerStartedAtMs = workerStartedAt ? Date.parse(workerStartedAt) : NaN;
-  // Operator override: once a human explicitly resumes via /human-resolve, the
-  // escalation verdict is consumed. Subsequent escalation-style PM entries
-  // that pre-date the human acknowledgement stop closing the gate so the
-  // dispatcher can spawn a fresh PM if the worker re-blocks after recovery.
-  const humanResolvedAt = worker?.human_resolution?.resolved_at ?? null;
-  const humanResolvedAtMs = humanResolvedAt ? Date.parse(humanResolvedAt) : NaN;
+
+  // Escalation freeze: when the PM marker emitted `escalate_human` and no
+  // human has acknowledged via /human-resolve since that entry, the
+  // dispatcher must stop spawning further PM resolvers regardless of how
+  // many times the worker has since been retried. Without this, each
+  // operator (or force-true) retry advances worker.started_at past the
+  // escalation entry and reopens the gate, producing the PM-storm shape
+  // observed on agent-dispatcher-67f6a3fc W-15 on 2026-05-15 (codex_49 →
+  // 51 → 52 → 54 escalate_human → 55 → 56 → 58 within 30 minutes against
+  // an unresolvable Cloudflare credential blocker) and recurring on E-03
+  // on the same dispatcher (codex_66 → 67 → 68 within 12 minutes against
+  // an unresolvable Cloudflare credential blocker).
+  //
+  // It is evaluated BEFORE the `status === "failed"` short-circuit below
+  // because `recordPmResolverResult` writes status="failed" for escalation
+  // markers (so `reconcilePmResolversForRecoveredWorker` can later promote on
+  // worker recovery). The marker is the authoritative signal; envelope status
+  // alone must not be allowed to drop the freeze.
+  //
+  // The predicate lives in ./roles/agent-dispatcher/human-escalation-freeze so
+  // the LAUNCH path can share it byte-for-byte — including the
+  // `effectivePmResolverAction` backfill that re-parses `entry.result.content`
+  // when the persisted `marker_pm_action` field is null, which is what makes
+  // the freeze survive a meridian-roles restart. Released only when
+  // /human-resolve stamps a `human_resolution.resolved_at` at least as new as
+  // the escalation entry's last_seen_at, which also lets the dispatcher spawn
+  // a fresh PM if the worker re-blocks after operator recovery.
+  if (findUnreleasedHumanEscalation(state, normalizedWorkerId)) {
+    return true;
+  }
 
   return (state.pm_resolvers ?? []).some((entry) => {
     if ((entry.issue.worker_id ?? "").trim() !== normalizedWorkerId) {
       return false;
-    }
-
-    // Escalation freeze: when the PM marker emitted `escalate_human` and no
-    // human has acknowledged via /human-resolve since that entry, the
-    // dispatcher must stop spawning further PM resolvers regardless of how
-    // many times the worker has since been retried. Without this, each
-    // operator (or force-true) retry advances worker.started_at past the
-    // escalation entry and reopens the gate, producing the PM-storm shape
-    // observed on agent-dispatcher-67f6a3fc W-15 on 2026-05-15 (codex_49 →
-    // 51 → 52 → 54 escalate_human → 55 → 56 → 58 within 30 minutes against
-    // an unresolvable Cloudflare credential blocker) and recurring on E-03
-    // on the same dispatcher (codex_66 → 67 → 68 within 12 minutes against
-    // an unresolvable Cloudflare credential blocker).
-    //
-    // This check runs BEFORE the `status === "failed"` short-circuit because
-    // `recordPmResolverResult` writes status="failed" for escalation markers
-    // (so `reconcilePmResolversForRecoveredWorker` can later promote on
-    // worker recovery). The marker is the authoritative signal; envelope
-    // status alone must not be allowed to drop the freeze.
-    //
-    // `effectivePmAction` also falls back to re-parsing `entry.result.content`
-    // when the persisted `marker_pm_action` field is null. This recovers
-    // entries that were written by pre-#219 binaries (no schema for the
-    // marker fields) but whose reply text still contains a valid
-    // `<<<MERIDIAN-STATUS>>> pm_action: escalate_human` block. Without this
-    // backfill, a meridian-roles restart that lands while an escalation is
-    // already on disk would not see those entries as handled and would
-    // respawn another PM on the next watchdog sweep.
-    //
-    // Released only when /human-resolve stamps a
-    // `human_resolution.resolved_at` newer than this entry's last_seen_at.
-    const effectivePmAction = effectivePmResolverAction(entry, normalizedWorkerId);
-    if (effectivePmAction === "escalate_human") {
-      const entryLastSeenAtMs = Date.parse(entry.last_seen_at);
-      const released = !Number.isNaN(humanResolvedAtMs)
-        && !Number.isNaN(entryLastSeenAtMs)
-        && humanResolvedAtMs >= entryLastSeenAtMs;
-      if (!released) {
-        return true;
-      }
-      // Released: fall through to the normal status / timing checks below.
     }
 
     if (entry.status === "failed") {
@@ -1322,34 +1395,6 @@ export function hasPmResolverHandledCurrentWorkerIssue(
     const entryStartedAtMs = Date.parse(entry.started_at);
     return !Number.isNaN(entryStartedAtMs) && entryStartedAtMs >= workerStartedAtMs;
   });
-}
-
-/**
- * Return the PM resolver action for a lifecycle entry, preferring the
- * persisted `marker_pm_action` field and falling back to re-parsing the
- * stored reply content. The fallback handles entries written by pre-#219
- * binaries (where the field did not exist on the schema). The re-parsed
- * marker is only honoured when its role is `pm-resolver` AND its worker_id
- * matches the entry's target — same constraint as `recordPmResolverResult`,
- * so cross-talk content from a thread-id-collision bleed cannot synthesise a
- * false escalation freeze.
- */
-function effectivePmResolverAction(
-  entry: NonNullable<DispatchThreadStateV2["pm_resolvers"]>[number],
-  targetWorkerId: string
-): string | null {
-  if (entry.marker_pm_action !== null) {
-    return entry.marker_pm_action;
-  }
-  const content = entry.result?.content;
-  if (typeof content !== "string" || content.length === 0) {
-    return null;
-  }
-  const marker = parseMeridianStatusMarker(content);
-  if (!marker || marker.role !== "pm-resolver" || marker.worker_id !== targetWorkerId) {
-    return null;
-  }
-  return marker.pm_action ?? null;
 }
 
 export function resolveRetryExhaustedWorkerNeedingPm(
@@ -1377,9 +1422,18 @@ export async function tryContinueDispatchWorker(
   dispatchPlanPath: string,
   workerId: string | null,
   continueDispatcher: WatchdogContinueDispatcher,
-  log: typeof console
+  log: typeof console,
+  options: TryContinueDispatchWorkerOptions = {}
 ): Promise<WatchdogContinueResult | null> {
-  if (!workerId) {
+  // `!workerId → return null` used to be unconditional, and it is the single
+  // line that made `parallel_dispatch.enabled` dead config on the automatic
+  // path: continueDispatcherForRole computes `isParallelAutoContinue` as
+  // `!workerId && parallel_dispatch.enabled`, so a watchdog tick that always
+  // supplied a workerId could never take the parallel branch, no matter how
+  // many slots sat idle. Bare continues therefore only happened when a human
+  // hit `continue-dispatcher` with no argument.
+  const bare = !workerId;
+  if (bare && !options.allowBareParallelContinue) {
     return null;
   }
 
@@ -1403,9 +1457,19 @@ export async function tryContinueDispatchWorker(
   if (!config) {
     return null;
   }
+  // A bare continue is only meaningful when the dispatcher itself opted into
+  // parallelism — continueDispatcherForRole's parallel branch is gated on
+  // `parallel_dispatch.enabled` and would otherwise fall straight through to
+  // the serial path with `effectiveWorkerId` resolved internally, i.e. a
+  // targeted continue we never asked for.
+  if (bare && !config.parallel_dispatch.enabled) {
+    return null;
+  }
 
   try {
-    const continued = await continueDispatcher(roleState.threadId, workerId);
+    // `workerId ?? undefined` — passing an explicit undefined is what makes
+    // `isParallelAutoContinue` true on the far side.
+    const continued = await continueDispatcher(roleState.threadId, workerId ?? undefined);
     if (isActiveContinuationStatus(continued.status)) {
       await persistAgentDispatcherRoleStatus(stateStore, roleState.threadId, ACTIVE_ROLE_STATUS, log);
     }
@@ -1413,7 +1477,8 @@ export async function tryContinueDispatchWorker(
     return {
       status: continued.status,
       workerId: continued.worker ?? workerId,
-      message: continued.message
+      message: continued.message,
+      ...(bare ? { bare: true } : {})
     };
   } catch (error) {
     log.warn("Watchdog dispatcher continuation failed", {

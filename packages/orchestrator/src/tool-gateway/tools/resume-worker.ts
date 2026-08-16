@@ -216,7 +216,10 @@ export async function executeResumeWorkerAction(
     // and downstream feedback bookkeeping has nowhere to write.
     lifecycleStore.transitionToAwaitingValidation(args.workerId, MANUAL_VALIDATE_MAX_FIX_CYCLES, {
       clearHubResult: clearFailureResult,
-      trigger: "resume_worker:validate"
+      trigger: "resume_worker:validate",
+      // An operator asking for validation is asking for a verdict, not for the
+      // previous run's spent budget to be re-applied to a fresh ceiling.
+      resetCycle: true
     });
   } else {
     lifecycleStore.setWorkerStatus(
@@ -225,7 +228,19 @@ export async function executeResumeWorkerAction(
       `resume_worker:${args.action}`,
       {
         clearHubResult: clearFailureResult,
-        clearValidation: args.action === "force-complete" || args.action === "skip",
+        // "retry" clears the validation block for the same reason it clears
+        // hub_result: an operator retry means the worker's INPUT changed (a
+        // revised card, an expanded Files Owned, a PM contract narrowing).
+        // A cycle budget accrued against the superseded contract must not
+        // outlive it. Without this, current_cycle survives the retry, and the
+        // next completion is failed by isValidationCycleBudgetExhausted
+        // (validator-orchestrator) via transitionToValidationFailed with
+        // "max_cycles_exhausted" — the worker's new work is never judged and
+        // no validator ever spawns. Observed on BATCH-5-GATE / dispatcher
+        // abd83457, where a retry after a card amendment inherited 5/5.
+        clearValidation: args.action === "force-complete"
+          || args.action === "skip"
+          || args.action === "retry",
         incrementRetryCount: autoIncrementRetryCount,
         resetRetryCount: args.action === "retry" && !autoIncrementRetryCount
       }

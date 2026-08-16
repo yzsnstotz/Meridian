@@ -1,4 +1,15 @@
 import type { DispatchThreadStateV2 } from "../../types";
+// Type-only: the gate is INJECTED as a callback rather than constructed here.
+// capsule-materialization.ts imports validator-prompt-builder and reads the
+// filesystem; importing it for real would make these row resolvers — which are
+// pure, synchronous, and used for counting as well as selection — depend on
+// disk. A type-only import also keeps the module graph acyclic.
+import type { CapsuleMaterializationGate } from "./capsule-materialization";
+import {
+  findUnreleasedHumanEscalation,
+  isFrozenPendingHumanResolution,
+  type HumanEscalationFreeze
+} from "./human-escalation-freeze";
 import {
   hubResultContainsBlockSignal,
   hubResultContainsFailureSignal,
@@ -24,18 +35,32 @@ export interface DispatchContinuationWorkerRow {
   model: string | null;
   depends_on: string[];
   notes?: string | null;
+  branch?: string | null;
 }
 
 export interface ResolveEligibleServiceContinueWorkersOptions {
   includeImplicitRunningWorker?: boolean;
   limit?: number;
+  /**
+   * The dispatch materialization precondition, injected. When supplied, a row
+   * whose Context Capsule still carries `⏳ 待物化` is not a launch candidate —
+   * it is parked, not queued.
+   *
+   * Optional so the pure-row unit tests and any caller with no plan path on
+   * hand keep working unchanged; the UNCONDITIONAL refusal lives in
+   * `continueDispatchWorker`, which every launch funnels through and which
+   * always has `dispatch_plan_path`. Omitting the gate therefore costs a wasted
+   * candidate slot, never a launch against an unmaterialized capsule.
+   */
+  capsuleGate?: CapsuleMaterializationGate;
 }
 
 export function resolveServiceContinueWorker(
   rows: DispatchContinuationPlanRow[],
-  lifecycleState: DispatchThreadStateV2
+  lifecycleState: DispatchThreadStateV2,
+  options: Pick<ResolveEligibleServiceContinueWorkersOptions, "capsuleGate"> = {}
 ): string | null {
-  return resolveEligibleServiceContinueWorkers(rows, lifecycleState, { limit: 1 })[0] ?? null;
+  return resolveEligibleServiceContinueWorkers(rows, lifecycleState, { ...options, limit: 1 })[0] ?? null;
 }
 
 export function resolveEligibleServiceContinueWorkers(
@@ -46,14 +71,15 @@ export function resolveEligibleServiceContinueWorkers(
   const limit = options.limit && options.limit > 0
     ? Math.floor(options.limit)
     : Number.POSITIVE_INFINITY;
-  const preflightGateWorker = resolvePreflightGateWorker(rows, lifecycleState);
+  const capsuleGate = options.capsuleGate;
+  const preflightGateWorker = resolvePreflightGateWorker(rows, lifecycleState, capsuleGate);
   if (preflightGateWorker !== undefined) {
     return preflightGateWorker ? [preflightGateWorker].slice(0, limit) : [];
   }
 
   const includeImplicitRunningWorker = options.includeImplicitRunningWorker ?? true;
   if (includeImplicitRunningWorker) {
-    const implicitWorker = resolveImplicitContinueWorker(rows, lifecycleState);
+    const implicitWorker = resolveImplicitContinueWorker(rows, lifecycleState, capsuleGate);
     if (implicitWorker) {
       return [implicitWorker].slice(0, limit);
     }
@@ -62,7 +88,9 @@ export function resolveEligibleServiceContinueWorkers(
   const rowsByWorker = indexRowsByWorker(rows);
   const eligibleWorkers: string[] = [];
   for (const row of rows) {
-    if (!isEligibleServiceContinueRow(row, rows, rowsByWorker, lifecycleState)) {
+    if (!isEligibleServiceContinueRow(row, rows, rowsByWorker, lifecycleState, capsuleGate)) {
+      // `continue`, never `return`: one parked row must not cost its unrelated
+      // siblings their slots. Same rule the escalation freeze established.
       continue;
     }
 
@@ -113,20 +141,31 @@ export function resolveManualInterventionWorker(
       continue;
     }
 
-    // Validator-decided terminal failure: the worker reached
-    // max_fix_cycles and the orchestrator stamped `failed`. The operator
-    // owns the verdict from this point (force-complete, skip, or accept
-    // the failure); the dispatcher cannot auto-recover and PM has no role
-    // here either. The plan row may still render as ⛔ BLOCKED because
-    // `resolveDisplayStatus` reflects a stale block-signal in
-    // `hub_result` for failed workers — without this skip, every continue
-    // tick re-flags the dead worker as `manual_intervention_required` and
-    // blocks every downstream worker (observed: M-01 wedged on
-    // agent-dispatcher-9fd97803, M-02 stuck `awaiting_validation` for
-    // 1.5h because Phase 1 of `processValidationQueue` never ran).
+    // Validator-decided terminal failure: the worker reached max_fix_cycles
+    // and the orchestrator stamped `failed`.
+    //
+    // This used to skip unconditionally, on the reasoning that the operator
+    // owns the verdict from here and PM has no role. Measured against real
+    // rounds that is wrong in the common case: a row exhausts its budget
+    // precisely when a finding is UNFIXABLE BY THE WORKER — a spec defect, a
+    // capsule that never authorised the surface the acceptance needs, or a
+    // phantom the worker cannot make go away. Those are exactly PM's job, and
+    // the unconditional skip meant nobody was ever told. Observed on
+    // agent-dispatcher-abd83457: C-02 and C-09 both burned five cycles and
+    // then sat dead and unannounced for hours; C-02's last cycle had already
+    // accepted its code and failed it on a phantom missing report, and
+    // C-09 was being held to its own gate's verdict on files it did not own.
+    //
+    // So: route to PM exactly ONCE. The moment any PM resolver entry exists
+    // for this (worker, manual_intervention_required) issue, we fall back to
+    // the old skip — which preserves the wedge fix this guard was written for
+    // (M-01 on agent-dispatcher-9fd97803: re-flagging every tick blocked
+    // every downstream worker) and the storm fix below (R-04 on
+    // agent-dispatcher-f0953280, 347K log lines over 12 days).
     if (
       workerState?.status === "failed"
       && hasExhaustedValidationCycles(workerState)
+      && hasPmResolverBeenRequestedForManualIntervention(lifecycleState, normalizedWorkerId)
     ) {
       continue;
     }
@@ -168,6 +207,26 @@ export function resolveManualInterventionWorker(
  * dedup prevents a fresh resolver from spawning, so the watchdog should
  * not keep re-detecting the same stall.
  */
+/**
+ * True when the watchdog has already recorded ANY PM resolver for this
+ * worker's `manual_intervention_required` issue — running, completed, or
+ * failed.
+ *
+ * Distinct from {@link isPmResolverExhaustedForManualIntervention}, which asks
+ * whether the latest one gave up. This asks only "has PM been told at all",
+ * and is what bounds validation-exhaustion routing to a single PM pass.
+ */
+export function hasPmResolverBeenRequestedForManualIntervention(
+  lifecycleState: DispatchThreadStateV2,
+  workerId: string
+): boolean {
+  return (lifecycleState.pm_resolvers ?? []).some(
+    (resolver) =>
+      resolver.issue.worker_id === workerId
+      && resolver.issue.status === "manual_intervention_required"
+  );
+}
+
 export function isPmResolverExhaustedForManualIntervention(
   lifecycleState: DispatchThreadStateV2,
   workerId: string
@@ -241,6 +300,57 @@ export function resolveExhaustedPmResolverWorkers(
   return exhausted;
 }
 
+/**
+ * Every plan row currently parked behind an unreleased `escalate_human`
+ * escalation, in plan order.
+ *
+ * Scoped to the plan's own rows (rather than reading the lifecycle store's
+ * pm_resolvers wholesale) so a stale PM entry for a worker that no longer
+ * exists in the markdown cannot park anything, and so the operator-facing
+ * message names rows they can actually see.
+ */
+export function resolveHumanEscalationParkedWorkers(
+  rows: DispatchContinuationPlanRow[],
+  lifecycleState: DispatchThreadStateV2
+): HumanEscalationFreeze[] {
+  const parked: HumanEscalationFreeze[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (isHumanDispatchRow(row)) {
+      continue;
+    }
+    const workerId = row.worker.trim();
+    if (!workerId || seen.has(workerId)) {
+      continue;
+    }
+    const freeze = findUnreleasedHumanEscalation(lifecycleState, workerId);
+    if (!freeze) {
+      continue;
+    }
+    seen.add(workerId);
+    parked.push(freeze);
+  }
+  return parked;
+}
+
+export function resolveHumanEscalationParkedWorkersFromWorkerRows(
+  rows: DispatchContinuationWorkerRow[],
+  lifecycleState: DispatchThreadStateV2
+): HumanEscalationFreeze[] {
+  return resolveHumanEscalationParkedWorkers(
+    rows.map((row) => ({
+      status: row.status,
+      batch: row.batch ?? null,
+      worker: row.worker_id,
+      model: row.model,
+      depends_on: row.depends_on,
+      notes: row.notes ?? null,
+      ...(row.branch ? { branch: row.branch } : {})
+    })),
+    lifecycleState
+  );
+}
+
 export function resolveExhaustedPmResolverWorkersFromWorkerRows(
   rows: DispatchContinuationWorkerRow[],
   lifecycleState: DispatchThreadStateV2
@@ -252,7 +362,11 @@ export function resolveExhaustedPmResolverWorkersFromWorkerRows(
       worker: row.worker_id,
       model: row.model,
       depends_on: row.depends_on,
-      notes: row.notes ?? null
+      notes: row.notes ?? null,
+      // Carried through deliberately: the validator resolves the branch it
+      // diffs from this field, and dropping it here made every validator fall
+      // back to a synthetic `task/<id>` ref that no plan contains.
+      ...(row.branch ? { branch: row.branch } : {})
     })),
     lifecycleState
   );
@@ -269,7 +383,11 @@ export function resolveManualInterventionWorkerFromWorkerRows(
       worker: row.worker_id,
       model: row.model,
       depends_on: row.depends_on,
-      notes: row.notes ?? null
+      notes: row.notes ?? null,
+      // Carried through deliberately: the validator resolves the branch it
+      // diffs from this field, and dropping it here made every validator fall
+      // back to a synthetic `task/<id>` ref that no plan contains.
+      ...(row.branch ? { branch: row.branch } : {})
     })),
     lifecycleState
   );
@@ -282,7 +400,8 @@ export function isHumanDispatchRow(row: Pick<DispatchContinuationPlanRow, "model
 
 export function resolveServiceContinueWorkerFromWorkerRows(
   rows: DispatchContinuationWorkerRow[],
-  lifecycleState: DispatchThreadStateV2
+  lifecycleState: DispatchThreadStateV2,
+  options: Pick<ResolveEligibleServiceContinueWorkersOptions, "capsuleGate"> = {}
 ): string | null {
   return resolveServiceContinueWorker(
     rows.map((row) => ({
@@ -291,15 +410,21 @@ export function resolveServiceContinueWorkerFromWorkerRows(
       worker: row.worker_id,
       model: row.model,
       depends_on: row.depends_on,
-      notes: row.notes ?? null
+      notes: row.notes ?? null,
+      // Carried through deliberately: the validator resolves the branch it
+      // diffs from this field, and dropping it here made every validator fall
+      // back to a synthetic `task/<id>` ref that no plan contains.
+      ...(row.branch ? { branch: row.branch } : {})
     })),
-    lifecycleState
+    lifecycleState,
+    options
   );
 }
 
 export function countEligiblePendingServiceContinueWorkersFromWorkerRows(
   rows: DispatchContinuationWorkerRow[],
-  lifecycleState: DispatchThreadStateV2
+  lifecycleState: DispatchThreadStateV2,
+  options: Pick<ResolveEligibleServiceContinueWorkersOptions, "capsuleGate"> = {}
 ): number {
   const normalizedRows = rows.map((row) => ({
     status: row.status,
@@ -307,12 +432,14 @@ export function countEligiblePendingServiceContinueWorkersFromWorkerRows(
     worker: row.worker_id,
     model: row.model,
     depends_on: row.depends_on,
-    notes: row.notes ?? null
+    notes: row.notes ?? null,
+    ...(row.branch ? { branch: row.branch } : {})
   }));
   const rowsByWorker = indexRowsByWorker(normalizedRows);
 
   return normalizedRows.filter((row) => {
-    return row.status.trim() === "⬜" && isEligibleServiceContinueRow(row, normalizedRows, rowsByWorker, lifecycleState);
+    return row.status.trim() === "⬜"
+      && isEligibleServiceContinueRow(row, normalizedRows, rowsByWorker, lifecycleState, options.capsuleGate);
   }).length;
 }
 
@@ -406,7 +533,8 @@ function isBlockedByOpenHumanGate(
 
 function resolveImplicitContinueWorker(
   rows: DispatchContinuationPlanRow[],
-  lifecycleState: DispatchThreadStateV2
+  lifecycleState: DispatchThreadStateV2,
+  capsuleGate?: CapsuleMaterializationGate
 ): string | null {
   const runningRows = rows.filter((row) => row.status === "🔄" && !isHumanDispatchRow(row));
   if (runningRows.length !== 1) {
@@ -418,16 +546,32 @@ function resolveImplicitContinueWorker(
     return null;
   }
 
-  return isImplicitContinueRow(row, lifecycleState)
+  return isImplicitContinueRow(row, lifecycleState, capsuleGate)
     ? row.worker.trim()
     : null;
 }
 
 function isImplicitContinueRow(
   row: DispatchContinuationPlanRow,
-  lifecycleState: DispatchThreadStateV2
+  lifecycleState: DispatchThreadStateV2,
+  capsuleGate?: CapsuleMaterializationGate
 ): boolean {
   if (hasAutomaticDispatchBlocker(row)) {
+    return false;
+  }
+
+  // Materialization precondition. The implicit path relaunches a lone 🔄 row
+  // whose lifecycle thread died — which is exactly the shape an unmaterialized
+  // row leaves behind after it self-reports `blocked` and gets killed. Without
+  // this it would be relaunched against the same `⏳` capsule every tick.
+  if (capsuleGate?.(row.worker)) {
+    return false;
+  }
+
+  // Escalation freeze. The implicit path is the one that picks up a lone 🔄
+  // row whose lifecycle thread died — exactly the shape a parked-and-killed
+  // escalated worker leaves behind — so it must honour the freeze too.
+  if (isFrozenPendingHumanResolution(lifecycleState, row.worker)) {
     return false;
   }
 
@@ -468,7 +612,8 @@ function isImplicitContinueRow(
 
 function resolvePreflightGateWorker(
   rows: DispatchContinuationPlanRow[],
-  lifecycleState: DispatchThreadStateV2
+  lifecycleState: DispatchThreadStateV2,
+  capsuleGate?: CapsuleMaterializationGate
 ): string | null | undefined {
   const preflightRow = rows.find((row) => normalizeWorkerIdentifier(row.worker) === "PRE-FLIGHT" && !isHumanDispatchRow(row));
   if (!preflightRow) {
@@ -483,17 +628,18 @@ function resolvePreflightGateWorker(
   if (
     isBlockedDispatchStatus(preflightRow.status)
     || preflightState?.status === "blocked"
+    || isFrozenPendingHumanResolution(lifecycleState, preflightRow.worker)
     || (preflightState?.hub_result && hubResultRequiresManualIntervention(preflightState.hub_result))
   ) {
     return null;
   }
 
   const rowsByWorker = indexRowsByWorker(rows);
-  if (isEligibleServiceContinueRow(preflightRow, rows, rowsByWorker, lifecycleState)) {
+  if (isEligibleServiceContinueRow(preflightRow, rows, rowsByWorker, lifecycleState, capsuleGate)) {
     return preflightRow.worker.trim();
   }
 
-  return preflightRow.status.trim() === "🔄" && isImplicitContinueRow(preflightRow, lifecycleState)
+  return preflightRow.status.trim() === "🔄" && isImplicitContinueRow(preflightRow, lifecycleState, capsuleGate)
     ? preflightRow.worker.trim()
     : null;
 }
@@ -502,13 +648,45 @@ function isEligibleServiceContinueRow(
   row: DispatchContinuationPlanRow,
   rows: DispatchContinuationPlanRow[],
   rowsByWorker: Map<string, DispatchContinuationPlanRow>,
-  lifecycleState: DispatchThreadStateV2
+  lifecycleState: DispatchThreadStateV2,
+  capsuleGate?: CapsuleMaterializationGate
 ): boolean {
   if (isHumanDispatchRow(row)) {
     return false;
   }
 
+  // Materialization precondition — the row is parked behind an unmaterialized
+  // Context Capsule, not queued. Placed alongside the escalation freeze for the
+  // same reason: this is the single gate every candidate resolver funnels
+  // through (`resolveServiceContinueWorker` serial,
+  // `resolveEligibleServiceContinueWorkers` parallel slot fill,
+  // `resolveServiceContinueWorkerFromWorkerRows` watchdog sweep,
+  // `countEligiblePendingServiceContinueWorkersFromWorkerRows` for the
+  // pending-work count that arms slot fill), so covering it here covers all of
+  // them at once. Without it, I-02..I-06 on
+  // unification-layer-decoupling-2026-08-06 were admitted as ordinary ⬜ rows
+  // with satisfied dependencies, launched against `⏳` capsules, and each burned
+  // a worker plus a PM resolver before an operator filled the capsules by hand.
+  if (capsuleGate?.(row.worker)) {
+    return false;
+  }
+
   if (hasAutomaticDispatchBlocker(row)) {
+    return false;
+  }
+
+  // Escalation freeze — the row is parked awaiting a human, not queued.
+  // This is the single gate every candidate resolver funnels through
+  // (`resolveServiceContinueWorker` for the serial path,
+  // `resolveEligibleServiceContinueWorkers` for the parallel slot filler,
+  // `resolveServiceContinueWorkerFromWorkerRows` for the watchdog sweep,
+  // `countEligiblePendingServiceContinueWorkersFromWorkerRows` for the
+  // pending-work count that arms slot fill), so covering it here covers all of
+  // them at once. Without it the dispatcher would correctly refuse another PM
+  // resolver and then relaunch the row as ordinary pending work on the very
+  // next tick — the BATCH-8-GATE shape on
+  // unification-layer-decoupling-2026-08-06.
+  if (isFrozenPendingHumanResolution(lifecycleState, row.worker)) {
     return false;
   }
 

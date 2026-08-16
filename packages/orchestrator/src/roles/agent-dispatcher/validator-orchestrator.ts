@@ -1,6 +1,13 @@
+import fs from "node:fs";
+
 import type { Logger } from "../base-role";
 import { FALLBACK_HEURISTICS_ENABLED } from "../../config";
-import type { DispatchWorkerState, KillPolicy, ValidatorConfig } from "../../types";
+import type {
+  DispatchWorkerState,
+  KillPolicy,
+  ValidationStateIdentity,
+  ValidatorConfig
+} from "../../types";
 import type { LifecycleStore } from "./lifecycle-store";
 import {
   parseMeridianStatusMarker,
@@ -19,8 +26,19 @@ import {
   isThreadIdReservedAcrossOtherDispatchPlans,
   killCollidedSpawnedThread
 } from "./thread-id-reservation";
-import { buildDefaultValidatorPrompt, type ValidatorPromptContext } from "./validator-prompt-builder";
+import {
+  buildDefaultValidatorPrompt,
+  loadValidatorContextCapsule,
+  type ValidatorPromptContext
+} from "./validator-prompt-builder";
 import { isAgentapiProcessAliveForThread } from "./active-tool-process";
+import {
+  computeValidationStateIdentity,
+  isValidationStateIdentityUnchanged,
+  summarizeValidationStateIdentity,
+  type ValidationStateIdentityIo
+} from "./validation-state-identity";
+import { parseDispatchPlanRows } from "../../tool-gateway/tools/dispatch-status";
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -28,6 +46,14 @@ export type ValidatorCycleOutcome =
   | { status: "passed"; score: number }
   | { status: "fix_requested"; score: number; cycle: number; maxCycles: number }
   | { status: "failed"; score: number; reason: string }
+  /**
+   * The state-identity guard fired: the validator asked for another fix cycle
+   * but nothing observable changed since the cycle before, so the row was
+   * parked at lifecycle `blocked` for the PM resolver instead of spawning a
+   * cycle that cannot produce a different verdict. Terminal for this run of
+   * the feedback loop — like `failed`, it is simply "not fix_requested".
+   */
+  | { status: "blocked"; score: number; reason: string }
   | { status: "error"; reason: string };
 
 export interface ValidatorOrchestratorDeps {
@@ -54,6 +80,12 @@ export interface ValidatorOrchestratorDeps {
    * exists so tests can toggle the gate without mutating `process.env`.
    */
   fallbackHeuristicsEnabled?: boolean;
+  /**
+   * Test seams for the state-identity fingerprint (file reads and the
+   * `git rev-parse` that resolves a branch head). Production leaves this
+   * unset and gets the real filesystem + git.
+   */
+  stateIdentityIo?: ValidationStateIdentityIo;
 }
 
 export interface ParsedValidatorOutput {
@@ -68,6 +100,28 @@ const VALIDATE_OFF_PATTERN = /\bvalidate\s*:\s*off\b/i;
 const VALIDATE_THRESHOLD_PATTERN = /\bvalidate\s*:\s*threshold\s*=\s*([\d.]+)/i;
 
 const EXCLUDED_MODEL_CODES = new Set(["HUMAN", "PM"]);
+
+const GATE_ROW_ID_PATTERN = /(?:^|[-_])GATE$/;
+const GATE_ROW_EXACT_IDS = new Set(["INTEGRATE"]);
+
+export function isGateRow(planRow: Pick<DispatchContinuationPlanRow, "worker">): boolean {
+  const workerId = planRow.worker?.trim().toUpperCase() ?? "";
+  if (!workerId) {
+    return false;
+  }
+  return GATE_ROW_EXACT_IDS.has(workerId) || GATE_ROW_ID_PATTERN.test(workerId);
+}
+
+export function isUnvalidatedGateRow(
+  planRow: Pick<DispatchContinuationPlanRow, "worker">,
+  validation: { history?: unknown[] } | null | undefined
+): boolean {
+  if (!isGateRow(planRow)) {
+    return false;
+  }
+  return (validation?.history?.length ?? 0) === 0;
+}
+
 const VALIDATOR_SPAWN_MAX_ATTEMPTS = 3;
 const STALE_OUTPUT_ARTIFACT_FEEDBACK_ERROR = "stale output artifact returned after feedback delivery";
 
@@ -168,7 +222,7 @@ export async function executeValidationCycle(
 
   const thresholdType = validatorConfig.threshold_type ?? "score";
   const baseBranch = validatorConfig.base_branch;
-  const taskBranch = resolveTaskBranch(workerId, planRow);
+  const taskBranch = resolveTaskBranch(workerId, planRow, deps.dispatchPlanPath, log);
   const cycle = validation.current_cycle + 1;
 
   if (isValidationCycleBudgetExhausted(validation)) {
@@ -187,6 +241,28 @@ export async function executeValidationCycle(
     };
   }
 
+  // Read the row's Context Capsule here rather than inside the prompt builder,
+  // so the builder stays a pure string function — `deps.buildPrompt` overrides
+  // keep their signature and the prompt tests need no filesystem. The read is
+  // synchronous (see loadValidatorContextCapsule): it must not introduce a
+  // macrotask before the validator spawn, because the continue handler returns
+  // as soon as the spawn is recorded while `meridianApi.run` fires from the
+  // background continuation. A null result is the normal case for rounds
+  // generated before capsules existed and falls back to the previous prompt
+  // verbatim.
+  const contextCapsule = loadValidatorContextCapsule(deps.dispatchPlanPath, workerId, { log });
+  if (contextCapsule) {
+    log.info("Validator context capsule inlined", {
+      event: "validator_context_capsule_inlined",
+      worker_id: workerId,
+      cycle,
+      capsule_path: contextCapsule.path,
+      capsule_chars: contextCapsule.content.length,
+      truncated: contextCapsule.truncated,
+      ...(contextCapsule.truncated ? { capsule_original_chars: contextCapsule.originalChars } : {})
+    });
+  }
+
   const promptContext: ValidatorPromptContext = {
     workerId,
     taskBranch,
@@ -196,7 +272,9 @@ export async function executeValidationCycle(
     cycle,
     maxFixCycles: validation.max_fix_cycles,
     previousFeedback: validation.last_feedback,
-    thresholdType
+    thresholdType,
+    contextCapsule,
+    expectedOutputs: worker.expected_outputs ?? []
   };
 
   const promptBuilder = deps.buildPrompt ?? buildDefaultValidatorPrompt;
@@ -354,7 +432,8 @@ export async function applyValidatorVerdictFromContent(
       validatorThreadId,
       validation,
       worker,
-      marker
+      marker,
+      planRow
     );
   }
 
@@ -454,19 +533,166 @@ export async function applyValidatorVerdictFromContent(
     };
   }
 
-  lifecycleStore.transitionToFixRequested(
+  return applyFixRequestedWithStateIdentityGuard(deps, {
     workerId,
-    parsed.score,
-    parsed.feedback,
-    validatorThreadId
+    planRow,
+    worker,
+    validation,
+    validatorThreadId,
+    score: parsed.score,
+    feedback: parsed.feedback,
+    cycle,
+    maxCycles: validation.max_fix_cycles
+  });
+}
+
+/**
+ * Everything that must be true before the orchestrator spends another worker
+ * resume + validator session on this row.
+ *
+ * The only guard that used to stand here was the cycle counter, so a row whose
+ * worker was not permitted to change anything could be re-validated until its
+ * budget ran out — see `validation-state-identity.ts` for the incident. This
+ * adds the missing question: did ANYTHING observable change since the state the
+ * previous cycle already judged?
+ *
+ * Fires only on a determinate match (see `isValidationStateIdentityUnchanged`),
+ * so an unobservable row — no branch, no card, no capsule, no readable report —
+ * proceeds exactly as before rather than being routed to PM on the strength of
+ * our own blindness.
+ */
+async function applyFixRequestedWithStateIdentityGuard(
+  deps: ValidatorOrchestratorDeps,
+  input: {
+    workerId: string;
+    planRow: DispatchContinuationPlanRow;
+    worker: DispatchWorkerState;
+    validation: NonNullable<DispatchWorkerState["validation"]>;
+    validatorThreadId: string;
+    score: number;
+    feedback: string;
+    cycle: number;
+    maxCycles: number;
+  }
+): Promise<ValidatorCycleOutcome> {
+  const { workerId, validation, validatorThreadId, score, feedback, cycle, maxCycles } = input;
+  const currentIdentity = computeStateIdentityForCycle(deps, input.workerId, input.planRow, input.worker, cycle);
+  const previousIdentity = validation.state_identity ?? null;
+
+  if (currentIdentity && isValidationStateIdentityUnchanged(previousIdentity, currentIdentity)) {
+    const reason = `state unchanged since validation cycle ${previousIdentity!.cycle}`
+      + ` (fingerprint ${currentIdentity.fingerprint.slice(0, 12)});`
+      + " another fix cycle cannot change the objection set";
+
+    deps.log.warn("Validator requested a fix cycle but nothing changed since the previous cycle; routing to PM", {
+      event: "validator_state_identity_unchanged",
+      worker_id: workerId,
+      cycle,
+      max_fix_cycles: maxCycles,
+      previous_cycle: previousIdentity!.cycle,
+      fingerprint: currentIdentity.fingerprint,
+      score,
+      components: summarizeValidationStateIdentity(currentIdentity)
+    });
+
+    deps.lifecycleStore.transitionToValidationStalled(
+      workerId,
+      "validation_state_identity_unchanged",
+      {
+        score,
+        // Prefix rather than replace: PM needs both the orchestrator's reason
+        // for stopping AND the validator's unchanged objection set to decide.
+        feedback: [
+          `[ORCHESTRATOR] Validation stopped at cycle ${cycle}/${maxCycles}: ${reason}.`,
+          `State fingerprint ${currentIdentity.fingerprint} is byte-identical to the one recorded for cycle ${previousIdentity!.cycle}`
+            + ` (${formatStateIdentityComponents(currentIdentity)}).`,
+          "The worker has nothing it is permitted to change here — a PM/human decision is required"
+            + " (amend the task card or capsule, re-scope the acceptance criteria, or accept the row).",
+          "",
+          "Validator feedback from the final cycle:",
+          "",
+          feedback
+        ].join("\n"),
+        validatorThreadId
+      },
+      currentIdentity
+    );
+
+    // NOTE: the retained worker thread is deliberately NOT killed here. The
+    // row is heading to PM, and every other `blocked` row keeps its session so
+    // PM can resume it instead of paying for a fresh spawn.
+    return { status: "blocked", score, reason };
+  }
+
+  if (currentIdentity && previousIdentity && !currentIdentity.determinate) {
+    deps.log.info("Validator state identity is not determinate; fix cycle proceeds without the wasted-work guard", {
+      event: "validator_state_identity_indeterminate",
+      worker_id: workerId,
+      cycle,
+      observed: currentIdentity.observed,
+      components: summarizeValidationStateIdentity(currentIdentity)
+    });
+  }
+
+  deps.lifecycleStore.transitionToFixRequested(
+    workerId,
+    score,
+    feedback,
+    validatorThreadId,
+    currentIdentity
   );
 
   return {
     status: "fix_requested",
-    score: parsed.score,
+    score,
     cycle,
-    maxCycles: validation.max_fix_cycles
+    maxCycles
   };
+}
+
+/**
+ * Best-effort fingerprint of the row's observable state. Returns null on any
+ * unexpected failure so a broken fingerprint can never block a cycle that
+ * would otherwise have run — mirrors `loadValidatorContextCapsule`'s
+ * fail-to-null contract on this same code path.
+ */
+function computeStateIdentityForCycle(
+  deps: ValidatorOrchestratorDeps,
+  workerId: string,
+  planRow: DispatchContinuationPlanRow,
+  worker: DispatchWorkerState,
+  cycle: number
+): ValidationStateIdentity | null {
+  try {
+    return computeValidationStateIdentity(
+      {
+        workerId,
+        dispatchPlanPath: deps.dispatchPlanPath,
+        // Same resolution the validator prompt uses, minus the
+        // `task/<worker-id>` legacy invention: a branch we made up would
+        // resolve to nothing and only ever land on `unresolved`.
+        branch: resolvePlanRowBranch(workerId, planRow, deps.dispatchPlanPath),
+        repoDir: deps.spawnDir,
+        expectedOutputs: worker.expected_outputs ?? [],
+        cycle
+      },
+      deps.stateIdentityIo ?? {}
+    );
+  } catch (error) {
+    deps.log.warn("Validator state identity could not be computed; wasted-work guard is inactive for this cycle", {
+      event: "validator_state_identity_error",
+      worker_id: workerId,
+      cycle,
+      error: asErrorMessage(error)
+    });
+    return null;
+  }
+}
+
+function formatStateIdentityComponents(identity: ValidationStateIdentity): string {
+  return identity.components
+    .map((component) => `${component.key}: ${component.status}`)
+    .join(", ");
 }
 
 async function spawnValidatorWithReservedThreadRetry(deps: ValidatorOrchestratorDeps): Promise<string> {
@@ -756,7 +982,8 @@ async function handleValidatorMarker(
   validatorThreadId: string,
   validation: NonNullable<DispatchWorkerState["validation"]>,
   worker: DispatchWorkerState,
-  marker: ValidatorStatusMarker
+  marker: ValidatorStatusMarker,
+  planRow: DispatchContinuationPlanRow
 ): Promise<ValidatorCycleOutcome> {
   const score = marker.score ?? defaultScoreForOutcome(marker.outcome);
   const feedback = marker.feedback ?? "";
@@ -826,8 +1053,17 @@ async function handleValidatorMarker(
           reason: `max validation cycles exhausted (${maxCycles})`
         };
       }
-      deps.lifecycleStore.transitionToFixRequested(workerId, score, feedback, validatorThreadId);
-      return { status: "fix_requested", score, cycle, maxCycles };
+      return await applyFixRequestedWithStateIdentityGuard(deps, {
+        workerId,
+        planRow,
+        worker,
+        validation,
+        validatorThreadId,
+        score,
+        feedback,
+        cycle,
+        maxCycles
+      });
     }
     default: {
       const _exhaustive: never = marker.outcome;
@@ -983,14 +1219,84 @@ function defaultScoreForOutcome(outcome: ValidatorStatusMarker["outcome"]): numb
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────
 
-function resolveTaskBranch(workerId: string, planRow: DispatchContinuationPlanRow): string {
+/**
+ * Resolves the branch the validator is told to diff.
+ *
+ * `planRow.branch` is the fast path, but several row-normalising mappers
+ * rebuild continuation rows field-by-field and drop `branch` on the way, and
+ * one call site casts `DispatchPlanWorkerRow[]` straight to
+ * `DispatchContinuationPlanRow[]`. When that happens the old code silently
+ * invented `task/<worker-id>` — a ref that does not exist in any modern plan.
+ * Every validator then opened with a failing `git diff`, and each one
+ * improvised its evidence instead (observed on agent-dispatcher-abd83457:
+ * C-02, C-04b, C-07, C-09 and BATCH-7-GATE all reported the `task/<id>` ref
+ * absent; one of them scored a stale head the worker had already fixed).
+ *
+ * So before inventing anything, re-read the plan on disk — it is the same
+ * document the row came from, and it always carries the Branch column.
+ */
+function resolveTaskBranch(
+  workerId: string,
+  planRow: DispatchContinuationPlanRow,
+  dispatchPlanPath: string,
+  log: Pick<Logger, "info" | "warn">
+): string {
   const explicitBranch = normalizePlanBranch(planRow.branch);
   if (explicitBranch) {
     return explicitBranch;
   }
 
+  const planBranch = readTaskBranchFromDispatchPlan(dispatchPlanPath, workerId);
+  if (planBranch) {
+    log.warn("Validator task branch missing from plan row; recovered from dispatch plan", {
+      event: "validator_task_branch_recovered_from_plan",
+      worker_id: workerId,
+      branch: planBranch
+    });
+    return planBranch;
+  }
+
   // Legacy fallback for older dispatch plans that do not expose a Branch column.
   return `task/${workerId.toLowerCase()}`;
+}
+
+/**
+ * The row's real branch, or null when it genuinely has none — the NO-GIT rows
+ * (`BATCH-*-GATE`, `LEGACY-ZERO-GATE`, `W0-03`, …) that carry no branch column
+ * value at all.
+ *
+ * Unlike {@link resolveTaskBranch} this never invents `task/<worker-id>`. The
+ * state-identity fingerprint must distinguish "this row has no branch" from
+ * "this row's branch could not be resolved", and a synthetic ref that exists in
+ * no plan would always land on the latter — turning every legacy row's guard
+ * off for the wrong reason.
+ */
+function resolvePlanRowBranch(
+  workerId: string,
+  planRow: DispatchContinuationPlanRow,
+  dispatchPlanPath: string
+): string | null {
+  return normalizePlanBranch(planRow.branch)
+    ?? readTaskBranchFromDispatchPlan(dispatchPlanPath, workerId);
+}
+
+/**
+ * Synchronous by design, mirroring `loadValidatorContextCapsule`: this runs
+ * once per validation cycle, immediately before a spawn that costs minutes.
+ * Returns null on any read/parse problem so branch recovery can never break a
+ * cycle that would otherwise have run.
+ */
+function readTaskBranchFromDispatchPlan(dispatchPlanPath: string, workerId: string): string | null {
+  try {
+    const markdown = fs.readFileSync(dispatchPlanPath, "utf8");
+    const target = workerId.trim().toUpperCase();
+    const row = parseDispatchPlanRows(markdown).find(
+      (candidate) => candidate.worker_id.trim().toUpperCase() === target
+    );
+    return normalizePlanBranch(row?.branch);
+  } catch {
+    return null;
+  }
 }
 
 function normalizePlanBranch(branch: string | null | undefined): string | null {

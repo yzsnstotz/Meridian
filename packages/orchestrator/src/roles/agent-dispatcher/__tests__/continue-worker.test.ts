@@ -582,4 +582,128 @@ describe("continueDispatchWorker", () => {
     expect(launchWorker).not.toHaveBeenCalled();
     expect(lifecycleStore.load().workers["N-04"]?.retry_count).toBe(0);
   });
+  // Regression: unification-layer-decoupling-2026-08-06 / BATCH-8-GATE.
+  // continueDispatchWorker is the single funnel every launch reaches (serial
+  // continue, parallel slot filler, scheduler role), so it carries the
+  // escalation-freeze backstop: a new caller that skips the upstream
+  // eligibility gate still cannot spawn a row a human has been asked to rule on.
+  describe("escalation freeze backstop", () => {
+    const escalationEntry = (overrides: Record<string, unknown> = {}) => ({
+      thread_id: "pm-thread-escalated",
+      status: "failed" as const,
+      started_at: "2026-08-06T20:50:00.000Z",
+      last_seen_at: "2026-08-06T20:58:53.000Z",
+      agent_type: "codex",
+      model_id: null,
+      mode: "bridge",
+      auto_approve: true,
+      issue: {
+        status: "manual_intervention_required",
+        worker_id: "N-04",
+        message: "manual intervention required",
+        error: null,
+        source: "watchdog"
+      },
+      result: null,
+      error: null,
+      transport_error: null,
+      marker_outcome: "escalated" as const,
+      marker_pm_action: "escalate_human" as const,
+      ...overrides
+    });
+
+    async function runContinue(
+      humanResolution: { resolved_at: string; note: string | null } | null,
+      pmOverrides: Record<string, unknown> = {}
+    ) {
+      const { dir, commandPath, planPath } = await createTempDispatchPlan();
+      const sidecarPath = path.join(dir, "dispatch_threads.json");
+      const lifecycleStore = new LifecycleStore(sidecarPath, { dispatchPlanPath: planPath });
+      lifecycleStore.save({
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-08-06T20:00:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "N-04": {
+            thread_id: "",
+            trace_id: null,
+            started_at: "2026-08-06T20:00:00.000Z",
+            last_seen_at: "2026-08-06T21:02:11.000Z",
+            status: "pending",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0,
+            ...(humanResolution ? { human_resolution: humanResolution } : {})
+          }
+        },
+        pm_resolvers: [escalationEntry(pmOverrides)],
+        last_reconciled_at: null
+      });
+      const launchWorker = vi.fn().mockResolvedValue({
+        ok: true,
+        threadId: "worker-thread-launched"
+      });
+
+      const result = await continueDispatchWorker(
+        {
+          dispatch_plan_path: planPath,
+          command_file_path: commandPath,
+          mode: "bridge",
+          agent_type: "codex",
+          kill_policy: "always",
+          auto_approve: true,
+          dispatch_repo_root: dir
+        },
+        [{ status: "\u2b1c", worker: "N-04", model: "CODEX-HIGH" }],
+        "N-04",
+        launchWorker
+      );
+
+      return { result, launchWorker };
+    }
+
+    it("refuses to launch a row parked behind an unreleased escalate_human", async () => {
+      const { result, launchWorker } = await runContinue(null);
+
+      expect(result.ok).toBe(false);
+      expect(result.workerId).toBe("N-04");
+      expect(result.humanEscalationFreeze).toMatchObject({
+        workerId: "N-04",
+        pmResolverThreadId: "pm-thread-escalated",
+        escalatedAt: "2026-08-06T20:58:53.000Z"
+      });
+      expect(result.error).toContain("awaiting human resolution");
+      // Not a launch failure: callers must not retry it into a loop.
+      expect(result.localToolBootstrapFailure).toBeUndefined();
+      expect(launchWorker).not.toHaveBeenCalled();
+    });
+
+    it("launches normally once /human-resolve stamps a newer resolved_at", async () => {
+      const { result, launchWorker } = await runContinue({
+        resolved_at: "2026-08-06T23:10:00.000Z",
+        note: "spec defect; acceptance relaxed by operator"
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.humanEscalationFreeze).toBeUndefined();
+      expect(launchWorker).toHaveBeenCalledTimes(1);
+      expect(launchWorker.mock.calls[0]![0]).toMatchObject({ workerId: "N-04" });
+    });
+
+    it("leaves a row with a non-escalation PM outcome unaffected", async () => {
+      const { result, launchWorker } = await runContinue(null, {
+        status: "completed",
+        marker_outcome: "resolved",
+        marker_pm_action: "retry"
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.humanEscalationFreeze).toBeUndefined();
+      expect(launchWorker).toHaveBeenCalledTimes(1);
+    });
+  });
 });

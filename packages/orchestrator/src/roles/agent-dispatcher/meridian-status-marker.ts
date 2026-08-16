@@ -32,7 +32,7 @@ import { z } from "zod";
 //   wins.
 
 const MARKER_BEGIN = "<<<MERIDIAN-STATUS>>>";
-const MARKER_END = "<<<END>>>";
+const _MARKER_END = "<<<END>>>";
 
 const MULTILINE_STRING_FIELDS = new Set(["notes", "feedback", "error", "delegatable", "blocking"]);
 
@@ -131,18 +131,24 @@ export function parseMeridianStatusMarker(
     return null;
   }
 
-  const lastBlock = blocks[blocks.length - 1];
-  const fields = parseBlockFields(lastBlock);
-  if (fields === null) {
-    return null;
+  // Last block wins — it is the worker's final word. Walk backwards so that a
+  // trailing block that does not validate (a stray unfenced opener quoted in
+  // narrative, or a tail captured by the missing-terminator tolerance in
+  // `findMarkerBlocks`) falls back to the last block that does, instead of
+  // discarding an otherwise valid marker.
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    const fields = parseBlockFields(blocks[i]!);
+    if (fields === null) {
+      continue;
+    }
+
+    const result = MeridianStatusMarkerSchema.safeParse(fields);
+    if (result.success) {
+      return result.data;
+    }
   }
 
-  const result = MeridianStatusMarkerSchema.safeParse(fields);
-  if (!result.success) {
-    return null;
-  }
-
-  return result.data;
+  return null;
 }
 
 // ─── Internals ─────────────────────────────────────────────────────────────────
@@ -158,6 +164,31 @@ function stripFencedRegions(text: string): string {
   return text.replace(fenceRegex, (match) => match.replace(/[^\n]/g, " "));
 }
 
+/**
+ * Locates the marker terminator at or after `from`, tolerating the
+ * off-by-one-angle-bracket typo models make on the closing delimiter.
+ *
+ * A worker that types `<<<END>>` (two brackets) or `<<<END>>>>` (four) has
+ * unambiguously finished its block — refusing to parse it strands the row in
+ * `running` with no lifecycle transition and no PM routing. Observed four
+ * times on agent-dispatcher-abd83457 alone (C-07 stuck 30min; C-09's
+ * `needs_pm` swallowed, burning 5 validator cycles; C-08 idle 5h14m).
+ *
+ * Returns the index of the terminator and its length, or null when no
+ * terminator exists ahead.
+ */
+function findMarkerEnd(text: string, from: number): { index: number; length: number } | null {
+  // `<<<END` followed by two or more `>`; the exact-3 form stays canonical and
+  // is what every prompt and template emits.
+  const terminator = /<<<END>{2,}/g;
+  terminator.lastIndex = from;
+  const match = terminator.exec(text);
+  if (!match) {
+    return null;
+  }
+  return { index: match.index, length: match[0].length };
+}
+
 function findMarkerBlocks(text: string): string[] {
   const blocks: string[] = [];
   let cursor = 0;
@@ -170,15 +201,21 @@ function findMarkerBlocks(text: string): string[] {
 
     const contentStart = beginIdx + MARKER_BEGIN.length;
     const nextBeginIdx = text.indexOf(MARKER_BEGIN, contentStart);
-    const endIdx = text.indexOf(MARKER_END, contentStart);
+    const end = findMarkerEnd(text, contentStart);
 
-    if (endIdx === -1) {
-      // Malformed: opener with no closer anywhere ahead. Stop scanning so we
-      // never emit a truncated block.
+    if (end === null) {
+      // No terminator ahead. When this opener is the LAST one in the text, the
+      // reply ended mid-marker (truncation, or the model simply omitted the
+      // closer); the field lines are still authoritative, so take the tail as
+      // the block rather than stranding the row. Any earlier opener without a
+      // closer is a stray quotation — stop scanning.
+      if (nextBeginIdx === -1) {
+        blocks.push(text.slice(contentStart));
+      }
       break;
     }
 
-    if (nextBeginIdx !== -1 && nextBeginIdx < endIdx) {
+    if (nextBeginIdx !== -1 && nextBeginIdx < end.index) {
       // Another opener appears before the next closer — the current opener
       // is stray (e.g. quoted illustration in narrative). Skip it and keep
       // scanning from the next opener.
@@ -186,8 +223,8 @@ function findMarkerBlocks(text: string): string[] {
       continue;
     }
 
-    blocks.push(text.slice(contentStart, endIdx));
-    cursor = endIdx + MARKER_END.length;
+    blocks.push(text.slice(contentStart, end.index));
+    cursor = end.index + end.length;
   }
 
   return blocks;

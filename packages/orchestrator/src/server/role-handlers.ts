@@ -56,13 +56,29 @@ import {
   hasRecoverableDispatchWork,
   isHumanDispatchRow,
   resolveEligibleServiceContinueWorkers,
+  resolveHumanEscalationParkedWorkers,
   resolveManualInterventionWorker,
   resolveServiceContinueWorker,
   type DispatchContinuationPlanRow
 } from "../roles/agent-dispatcher/service-continuation";
 import {
+  describeHumanEscalationFreeze,
+  findUnreleasedHumanEscalation,
+  type HumanEscalationFreeze
+} from "../roles/agent-dispatcher/human-escalation-freeze";
+import {
+  createCapsuleMaterializationGate,
+  describeCapsuleMaterializationHold,
+  loadCapsuleMaterializationRows,
+  materializeReadyCapsules,
+  resolveCapsuleMaterializationParkedWorkers,
+  type CapsuleMaterializationGate,
+  type CapsuleMaterializationHold
+} from "../roles/agent-dispatcher/capsule-materialization";
+import {
   isValidationEnabledForWorker,
   isValidatorResultPassing,
+  isUnvalidatedGateRow,
   interceptCompletionForValidation,
   executeValidationCycle,
   deliverValidatorFeedback,
@@ -413,7 +429,23 @@ export interface RoleDetailResponse {
 
 export interface ContinueDispatcherResponse {
   ok: true;
-  status: "continued" | "continued_parallel" | "still_blocked" | "plan_complete" | "local_tool_bootstrap_failed" | "manual_intervention_required" | "validation_in_progress" | "validation_feedback_delivered";
+  // `awaiting_human_resolution` is the parked-awaiting-human state: a row under
+  // an unreleased PM `escalate_human` escalation. Deliberately NOT
+  // `manual_intervention_required` — that status is what the watchdog keys on
+  // to spawn a PM resolver (PM_RESOLVER_WATCHDOG_STATUSES in src/index.ts), and
+  // the whole point of the freeze is that no further PM may spawn. It is also
+  // deliberately not `still_blocked`, which reads as "queued behind something
+  // that will clear on its own"; this one clears only when a human posts
+  // /human-resolve.
+  //
+  // `awaiting_materialization` is the sibling parked state for the dispatch
+  // materialization precondition: the row's Context Capsule still carries
+  // `⏳ 待物化`. Same reasoning as above — not `manual_intervention_required`
+  // (spawning a PM resolver against a row whose dependency simply has not
+  // finished yet is pure waste; that is what happened to I-02..I-06 on
+  // unification-layer-decoupling-2026-08-06), and not `still_blocked` (which
+  // hides the fact that the row is waiting on a fill, not on a queue).
+  status: "continued" | "continued_parallel" | "still_blocked" | "plan_complete" | "local_tool_bootstrap_failed" | "manual_intervention_required" | "awaiting_human_resolution" | "awaiting_materialization" | "validation_in_progress" | "validation_feedback_delivered";
   message: string;
   dispatcher_thread_id?: string;
   worker?: string;
@@ -1073,6 +1105,7 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     dispatchPlanPath: string;
     shouldActivateAfterContinue: boolean;
     dispatcherThreadId?: string;
+    capsuleGate: CapsuleMaterializationGate;
   }): Promise<ContinueDispatcherResponse | null> {
     const parallelConfig = args.context.effectiveConfig.parallel_dispatch;
     if (!parallelConfig.enabled) {
@@ -1094,14 +1127,39 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       };
     }
 
+    // Rows the manual-intervention resolver would flag must never be relaunched
+    // by the slot filler. Before manual intervention was deferrable (see
+    // `deferredManualInterventionResult` in continueDispatcherForRole) the
+    // launcher was simply unreachable whenever any row was wedged, so this
+    // invariant held for free. It no longer does: a row can be flagged by
+    // `resolveManualInterventionWorker` (lifecycle status `blocked`, or a
+    // hub_result carrying a hit-limit / block / failure signal) while its plan
+    // markdown still reads ⬜ — the markdown lags the lifecycle store across a
+    // sync — and ⬜ + satisfied dependencies is exactly what
+    // `isEligibleServiceContinueRow` admits. Re-dispatching a wedged worker on
+    // every tick is the loop the breaker was built for, so exclude it
+    // explicitly. `resolveManualInterventionWorker` is applied per row so the
+    // predicate stays single-sourced rather than re-implemented here.
+    const manualInterventionWorkerIds = new Set(
+      args.dispatchPlanData.rows
+        .filter((row) => resolveManualInterventionWorker(
+          [row as DispatchContinuationPlanRow],
+          args.lifecycleState
+        ) !== null)
+        .map((row) => row.worker.trim())
+    );
+
+    // The limit is applied AFTER the exclusions, not inside the resolver: with
+    // the resolver-side limit, an excluded row consumed one of the `availableSlots`
+    // budget and the tick under-filled by exactly that many slots.
     const candidates = resolveEligibleServiceContinueWorkers(
       args.dispatchPlanData.rows,
       args.lifecycleState,
-      {
-        includeImplicitRunningWorker: false,
-        limit: availableSlots
-      }
-    ).filter((workerId) => !activeWorkers.includes(workerId));
+      { includeImplicitRunningWorker: false, capsuleGate: args.capsuleGate }
+    )
+      .filter((workerId) => !activeWorkers.includes(workerId))
+      .filter((workerId) => !manualInterventionWorkerIds.has(workerId))
+      .slice(0, availableSlots);
     if (candidates.length === 0) {
       return null;
     }
@@ -1109,6 +1167,8 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
     const startedWorkers: string[] = [];
     const launchFailures: NonNullable<ContinueDispatcherResponse["launch_failures"]> = [];
     const pmResolverThreadIds: string[] = [];
+    const parkedForHuman: HumanEscalationFreeze[] = [];
+    const parkedForMaterialization: CapsuleMaterializationHold[] = [];
     const otherDispatchPlanPaths = await resolveOtherDispatcherPlanPaths(stateStore, args.threadId);
 
     for (const workerId of candidates) {
@@ -1118,6 +1178,17 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         break;
       }
       if (latestActiveWorkers.includes(workerId)) {
+        continue;
+      }
+
+      // Escalation freeze, re-checked against the FRESHLY reloaded lifecycle
+      // state. `candidates` was computed from the tick's opening snapshot; a PM
+      // resolver finishing mid-loop (or an earlier candidate's launch writing
+      // state) can arm the freeze in between. `continue`, not `return`, so one
+      // parked row never costs the other candidates their slots.
+      const candidateFreeze = findUnreleasedHumanEscalation(latestLifecycleState, workerId);
+      if (candidateFreeze) {
+        parkedForHuman.push(candidateFreeze);
         continue;
       }
 
@@ -1160,6 +1231,23 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         otherDispatchPlanPaths
       );
       if (!continued.ok) {
+        // The continue-worker backstop refused this row because it is parked
+        // awaiting a human. That is not a launch failure — reporting it as one
+        // would surface `still_blocked: failed to launch …` and hide the fact
+        // that a human owes a decision.
+        if (continued.humanEscalationFreeze) {
+          parkedForHuman.push(continued.humanEscalationFreeze);
+          continue;
+        }
+        // Same shape for the materialization precondition. `continue`, not
+        // `return`: a row whose capsule is still `⏳` must not cost its
+        // unrelated siblings their slots — that is the deadlock the freeze work
+        // established the pattern against, and I-02..I-06 would have hit it
+        // five candidates deep.
+        if (continued.capsuleMaterializationHold) {
+          parkedForMaterialization.push(continued.capsuleMaterializationHold);
+          continue;
+        }
         launchFailures.push({
           worker: workerId,
           error: continued.error ?? "Failed to launch dispatch worker",
@@ -1252,14 +1340,90 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       dispatchPlanData = await loadDispatchPlanData(dispatchPlanPath, log);
       lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
     }
+
+    // ─── Dispatch materialization ─────────────────────────────────────────
+    //
+    // The TRIGGER, once per tick, before anything selects a candidate. The
+    // orchestrator is the only component that observes both halves of the real
+    // condition — a dependency reaching a terminal state, and the instant just
+    // before a row launches — which is exactly why "the previous Gate row fills
+    // the capsule" could never work for an intra-wave dependency.
+    //
+    // §1.48/§4.11 ("never invent a SHA for a dependency that has not finished")
+    // are not re-implemented here: they are the entry condition of
+    // `materializeReadyCapsules`, so there is no reachable path that reads a
+    // SHA for an unfinished dependency.
+    //
+    // The GATE built from the result is read-only, memoised per tick, and is
+    // what keeps a still-unmaterialized row out of every candidate set below.
+    const capsuleMaterializationRows = loadCapsuleMaterializationRows(dispatchPlanPath, { log });
+    const capsuleMaterialization = materializeReadyCapsules({
+      dispatchPlanPath,
+      rows: capsuleMaterializationRows,
+      lifecycleState,
+      repoRoot: resolveConfiguredDispatchRepoRoot(context.effectiveConfig),
+      log
+    });
+    // Seeded with the sweep's own verdicts so a row whose fill was ATTEMPTED and
+    // failed reports `awaiting_pm` with the concrete gap, instead of the
+    // read-only gate's optimistic "the next tick will fill it" — which, for a
+    // dependency with no resolvable ref, would be true never.
+    const capsuleGate = createCapsuleMaterializationGate(dispatchPlanPath, lifecycleState, {
+      log,
+      seed: capsuleMaterialization.stillHeld
+    });
+
+    // Materialization precondition, targeted form — same reasoning as the
+    // targeted escalation freeze below: a caller-supplied worker_id bypasses
+    // every resolver, and the watchdog's stall-recovery path always supplies
+    // one. Scoped to the requested row only, so it can never answer for rows the
+    // caller did not ask about.
+    if (workerId) {
+      const targetedHold = capsuleGate(workerId);
+      if (targetedHold) {
+        return buildAwaitingMaterializationResponse([targetedHold]);
+      }
+    }
+
+    // Escalation freeze, targeted form. A caller-supplied worker_id bypasses
+    // every resolver (`effectiveWorkerId = workerId ?? resolve...`), so the
+    // eligibility gate in service-continuation.ts cannot see it — and the
+    // watchdog's stall-recovery path always supplies one. Answer before
+    // anything else runs: this sits ABOVE processValidationQueue, so a parked
+    // row cannot burn another validator cycle either.
+    //
+    // Deliberately scoped to the requested row only. A plan-wide scan with an
+    // early return here is what makes a `blocked` row answer
+    // `manual_intervention_required` for every other row too; this check
+    // cannot do that because it never looks at rows the caller did not ask
+    // about.
+    if (workerId) {
+      const targetedFreeze = findUnreleasedHumanEscalation(lifecycleState, workerId);
+      if (targetedFreeze) {
+        return buildAwaitingHumanResolutionResponse([targetedFreeze]);
+      }
+    }
+
     let effectiveWorkerId = workerId
-      ?? resolveServiceContinueWorker(dispatchPlanData.rows, lifecycleState);
+      ?? resolveServiceContinueWorker(dispatchPlanData.rows, lifecycleState, { capsuleGate });
     const shouldActivateAfterContinue = context.status !== ACTIVE_ROLE_STATUS;
     const isParallelAutoContinue = !workerId && context.effectiveConfig.parallel_dispatch.enabled;
 
+    // Parallel auto-continue may still fill unrelated slots while preserving
+    // the manual-intervention response when no actual launch makes progress.
+    let deferredManualInterventionResult: ContinueDispatcherResponse | null = null;
+
     const initialManualInterventionWorkerId = resolveManualInterventionWorker(dispatchPlanData.rows, lifecycleState);
     if (initialManualInterventionWorkerId) {
-      return buildManualInterventionResponse(initialManualInterventionWorkerId, lifecycleState);
+      const initialManualInterventionResponse = buildManualInterventionResponse(
+        initialManualInterventionWorkerId,
+        lifecycleState
+      );
+      if (isParallelAutoContinue) {
+        deferredManualInterventionResult = initialManualInterventionResponse;
+      } else {
+        return initialManualInterventionResponse;
+      }
     }
 
     const preValidationRunningWorkers = findBlockingRunningNonHumanWorkers(
@@ -1298,12 +1462,19 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
       // Reload lifecycle state after validation may have mutated it
       lifecycleState = await loadDispatchLifecycleState(dispatchPlanPath, log);
       effectiveWorkerId = workerId
-        ?? resolveServiceContinueWorker(dispatchPlanData.rows, lifecycleState);
+        ?? resolveServiceContinueWorker(dispatchPlanData.rows, lifecycleState, { capsuleGate });
     }
 
     const manualInterventionWorkerId = resolveManualInterventionWorker(dispatchPlanData.rows, lifecycleState);
     if (manualInterventionWorkerId) {
-      return buildManualInterventionResponse(manualInterventionWorkerId, lifecycleState);
+      const manualInterventionResponse = buildManualInterventionResponse(manualInterventionWorkerId, lifecycleState);
+      if (isParallelAutoContinue) {
+        // Post-validation re-check; it sees the reloaded lifecycle state and is
+        // therefore the fresher of the two findings — overwrite, don't skip.
+        deferredManualInterventionResult = manualInterventionResponse;
+      } else {
+        return manualInterventionResponse;
+      }
     }
 
     if (isParallelAutoContinue) {
@@ -1319,8 +1490,23 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
         lifecycleState,
         dispatchPlanPath,
         shouldActivateAfterContinue,
-        dispatcherThreadId: effectiveDispatcherThreadId
+        dispatcherThreadId: effectiveDispatcherThreadId,
+        capsuleGate
       });
+      if (parallelResult?.status === "continued_parallel") {
+        return parallelResult;
+      }
+      // Nothing was actually launched. A deferred manual-intervention finding
+      // now outranks everything else the launcher could report: it is the
+      // status the watchdog keys on to spawn a PM resolver
+      // (PM_RESOLVER_WATCHDOG_STATUSES in src/index.ts), so masking it behind a
+      // `still_blocked` would silently strand the wedged row for as long as the
+      // slots stayed busy. Returning it here also makes the no-launch response
+      // identical to pre-fix behaviour — the deferral only ever changes the
+      // answer on ticks that made real progress.
+      if (deferredManualInterventionResult) {
+        return deferredManualInterventionResult;
+      }
       if (parallelResult) {
         return parallelResult;
       }
@@ -1423,6 +1609,30 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           otherDispatchPlanPaths
         );
         if (!continued.ok) {
+          // Backstop refusal: parked awaiting a human, not a launch failure.
+          // Unreachable via the guards above under normal flow; kept so a
+          // future caller that skips them still gets the parked answer instead
+          // of a thrown 500.
+          if (continued.humanEscalationFreeze) {
+            return buildAwaitingHumanResolutionResponse(
+              [continued.humanEscalationFreeze],
+              effectiveDispatcherThreadId
+            );
+          }
+
+          // Backstop refusal: parked behind an unmaterialized capsule. Reaching
+          // here means the tick-level gate did not exclude the row — e.g. an
+          // operator-targeted continue, or a dependency that completed between
+          // the gate snapshot and the launch. Answer `awaiting_materialization`
+          // rather than throwing: this is not a launch failure, and a thrown 500
+          // would read as a broken dispatcher instead of a parked row.
+          if (continued.capsuleMaterializationHold) {
+            return buildAwaitingMaterializationResponse(
+              [continued.capsuleMaterializationHold],
+              effectiveDispatcherThreadId
+            );
+          }
+
           if (continued.localToolBootstrapFailure) {
             return {
               ok: true,
@@ -1462,6 +1672,38 @@ export function createRoleHandlers(options: RoleHandlersOptions): RoleHandlers {
           message: "plan complete: all non-human workers are terminal",
           ...(effectiveDispatcherThreadId ? { dispatcher_thread_id: effectiveDispatcherThreadId } : {})
         };
+      }
+
+      // Nothing launched and the plan is not complete. If the reason is that
+      // rows are parked behind an unreleased escalate_human, say so instead of
+      // the generic `still_blocked` / hub relaunch — otherwise a parked row is
+      // indistinguishable from "queued", which is precisely how ~2h of burn on
+      // BATCH-8-GATE went unnoticed.
+      //
+      // Safe to scan plan-wide HERE (unlike the manual-intervention checks at
+      // the top of this function) because control only reaches this point when
+      // no row was launchable at all: any unrelated, dependency-satisfied row
+      // would have been picked up by the serial or parallel launcher above and
+      // returned `continued` / `continued_parallel` long before now. So this
+      // does not inherit the "one wedged row answers for every row" problem.
+      const parkedForHuman = resolveHumanEscalationParkedWorkers(dispatchPlanData.rows, lifecycleState);
+      if (parkedForHuman.length > 0) {
+        return buildAwaitingHumanResolutionResponse(parkedForHuman, effectiveDispatcherThreadId);
+      }
+
+      // Same treatment for the materialization precondition, and safe for the
+      // same reason: control only reaches here when NOTHING was launchable, so
+      // any unrelated dependency-satisfied row would already have returned
+      // `continued` / `continued_parallel`. Without this, five rows waiting on
+      // one intra-wave dependency read as ordinary `still_blocked` and the
+      // dispatcher relaunches its hub session in a loop — which is how
+      // I-02..I-06 stayed invisible until an operator went looking.
+      const parkedForMaterialization = resolveCapsuleMaterializationParkedWorkers(
+        dispatchPlanData.rows,
+        capsuleGate
+      );
+      if (parkedForMaterialization.length > 0) {
+        return buildAwaitingMaterializationResponse(parkedForMaterialization, effectiveDispatcherThreadId);
       }
 
       if (!hasRecoverableDispatchWork(dispatchPlanData.rows, lifecycleState)) {
@@ -2800,6 +3042,86 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Internal server error";
 }
 
+/**
+ * Operator-facing rendering of the escalation freeze. Named workers, the PM
+ * thread that escalated, and the exact release action, so "parked awaiting a
+ * human" can never be mistaken for "queued".
+ */
+function buildAwaitingHumanResolutionResponse(
+  parked: readonly HumanEscalationFreeze[],
+  dispatcherThreadId?: string
+): ContinueDispatcherResponse {
+  const first = parked[0]!;
+  const message = parked.length === 1
+    ? describeHumanEscalationFreeze(first)
+    : `awaiting human resolution: ${parked.length} row(s) parked behind an unreleased escalate_human — `
+      + parked
+        .map((freeze) => `${freeze.workerId} (PM ${freeze.pmResolverThreadId} @ ${freeze.escalatedAt})`)
+        .join(", ")
+      + "; POST /worker/<id>/human-resolve to resume";
+
+  return {
+    ok: true,
+    status: "awaiting_human_resolution",
+    message,
+    worker: first.workerId,
+    pm_resolver_thread_ids: parked.map((freeze) => freeze.pmResolverThreadId),
+    ...(dispatcherThreadId ? { dispatcher_thread_id: dispatcherThreadId } : {})
+  };
+}
+
+/**
+ * Per-row summary for the multi-row form. One case per hold reason, because the
+ * operator's next action differs in every one of them: wait, wait, write capsule
+ * sections, write the card/capsule that was never authored, repair plan.json.
+ */
+function summarizeCapsuleMaterializationHold(hold: CapsuleMaterializationHold): string {
+  switch (hold.reason) {
+    case "awaiting_dependencies":
+      return `${hold.workerId} (waiting on ${hold.pendingDependencies.join(", ")})`;
+    case "awaiting_fill":
+      return `${hold.workerId} (fill due on the next tick)`;
+    case "awaiting_pm":
+      return `${hold.workerId} (needs PM: ${hold.underivableReasons.join("; ")})`;
+    case "spec_not_written":
+      return `${hold.workerId} (spec not written: ${hold.missingSpecFiles
+        .map((file) => `${file.kind} ${file.declaredPath} ${file.state}`)
+        .join(", ")})`;
+    case "spec_manifest_unreadable":
+      return `${hold.workerId} (plan.json unreadable: ${hold.specManifestError ?? "unknown error"})`;
+    default:
+      return hold.workerId;
+  }
+}
+
+/**
+ * Operator-facing rendering of the materialization precondition. Names the
+ * rows, the files, and — this is the part that matters — WHICH wait it is: a
+ * dependency that has not finished (nothing to do, it clears itself), content
+ * the dispatcher cannot derive (PM must write it), a spec that was never
+ * authored (the I-08/I-09 shape — write the file), or a manifest that cannot be
+ * read (repair plan.json). Conflating any two of those is what makes a park
+ * indistinguishable from ordinary queueing.
+ */
+function buildAwaitingMaterializationResponse(
+  parked: readonly CapsuleMaterializationHold[],
+  dispatcherThreadId?: string
+): ContinueDispatcherResponse {
+  const first = parked[0]!;
+  const message = parked.length === 1
+    ? describeCapsuleMaterializationHold(first)
+    : `awaiting materialization: ${parked.length} row(s) parked by the dispatch materialization precondition — `
+      + parked.map(summarizeCapsuleMaterializationHold).join(", ");
+
+  return {
+    ok: true,
+    status: "awaiting_materialization",
+    message,
+    worker: first.workerId,
+    ...(dispatcherThreadId ? { dispatcher_thread_id: dispatcherThreadId } : {})
+  };
+}
+
 function buildManualInterventionResponse(
   workerId: string,
   lifecycleState: DispatchThreadStateV2
@@ -3311,7 +3633,9 @@ function resolveCompletedWorkerValidationDisposition(
   // because role-level validation is enabled; that revalidates the same commit
   // after manual recovery and can block the dispatcher from moving on.
   if (row.status.trim() === "✅" && (!worker.validation || typeof worker.validation.last_score !== "number")) {
-    return null;
+    if (!isUnvalidatedGateRow(row, worker.validation)) {
+      return null;
+    }
   }
 
   if (!worker.validation) {

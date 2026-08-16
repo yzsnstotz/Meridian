@@ -395,6 +395,41 @@ export const ValidationHistoryEntrySchema = z.object({
 });
 export type ValidationHistoryEntry = z.infer<typeof ValidationHistoryEntrySchema>;
 
+// How much a single fingerprint component actually told us. `present` is
+// evidence (bytes were read and digested); `absent` is a fact about the row
+// (a NO-GIT row has no branch, a pre-capsule round has no capsule); and
+// `unresolved` is ignorance (the artifact was declared but could not be
+// observed). Only `present` may be treated as proof of anything — see
+// `validation-state-identity.ts` for the determinacy rule this enables.
+export const ValidationStateIdentityComponentStatusSchema = z.enum([
+  "present",
+  "absent",
+  "unresolved"
+]);
+export type ValidationStateIdentityComponentStatus = z.infer<
+  typeof ValidationStateIdentityComponentStatusSchema
+>;
+
+export const ValidationStateIdentityComponentSchema = z.object({
+  key: z.string().min(1),
+  status: ValidationStateIdentityComponentStatusSchema,
+  value: z.string()
+});
+export type ValidationStateIdentityComponent = z.infer<
+  typeof ValidationStateIdentityComponentSchema
+>;
+
+export const ValidationStateIdentitySchema = z.object({
+  fingerprint: z.string().min(1),
+  cycle: z.number().int().min(0),
+  /** True when at least one component was actually observed. */
+  observed: z.boolean(),
+  /** True when `observed` AND no component is `unresolved`. Only determinate fingerprints may be compared. */
+  determinate: z.boolean(),
+  components: z.array(ValidationStateIdentityComponentSchema).default([])
+});
+export type ValidationStateIdentity = z.infer<typeof ValidationStateIdentitySchema>;
+
 export const ValidationStateSchema = z.object({
   current_cycle: z.number().int().min(0).default(0),
   max_fix_cycles: z.number().int().default(3),
@@ -407,7 +442,18 @@ export const ValidationStateSchema = z.object({
   // older state files and existing test fixtures; readers must coalesce
   // (`?? 0`).
   spawn_failure_count: z.number().int().min(0).optional(),
-  last_spawn_failure_at: z.string().datetime().nullable().optional()
+  last_spawn_failure_at: z.string().datetime().nullable().optional(),
+  // Fingerprint of the row's observable state at the moment the most recent
+  // validation verdict was applied. Compared against the next cycle's
+  // fingerprint so a `fix_requested` that cannot possibly change anything is
+  // routed to PM instead of burning another worker resume + validator
+  // session. Optional AND nullable for backward compatibility, following the
+  // `spawn_failure_count` / `human_resolution` precedent: state files written
+  // by the currently-deployed binary have no such key, and a reader that
+  // predates this field simply strips it (zod objects are non-strict here),
+  // so the guard degrades to the old cycle-count-only behaviour rather than
+  // failing to load. Readers must treat `undefined` and `null` alike.
+  state_identity: ValidationStateIdentitySchema.nullable().optional()
 });
 export type ValidationState = z.infer<typeof ValidationStateSchema>;
 
