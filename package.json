@@ -23,7 +23,7 @@
     "format": "prettier --check ."
   },
   "dependencies": {
-    "@grammyjs/types": "^3.23.0",
+    "@grammyjs/types": "^4.0.0",
     "dotenv": "^17.2.3",
     "eventsource": "^5.0.0",
     "grammy": "^1.41.1",
