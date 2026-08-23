@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Role Detail — meridian-roles</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script defer src="/app.js"></script>
+  </head>
+  <body data-page="role-detail">
+    <nav class="global-nav">
+      <a class="nav-brand" href="/">
+        <span class="nav-brand-mark">M</span>
+        meridian-roles
+      </a>
+      <div class="nav-tabs">
+        <a class="nav-tab" href="/?tab=dispatchers">Dispatchers<span id="nav-dispatcher-count" class="nav-tab-count" hidden>0</span></a>
+        <a class="nav-tab" href="/?tab=processes">Processes<span id="nav-process-count" class="nav-tab-count" hidden>0</span></a>
+        <a class="nav-tab" href="/monitor">System Monitor<span id="nav-monitor-red-dot" class="nav-tab-leak-dot" hidden title="system monitor has a red indicator"></span></a>
+        <a class="nav-tab" href="/?tab=schedulers">Schedulers<span id="nav-scheduler-count" class="nav-tab-count" hidden>0</span></a>
+        <a class="nav-tab" href="/?tab=roles">Roles<span id="nav-role-count" class="nav-tab-count" hidden>0</span></a>
+      </div>
+    </nav>
+
+    <main class="shell">
+      <section class="hero hero-compact">
+        <a id="dashboard-link" class="back-link" href="/">← Dashboard</a>
+        <p class="eyebrow">Role Detail</p>
+        <h1 id="role-title">Loading role...</h1>
+        <p id="role-subtitle" class="lede">Fetching dispatcher detail.</p>
+      </section>
+
+      <section class="panel detail-sticky-head dispatcher-control-panel">
+        <div class="panel-heading">
+          <h2>Role Summary</h2>
+          <div id="role-panel-links" class="panel-links">
+            <a id="prompts-link" class="ghost-link" href="/">Prompt Editor</a>
+            <a id="config-link" class="ghost-link" href="/">Config Editor</a>
+          </div>
+        </div>
+        <dl id="role-summary" class="summary-grid"></dl>
+        <div id="agent-dispatcher-hub-controls" class="dispatcher-command-strip" hidden>
+          <p id="agent-dispatcher-start-hub-feedback" class="feedback" role="status" aria-live="polite"></p>
+          <div class="card-actions">
+            <button type="button" id="agent-dispatcher-continue-btn" class="primary-button" hidden>
+              Continue
+            </button>
+            <button type="button" id="agent-dispatcher-lifecycle-btn" class="ghost-button" hidden>
+              Pause
+            </button>
+            <button type="button" id="agent-dispatcher-start-hub-btn" class="primary-button">
+              Start hub session
+            </button>
+            <button type="button" id="agent-dispatcher-deactivate-btn" class="danger-button">
+              Deactivate
+            </button>
+          </div>
+        </div>
+
+        <details id="agent-dispatcher-talkbox" class="dispatcher-direct-panel" hidden>
+          <summary class="dispatcher-direct-summary">
+            <span>Direct messages</span>
+            <code id="agent-dispatcher-talk-target">dispatcher</code>
+          </summary>
+          <form id="agent-dispatcher-talk-form" class="dispatch-detail-talk">
+            <textarea id="agent-dispatcher-talk-input" class="dispatch-detail-talk-input"
+              name="content" rows="2"
+              placeholder="Send a message directly to the dispatcher controller thread..."></textarea>
+            <div class="dispatch-detail-talk-actions">
+              <button type="submit" class="ghost-button dispatch-detail-action-button">Send</button>
+              <span id="agent-dispatcher-talk-feedback" class="dispatch-detail-talk-status"></span>
+            </div>
+            <div id="agent-dispatcher-talk-replies" class="dispatch-direct-replies" hidden></div>
+          </form>
+        </details>
+      </section>
+
+      <section id="dispatch-plan-panel" class="panel" hidden>
+        <div class="panel-heading">
+          <div>
+            <h2>Dispatch Plan Status</h2>
+            <p class="muted">Parsed from the active dispatch plan file. Each task shows its matching dispatch detail inline.</p>
+          </div>
+        </div>
+        <p id="dispatch-plan-feedback" class="feedback dispatch-plan-feedback" role="status" aria-live="polite"></p>
+        <div id="dispatch-plan-empty" class="empty-state">No dispatch plan rows available.</div>
+        <div id="dispatch-plan-table-shell" class="table-shell" hidden>
+          <table class="status-table">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Batch</th>
+                <th>Worker</th>
+                <th>Task</th>
+                <th>Progress</th>
+                <th>Model</th>
+                <th>Depends On</th>
+                <th>Owner</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="dispatch-plan-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="dispatcher-session-panel" class="panel" hidden>
+        <div class="panel-heading">
+          <div>
+            <h2>Dispatcher Session</h2>
+            <p class="muted">Raw attached dispatcher detail. Auto-refreshes every 3 seconds.</p>
+          </div>
+        </div>
+        <pre id="dispatcher-session-log" class="log-tail">No dispatcher session detail available yet.</pre>
+      </section>
+
+      <section id="role-tasks-panel" class="panel">
+        <div class="panel-heading">
+          <h2>DAG Tasks</h2>
+          <p class="muted">Auto-refreshes every 3 seconds.</p>
+        </div>
+        <div id="role-tasks-empty" class="empty-state">No tasks have been recorded for this role.</div>
+        <div id="role-tasks" class="task-list"></div>
+      </section>
+    </main>
+  </body>
+</html>

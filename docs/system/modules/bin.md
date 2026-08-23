@@ -1,22 +1,31 @@
-# bin
-**Source**: `src/bin/`
-**Summary**: JSON-first CLI command dispatch for spawning and controlling Meridian agent threads through Meridian's authenticated HTTP API boundary, plus CLI-side API helpers for reachability and request shaping.
-**Last Scanned**: 2026-05-05
+# CLI
+**Source**: `packages/cli/src/`
+**Summary**: JSON-first product lifecycle, service discovery, and authenticated Runtime agent control.
+**Last Scanned**: 2026-07-25
 **Exports Documented**: 8
 
-`src/bin/meridian-cli.ts` does manual argument parsing instead of using a command framework. Operational commands emit structured JSON on stdout, help text is written to stderr, and failures are normalized into exit codes `0`, `1`, `2`, `3`, and `4`.
+`packages/cli/src/meridian-cli.ts` does manual argument parsing instead of using
+a command framework. Operational commands emit structured JSON on stdout, help
+text is written to stderr, and failures are normalized into exit codes `0`,
+`1`, `2`, `3`, and `4`.
 
 ## CLI Command Registry
 
-Global flags: `--help` prints root or per-command usage, and `--json` is accepted but ignored because JSON stdout is already the default for most commands. Every real subcommand goes through `ensureHubReachable()` before dispatch, so API reachability is the CLI's only public connectivity gate.
+Global flags: `--help` prints root or per-command usage, and `--json` is accepted
+but ignored because JSON stdout is already the default. Lifecycle and service
+discovery bypass Hub reachability; agent commands use `ensureHubReachable()`.
 
 | Command | Usage | Options / Inputs | Meridian behavior | Key refs |
 |--------|------|---------|--------|--------------|
+| `start` | `meridian start` | None | Starts the native supervisor daemon, then waits until Runtime and Orchestrator are ready or have reached a bounded failure state. Gateway is excluded. | `packages/cli/src/meridian-cli.ts`, `packages/supervisor/src/control.ts` |
+| `stop` | `meridian stop [thread-id]` | Optional thread ID | With no ID, stops Runtime and Orchestrator and unregisters descriptors. With an ID, preserves the compatibility alias for non-destructive agent interrupt. | `packages/cli/src/meridian-cli.ts` |
+| `status` | `meridian status [--agents]` | Optional `--agents` | Default returns the supervisor process projection without requiring Runtime. `--agents` reads `/api/instances` and emits the legacy agent projection. | `packages/cli/src/meridian-cli.ts` |
+| `doctor` | `meridian doctor` | None | Checks supervisor/child PIDs and ready states without requiring Hub connectivity. | `packages/supervisor/src/control.ts` |
+| `service` | `meridian service <list|resolve|describe|doctor>` | Service ID, optional URL or instance selection | Discovers native and Foundation-admitted services, isolating stale, corrupt, incompatible, or duplicate records. | `packages/cli/src/commands/service.ts` |
 | `spawn` | `meridian spawn [agent-type] [options]` | Optional positional provider plus `--provider`, `--model`, `--effort`, `--workdir`, `--auto-approve`, `--no-auto-approve`, `--mode` | Defaults the provider to `claude`, validates provider and reasoning effort through Zod-backed schemas, normalizes `a2a` and `agentapi` into bridge mode, then posts a structured JSON body to `/api/spawn` with optional model, effort, spawn directory, and auto-approve overrides. | `src/bin/meridian-cli.ts:103`, `src/bin/meridian-cli.ts:451`, `src/bin/meridian-cli.ts:642` |
 | `models` | `meridian models <provider>` | Positional provider or `--provider` | Lists the local provider model catalog for pre-spawn selection while still sharing the CLI's top-level API reachability gate. | `src/bin/meridian-cli.ts:116`, `src/bin/meridian-cli.ts:481`, `src/bin/meridian-cli.ts:642` |
 | `kill` | `meridian kill <thread-id>` | Exactly one thread ID | Posts `{ thread_id }` to `/api/kill` and returns `{ "ok": true }` on success. | `src/bin/meridian-cli.ts:120`, `src/bin/meridian-cli.ts:497`, `src/bin/meridian-cli.ts:642` |
 | `list` | `meridian list [--json]` | Optional `--json` flag | Without `--json`: prints a human-readable table of live instances with a `caller=<id>@<HH:MM>Z` column derived from `last_caller`/`last_caller_at`; shows `(none)` when absent. With `--json`: emits `{ ok, instances }` passing through all API fields including `spawned_by`, `last_caller`, and `last_caller_at` without filtering. | `src/bin/meridian-cli.ts` [ADDED 2026-05-05] |
-| `status` | `meridian status` | No command-specific options | Reads `/api/instances`, then reshapes each live instance into `{ thread_id, type, model, status, uptime }` using the current clock and `created_at`. | `src/bin/meridian-cli.ts:123`, `src/bin/meridian-cli.ts:508`, `src/bin/meridian-cli.ts:642` |
 | `send` | `meridian send <thread-id> <message>` | One thread ID plus a non-empty message string | Posts `{ thread_id, content, attachments: [] }` to `/api/run` and treats `success`, `partial`, and `timeout` API-backed hub statuses as acceptable CLI outcomes. | `src/bin/meridian-cli.ts:126`, `src/bin/meridian-cli.ts:528`, `src/bin/meridian-cli.ts:642` |
 | `logs` | `meridian logs <thread-id>` | Exactly one thread ID | Reads `/api/history?thread_id=...`, then normalizes the returned history entries into a stable `{ id, event_kind, source, type, content, raw_content, timestamp }` shape for scripts. | `src/bin/meridian-cli.ts:129`, `src/bin/meridian-cli.ts:558`, `src/bin/meridian-cli.ts:642` |
 | `history` | `meridian history <thread-id> [--json]` | Exactly one thread ID; optional `--json` flag | Like `logs` but includes `caller_id` and `caller_label` per entry; `--json` is stripped before thread-ID extraction so the flag does not interfere with positional parsing. Always emits JSON. | `src/bin/meridian-cli.ts` [ADDED 2026-05-05] |

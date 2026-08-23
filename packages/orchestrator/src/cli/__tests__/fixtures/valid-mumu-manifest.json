@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "layers": "flat",
+  "index": "none",
+  "bindings": {
+    "conversation_log": "turns/<turn_id>.md"
+  },
+  "record_schemas": {
+    "template_short_drama": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "episode_count": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["id", "title", "episode_count"],
+      "additionalProperties": false
+    },
+    "story_short_drama": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "template_id": { "type": "string" }
+      },
+      "required": ["id", "template_id"],
+      "additionalProperties": false
+    },
+    "style_short_drama": {
+      "type": "object",
+      "properties": {
+        "user_authored": { "type": "object" },
+        "agent_observed": { "type": "object" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "system_prompts": {
+    "create_from_template": { "prompt_path": "prompts/create_from_template.md" },
+    "style_observe": { "prompt_path": "prompts/style_observe.md" },
+    "style_user_write": { "prompt_path": "prompts/style_user_write.md" }
+  },
+  "background_triggers": [
+    {
+      "name": "style_observe_after_stories",
+      "fires_on": { "type": "after_structured_upsert", "record_type": "story_short_drama" },
+      "throttle": { "min_records_since_last_fire": 3, "min_interval": "10m" },
+      "action": { "system_prompt_id": "style_observe" }
+    }
+  ],
+  "read_only_allowlist": ["structured.get", "structured.list", "structured.query"],
+  "seeds_init": {
+    "mode": "copy_on_provision",
+    "source_path": "valid-seeds"
+  }
+}

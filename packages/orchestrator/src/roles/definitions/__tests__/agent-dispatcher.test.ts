@@ -1,0 +1,475 @@
+import { describe, expect, it, vi } from "vitest";
+
+import type { AppState, DispatchThreadStateV2 } from "../../../types";
+import type { Logger, RoleContext } from "../../base-role";
+import type { LaunchResult } from "../../agent-dispatcher/launcher";
+import { AgentDispatcherRole } from "../agent-dispatcher";
+
+class MemoryStateStore {
+  private state: AppState | null;
+
+  constructor(initialState: AppState | null = null) {
+    this.state = initialState ? structuredClone(initialState) : null;
+  }
+
+  async load(): Promise<AppState | null> {
+    return this.state ? structuredClone(this.state) : null;
+  }
+
+  async save(state: AppState): Promise<void> {
+    this.state = structuredClone(state);
+  }
+}
+
+describe("AgentDispatcherRole", () => {
+  it("constructs with a valid config and normalizes the primary reply channel", () => {
+    const role = createHarness().role;
+
+    expect(role.config.dispatch_plan_path).toBe("/tmp/dispatch_plan.md");
+    expect(role.config.command_file_path).toBe("/tmp/agent_dispatch_command.md");
+    expect(role.config.user_reply_channels).toHaveLength(1);
+    expect(role.config.user_reply_channel).toEqual({
+      channel: "telegram",
+      chat_id: "telegram:pm"
+    });
+    expect(role.config.agent_type).toBe("codex");
+    expect(role.config.mode).toBe("bridge");
+    expect(role.config.kill_policy).toBe("always");
+  });
+
+  it("throws when required agent-dispatcher config is missing", () => {
+    expect(() => {
+      new AgentDispatcherRole("agent-dispatcher-invalid", {
+        command_file_path: "/tmp/agent_dispatch_command.md",
+        user_reply_channels: [
+          {
+            channel: "telegram",
+            chat_id: "telegram:pm"
+          }
+        ]
+      });
+    }).toThrow();
+  });
+
+  it("onActivate SKIPS launchDispatcher when the session is paused (restart-hold)", async () => {
+    const harness = createHarness();
+    harness.sessionManager.isPaused.mockReturnValue(true);
+    harness.sessionManager.getDispatcherThreadId.mockReturnValue(null as unknown as string);
+
+    await harness.role.onActivate(harness.context);
+
+    // Critical: NO codex spawn, NO initSession, NO prompt build — just persist paused.
+    expect(harness.launchDispatcher).not.toHaveBeenCalled();
+    expect(harness.sessionManager.initSession).not.toHaveBeenCalled();
+    const savedState = await harness.stateStore.load();
+    expect(savedState?.roles?.[0]?.status).toBe("paused");
+  });
+
+  it("onStatusChange('active') from paused triggers launchDispatcher (Resume = continue)", async () => {
+    const harness = createHarness();
+    // Start paused, no thread yet
+    harness.sessionManager.isPaused.mockReturnValue(true);
+    harness.sessionManager.getDispatcherThreadId.mockReturnValue(null as unknown as string);
+    await harness.role.onActivate(harness.context);
+    expect(harness.launchDispatcher).not.toHaveBeenCalled();
+
+    // Simulate Resume: wasPaused=true at function entry, getDispatcherThreadId
+    // still null (no codex yet) → launch fires. After launch, initSession
+    // would have set the id, so signalDispatcherThread sees a non-null id.
+    harness.sessionManager.setPaused.mockImplementation(() => {
+      harness.sessionManager.isPaused.mockReturnValue(false);
+    });
+    harness.sessionManager.getDispatcherThreadId.mockReturnValue(null as unknown as string);
+    harness.launchDispatcher.mockImplementationOnce(async () => {
+      // Mimic executeDispatcherHubLaunch -> sessionManager.initSession setting the id
+      harness.sessionManager.getDispatcherThreadId.mockReturnValue("dispatcher-thread-fresh");
+      return { ok: true, threadId: "dispatcher-thread-fresh" };
+    });
+
+    await harness.role.onStatusChange("agent-dispatcher-role", "active");
+
+    expect(harness.launchDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("onActivate launches the dispatcher and records the dispatcher thread id", async () => {
+    const harness = createHarness();
+
+    await harness.role.onActivate(harness.context);
+
+    expect(harness.buildSystemPrompt).toHaveBeenCalledWith({
+      dispatch_plan_path: "/tmp/dispatch_plan.md",
+      command_file_path: "/tmp/agent_dispatch_command.md",
+      dispatcher_role_id: "agent-dispatcher-role",
+      dispatch_repo_root: "/tmp",
+      docs_root: "/tmp/Docs",
+      user_reply_channels: "[{\"channel\":\"telegram\",\"chat_id\":\"telegram:pm\"}]",
+      default_agent_type: "codex",
+      default_mode: "bridge",
+      kill_policy: "always",
+      auto_approve: false,
+      resolved_model_map_json: "{}",
+      pm_resolver_config_json: "{\"enabled\":true,\"agent_type\":\"codex\",\"mode\":\"bridge\",\"auto_approve\":false,\"user_reply_channels\":[{\"channel\":\"telegram\",\"chat_id\":\"telegram:pm\"}]}",
+      parallel_dispatch_config_json: "{\"enabled\":false,\"max_concurrency\":1}"
+    });
+    expect(harness.readWorkersByStatus).toHaveBeenCalledWith("/tmp/dispatch_plan.md", "🔄");
+    expect(harness.launchDispatcher).toHaveBeenCalledWith({
+      agentType: "codex",
+      modelId: undefined,
+      mode: "bridge",
+      autoApprove: false,
+      systemPrompt: "dispatcher prompt",
+      dispatchRepoRoot: "/tmp",
+      dispatchPlanPath: "/tmp/dispatch_plan.md",
+      commandFilePath: "/tmp/agent_dispatch_command.md",
+      dispatcherRoleId: "agent-dispatcher-role",
+      userReplyChannel: {
+        channel: "telegram",
+        chat_id: "telegram:pm"
+      },
+      otherDispatchPlanPaths: [],
+      onBeforeRunHandoff: expect.any(Function)
+    });
+    expect(harness.sessionManager.initSession).toHaveBeenCalledWith("dispatcher-thread-123", "/tmp/dispatch_plan.md");
+
+    const savedState = await harness.stateStore.load();
+    expect(savedState?.roles).toEqual([
+      expect.objectContaining({
+        threadId: "agent-dispatcher-role",
+        roleType: "agent-dispatcher",
+        status: "active",
+        config: expect.objectContaining({
+          dispatch_plan_path: "/tmp/dispatch_plan.md",
+          command_file_path: "/tmp/agent_dispatch_command.md",
+          user_reply_channels: [
+            {
+              channel: "telegram",
+              chat_id: "telegram:pm"
+            }
+          ]
+        })
+      })
+    ]);
+  });
+
+  it("onActivate forwards other persisted dispatcher plan paths so spawn-retry can refuse cross-plan reserved thread ids", async () => {
+    const harness = createHarness();
+    await harness.stateStore.save({
+      roles: [
+        {
+          threadId: "agent-dispatcher-sibling",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: {
+            dispatch_plan_path: "/tmp/sibling_dispatch_plan.md",
+            command_file_path: "/tmp/sibling_dispatch_command.md",
+            user_reply_channels: [
+              {
+                channel: "telegram",
+                chat_id: "telegram:pm"
+              }
+            ],
+            agent_type: "codex",
+            kill_policy: "always"
+          }
+        },
+        {
+          threadId: "agent-dispatcher-role",
+          roleType: "agent-dispatcher",
+          status: "active",
+          config: {
+            dispatch_plan_path: "/tmp/dispatch_plan.md",
+            command_file_path: "/tmp/agent_dispatch_command.md",
+            user_reply_channels: [
+              {
+                channel: "telegram",
+                chat_id: "telegram:pm"
+              }
+            ],
+            agent_type: "codex",
+            kill_policy: "always"
+          }
+        }
+      ],
+      promptStore: {}
+    });
+
+    await harness.role.onActivate(harness.context);
+
+    expect(harness.launchDispatcher).toHaveBeenCalledWith(expect.objectContaining({
+      otherDispatchPlanPaths: ["/tmp/sibling_dispatch_plan.md"]
+    }));
+  });
+
+  it("onActivate forwards configured dispatcher model_id to launchDispatcher", async () => {
+    const harness = createHarness({
+      config: {
+        model_id: "claude-opus-4-6"
+      }
+    });
+
+    await harness.role.onActivate(harness.context);
+
+    expect(harness.launchDispatcher).toHaveBeenCalledWith(expect.objectContaining({
+      agentType: "codex",
+      modelId: "claude-opus-4-6"
+    }));
+  });
+
+  it("onActivate kills a spawned dispatcher thread when detached run handoff fails", async () => {
+    const harness = createHarness();
+    harness.launchDispatcher.mockResolvedValueOnce({
+      ok: false,
+      threadId: "dispatcher-thread-orphaned",
+      error: "run launch failed: ENOENT"
+    });
+
+    await expect(harness.role.onActivate(harness.context)).rejects.toThrow("run launch failed: ENOENT");
+
+    expect(harness.killThread).toHaveBeenCalledWith("dispatcher-thread-orphaned");
+    expect(harness.sessionManager.initSession).not.toHaveBeenCalled();
+    await expect(harness.stateStore.load()).resolves.toBeNull();
+  });
+
+  it("onStatusChange(\"paused\") persists paused state and signals the dispatcher thread", async () => {
+    const harness = createHarness();
+    await harness.role.onActivate(harness.context);
+
+    await harness.role.onStatusChange("agent-dispatcher-role", "paused");
+
+    expect(harness.sessionManager.setPaused).toHaveBeenCalledWith(true, { skipPersist: true });
+    expect(harness.signalDispatcher).toHaveBeenCalledWith("dispatcher-thread-123", "paused");
+    expect((await harness.stateStore.load())?.roles[0]?.status).toBe("paused");
+  });
+
+  it("onStatusChange(\"active\") clears paused state and signals resume", async () => {
+    const harness = createHarness();
+    await harness.role.onActivate(harness.context);
+
+    await harness.role.onStatusChange("agent-dispatcher-role", "active");
+
+    expect(harness.sessionManager.setPaused).toHaveBeenCalledWith(false, { skipPersist: true });
+    expect(harness.signalDispatcher).toHaveBeenCalledWith("dispatcher-thread-123", "active");
+    expect((await harness.stateStore.load())?.roles[0]?.status).toBe("active");
+  });
+
+  it("relaunchHubSession prepares a fresh launch and spawns a new dispatcher thread", async () => {
+    const harness = createHarness();
+    await harness.role.onActivate(harness.context);
+    harness.launchDispatcher.mockResolvedValueOnce({
+      ok: true,
+      threadId: "dispatcher-thread-456"
+    });
+
+    const result = await harness.role.relaunchHubSession();
+
+    expect(harness.sessionManager.prepareFreshDispatcherLaunch).toHaveBeenCalled();
+    expect(result.dispatcher_thread_id).toBe("dispatcher-thread-456");
+    expect(harness.sessionManager.initSession).toHaveBeenLastCalledWith(
+      "dispatcher-thread-456",
+      "/tmp/dispatch_plan.md"
+    );
+  });
+
+  it("merges config model_map into the dispatcher prompt runtime context", async () => {
+    const harness = createHarness({
+      config: {
+        model_map: {
+          CODEX: {
+            provider: "codex",
+            model_id: "gpt-5.4"
+          }
+        }
+      }
+    });
+
+    await harness.role.onActivate(harness.context);
+
+    expect(harness.buildSystemPrompt).toHaveBeenCalledWith(expect.objectContaining({
+      resolved_model_map_json: "{\"CODEX\":{\"provider\":\"codex\",\"model_id\":\"gpt-5.4\"}}"
+    }));
+  });
+
+  it("materializes legacy preview dispatcher ids in saved prompt overrides before launch", async () => {
+    const harness = createHarness({
+      config: {
+        system_prompt: [
+          "dispatcher_role_id: agent-dispatcher-preview",
+          "Use `meridian-tool continue-dispatcher --dispatcher agent-dispatcher-preview`."
+        ].join("\n")
+      }
+    });
+
+    await harness.role.onActivate(harness.context);
+
+    expect(harness.launchDispatcher).toHaveBeenCalledWith(expect.objectContaining({
+      systemPrompt: [
+        "dispatcher_role_id: agent-dispatcher-role",
+        "Use `meridian-tool continue-dispatcher --dispatcher agent-dispatcher-role`."
+      ].join("\n")
+    }));
+  });
+
+  it("onDeactivate kills the dispatcher and tracked worker threads", async () => {
+    const harness = createHarness({
+      lifecycleState: {
+        version: 2,
+        dispatcher: {
+          thread_id: "dispatcher-thread-123",
+          started_at: "2026-03-28T11:59:00.000Z",
+          status: "running"
+        },
+        workers: {
+          "N-03": {
+            thread_id: "worker-thread-333",
+            trace_id: null,
+            started_at: "2026-03-28T12:00:00.000Z",
+            last_seen_at: "2026-03-28T12:00:00.000Z",
+            status: "running",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          },
+          "N-04": {
+            thread_id: "worker-thread-444",
+            trace_id: null,
+            started_at: "2026-03-28T12:01:00.000Z",
+            last_seen_at: "2026-03-28T12:01:00.000Z",
+            status: "running",
+            expected_outputs: [],
+            hub_result: null,
+            command_preamble: null,
+            retry_count: 0
+          }
+        },
+        last_reconciled_at: null
+      }
+    });
+    await harness.role.onActivate(harness.context);
+
+    await harness.role.onDeactivate();
+
+    expect(harness.killThread).toHaveBeenCalledTimes(3);
+    expect(harness.killThread).toHaveBeenCalledWith("dispatcher-thread-123");
+    expect(harness.killThread).toHaveBeenCalledWith("worker-thread-333");
+    expect(harness.killThread).toHaveBeenCalledWith("worker-thread-444");
+    expect(harness.lifecycleState).toMatchObject({
+      version: 2,
+      dispatcher: {
+        thread_id: null,
+        started_at: null,
+        status: "pending"
+      },
+      workers: {
+        "N-03": {
+          status: "abandoned"
+        },
+        "N-04": {
+          status: "abandoned"
+        }
+      },
+      last_reconciled_at: null
+    });
+    expect((await harness.stateStore.load())?.roles).toEqual([]);
+  });
+});
+
+function createHarness(options: {
+  lifecycleState?: DispatchThreadStateV2;
+  config?: Record<string, unknown>;
+} = {}) {
+  const stateStore = new MemoryStateStore();
+  const sessionManager = {
+    getDispatcherThreadId: vi.fn(() => "dispatcher-thread-123"),
+    initSession: vi.fn(async () => undefined),
+    isPaused: vi.fn(() => false),
+    prepareFreshDispatcherLaunch: vi.fn(async () => undefined),
+    onRestart: vi.fn(async () => ({
+      staleWorkersKilled: [],
+      dispatcherRestarted: true
+    })),
+    setPaused: vi.fn(() => undefined),
+    awaitPendingPauseWork: vi.fn(async () => undefined),
+    awaitInitialPauseState: vi.fn(async () => undefined)
+  };
+  const buildSystemPrompt = vi.fn(() => "dispatcher prompt");
+  const launchDispatcher = vi.fn(async (): Promise<LaunchResult> => ({
+    ok: true,
+    threadId: "dispatcher-thread-123"
+  }));
+  const readWorkersByStatus = vi.fn(async () => []);
+  const killThread = vi.fn(async () => undefined);
+  const signalDispatcher = vi.fn(async () => undefined);
+  const initialLifecycleState: DispatchThreadStateV2 = options.lifecycleState ?? {
+    version: 2,
+    dispatcher: {
+      thread_id: null,
+      started_at: null,
+      status: "pending"
+    },
+    workers: {},
+    last_reconciled_at: null
+  };
+  let lifecycleState: DispatchThreadStateV2 = structuredClone(initialLifecycleState);
+
+  const role = new AgentDispatcherRole("agent-dispatcher-role", {
+    dispatch_plan_path: "/tmp/dispatch_plan.md",
+    command_file_path: "/tmp/agent_dispatch_command.md",
+    docs_root: "/tmp/Docs",
+    user_reply_channels: [
+      {
+        channel: "telegram",
+        chat_id: "telegram:pm"
+      }
+    ],
+    agent_type: "codex",
+    kill_policy: "always",
+    ...(options.config ?? {})
+  }, {
+    stateStore,
+    buildSystemPrompt,
+    launchDispatcher,
+    sessionManagerFactory: () => sessionManager,
+    readWorkersByStatus,
+    lifecycleStoreFactory: () => ({
+      load: () => structuredClone(lifecycleState),
+      save: (nextState) => {
+        lifecycleState = structuredClone(nextState);
+      }
+    }),
+    killThread,
+    signalDispatcher
+  });
+
+  return {
+    role,
+    stateStore,
+    sessionManager,
+    buildSystemPrompt,
+    launchDispatcher,
+    readWorkersByStatus,
+    killThread,
+    signalDispatcher,
+    get lifecycleState() {
+      return lifecycleState;
+    },
+    context: createRoleContext()
+  };
+}
+
+function createRoleContext(): RoleContext {
+  return {
+    sendToHub: vi.fn(async () => undefined),
+    listInstances: vi.fn(async () => []),
+    log: createLogger()
+  };
+}
+
+function createLogger(): Logger {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn()
+  };
+}

@@ -1,0 +1,1269 @@
+{
+  "version": 1,
+  "layers": "flat",
+  "index": "none",
+  "bindings": {
+    "conversation_log": "turns/<turn_id>.md"
+  },
+  "sandbox_roots": [
+    {
+      "root": "/data/mumu/users/{user_id}",
+      "mode": "rw"
+    },
+    {
+      "root": "/etc/meridian-roles/projects/mumu/seeds",
+      "mode": "ro"
+    }
+  ],
+  "record_schemas": {
+    "template_short_drama": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "overall_arc",
+        "episode_count",
+        "per_episode_beats",
+        "cliff_pattern"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "overall_arc": {
+          "type": "string",
+          "minLength": 1
+        },
+        "episode_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "per_episode_beats": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "episode_no",
+              "hook",
+              "cliff"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "episode_no": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "hook": {
+                "type": "string"
+              },
+              "cliff": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "cliff_pattern": {
+          "type": "string",
+          "enum": [
+            "every_episode",
+            "alternating",
+            "every_two",
+            "every_three",
+            "freeform"
+          ]
+        },
+        "hook_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tone": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "story_short_drama": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "required": [
+        "id",
+        "template_id",
+        "outline"
+      ],
+      "additionalProperties": false,
+      "x-indexed-fields": [
+        "template_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "template_id": {
+          "type": "string"
+        },
+        "outline": {
+          "type": "object",
+          "required": [
+            "arc",
+            "episodes"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "arc": {
+              "type": "string"
+            },
+            "episodes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "no",
+                  "hook",
+                  "cliff"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "no": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "hook": {
+                    "type": "string"
+                  },
+                  "cliff": {
+                    "type": "string"
+                  },
+                  "summary": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "fragments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "episode_no",
+              "type",
+              "content"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "episode_no": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "full_dialogue",
+                  "scene_outline",
+                  "free_form"
+                ]
+              },
+              "content": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "style_short_drama": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "user_authored": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "likes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "dislikes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tone_keywords": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "agent_observed": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "recurring_motifs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "avoided_patterns": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "confirmed_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    },
+    "template_lianxian": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "overall_arc",
+        "typical_duration_min",
+        "segment_pattern"
+      ],
+      "additionalProperties": false,
+      "x-indexed-fields": [
+        "typical_duration_min"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "overall_arc": {
+          "type": "string",
+          "minLength": 1
+        },
+        "typical_duration_min": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 40
+        },
+        "segment_pattern": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "no",
+              "type",
+              "purpose"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "no": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "hook",
+                  "buildup",
+                  "conflict",
+                  "empathy_line",
+                  "interaction",
+                  "closing"
+                ]
+              },
+              "duration_min": {
+                "type": "number",
+                "minimum": 0.5
+              },
+              "purpose": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "audience_note": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "story_lianxian": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "required": [
+        "id",
+        "template_id",
+        "outline"
+      ],
+      "additionalProperties": false,
+      "x-indexed-fields": [
+        "template_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "template_id": {
+          "type": "string"
+        },
+        "outline": {
+          "type": "object",
+          "required": [
+            "arc",
+            "segments"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "arc": {
+              "type": "string"
+            },
+            "segments": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "no",
+                  "type",
+                  "summary"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "no": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "hook",
+                      "buildup",
+                      "conflict",
+                      "empathy_line",
+                      "interaction",
+                      "closing"
+                    ]
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "key_line": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "fragments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "segment_no",
+              "type",
+              "content"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "segment_no": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "full_oral_script"
+                ]
+              },
+              "content": {
+                "type": "string",
+                "description": "Backward-compatible full_oral_script field. Content must be a two-speaker lianxian dialogue script with both 主播 and 连线用户 labels.",
+                "pattern": "^(?=[\\s\\S]*主播[：:])(?=[\\s\\S]*连线用户[：:])[\\s\\S]*$"
+              }
+            }
+          }
+        }
+      }
+    },
+    "style_lianxian": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "user_authored": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "likes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "dislikes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tone_keywords": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "agent_observed": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "recurring_motifs": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "avoided_patterns": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "confirmed_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    },
+    "template_douyin": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "duration_sec",
+        "hook",
+        "setup",
+        "conflict",
+        "twist",
+        "payoff",
+        "cta",
+        "visual_beats"
+      ],
+      "additionalProperties": false,
+      "x-indexed-fields": [
+        "duration_sec",
+        "hook",
+        "target_audience"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "duration_sec": {
+          "type": "integer",
+          "minimum": 15,
+          "maximum": 120
+        },
+        "hook": {
+          "type": "string",
+          "minLength": 1
+        },
+        "setup": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conflict": {
+          "type": "string",
+          "minLength": 1
+        },
+        "twist": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payoff": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cta": {
+          "type": "string",
+          "minLength": 1
+        },
+        "visual_beats": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": [
+              "second_range",
+              "shot",
+              "on_screen_text",
+              "audio_or_dialogue"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "second_range": {
+                "type": "string",
+                "minLength": 1
+              },
+              "shot": {
+                "type": "string",
+                "minLength": 1
+              },
+              "on_screen_text": {
+                "type": "string"
+              },
+              "audio_or_dialogue": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "tone": {
+          "type": "string"
+        },
+        "target_audience": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "story_douyin": {
+      "type": "object",
+      "required": [
+        "id",
+        "template_id",
+        "outline"
+      ],
+      "additionalProperties": false,
+      "x-indexed-fields": [
+        "template_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "template_id": {
+          "type": "string"
+        },
+        "outline": {
+          "type": "object",
+          "required": [
+            "duration_sec",
+            "hook",
+            "setup",
+            "conflict",
+            "twist",
+            "payoff",
+            "cta",
+            "visual_beats"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "duration_sec": {
+              "type": "integer",
+              "minimum": 15,
+              "maximum": 120
+            },
+            "hook": {
+              "type": "string",
+              "minLength": 1
+            },
+            "setup": {
+              "type": "string",
+              "minLength": 1
+            },
+            "conflict": {
+              "type": "string",
+              "minLength": 1
+            },
+            "twist": {
+              "type": "string",
+              "minLength": 1
+            },
+            "payoff": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cta": {
+              "type": "string",
+              "minLength": 1
+            },
+            "visual_beats": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "required": [
+                  "second_range",
+                  "shot",
+                  "on_screen_text",
+                  "audio_or_dialogue"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "second_range": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "shot": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "on_screen_text": {
+                    "type": "string"
+                  },
+                  "audio_or_dialogue": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "fragments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "type",
+              "content"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "full_script",
+                  "shot_list",
+                  "caption"
+                ]
+              },
+              "content": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "style_douyin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "user_authored": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "likes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "dislikes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tone_keywords": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "hook_style": {
+              "type": "string"
+            },
+            "pacing": {
+              "type": "string"
+            },
+            "caption_style": {
+              "type": "string"
+            },
+            "language_style": {
+              "type": "string"
+            },
+            "visual_style": {
+              "type": "string"
+            },
+            "cta_preference": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "agent_observed": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "hook_style": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "pacing": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "caption_style": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "language_style": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "visual_style": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "cta_preference": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "confirmed_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    },
+    "template_variety": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "runtime_min",
+        "premise",
+        "cast_roles",
+        "segments",
+        "recurring_bits",
+        "audience_hook"
+      ],
+      "additionalProperties": false,
+      "x-indexed-fields": [
+        "runtime_min",
+        "premise",
+        "audience_hook"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "runtime_min": {
+          "type": "integer",
+          "minimum": 15,
+          "maximum": 120
+        },
+        "premise": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cast_roles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "role_name",
+              "vibe",
+              "function"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "role_name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "vibe": {
+                "type": "string"
+              },
+              "function": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "segments": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "type": "object",
+            "required": [
+              "no",
+              "type",
+              "duration_min",
+              "goal",
+              "beat_outline",
+              "host_prompt",
+              "guest_action"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "no": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "opening",
+                  "game",
+                  "talk",
+                  "challenge",
+                  "reveal",
+                  "conflict",
+                  "emotional",
+                  "closing"
+                ]
+              },
+              "duration_min": {
+                "type": "number",
+                "minimum": 0.5
+              },
+              "goal": {
+                "type": "string",
+                "minLength": 1
+              },
+              "beat_outline": {
+                "type": "string",
+                "minLength": 1
+              },
+              "host_prompt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "guest_action": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "recurring_bits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "audience_hook": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tone": {
+          "type": "string"
+        },
+        "production_notes": {
+          "type": "string"
+        },
+        "risk_notes": {
+          "type": "string"
+        }
+      }
+    },
+    "story_variety": {
+      "type": "object",
+      "required": [
+        "id",
+        "template_id",
+        "outline"
+      ],
+      "additionalProperties": false,
+      "x-indexed-fields": [
+        "template_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "template_id": {
+          "type": "string"
+        },
+        "outline": {
+          "type": "object",
+          "required": [
+            "runtime_min",
+            "premise",
+            "cast_roles",
+            "segments",
+            "recurring_bits",
+            "audience_hook"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "runtime_min": {
+              "type": "integer",
+              "minimum": 15,
+              "maximum": 120
+            },
+            "premise": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cast_roles": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "role_name",
+                  "vibe",
+                  "function"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "role_name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "vibe": {
+                    "type": "string"
+                  },
+                  "function": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "segments": {
+              "type": "array",
+              "minItems": 3,
+              "items": {
+                "type": "object",
+                "required": [
+                  "no",
+                  "type",
+                  "duration_min",
+                  "goal",
+                  "beat_outline",
+                  "host_prompt",
+                  "guest_action"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "no": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "opening",
+                      "game",
+                      "talk",
+                      "challenge",
+                      "reveal",
+                      "conflict",
+                      "emotional",
+                      "closing"
+                    ]
+                  },
+                  "duration_min": {
+                    "type": "number",
+                    "minimum": 0.5
+                  },
+                  "goal": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "beat_outline": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "host_prompt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "guest_action": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "recurring_bits": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "audience_hook": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "fragments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "type",
+              "content"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "run_of_show",
+                  "host_script",
+                  "game_rules",
+                  "guest_brief",
+                  "edit_notes"
+                ]
+              },
+              "content": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "style_variety": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "user_authored": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "likes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "dislikes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tone_keywords": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "host_voice": {
+              "type": "string"
+            },
+            "pacing": {
+              "type": "string"
+            },
+            "humor_style": {
+              "type": "string"
+            },
+            "conflict_boundary": {
+              "type": "string"
+            },
+            "audience_interaction": {
+              "type": "string"
+            },
+            "emotional_depth": {
+              "type": "string"
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "agent_observed": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "host_voice": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "pacing": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "humor_style": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "conflict_boundary": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "audience_interaction": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "emotional_depth": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "confirmed_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  },
+  "system_prompts": {
+    "create_from_template": {
+      "prompt_path": "seeds/prompts/create_from_template.md"
+    },
+    "style_observe": {
+      "prompt_path": "seeds/prompts/style_observe.md"
+    },
+    "style_user_write": {
+      "prompt_path": "seeds/prompts/style_user_write.md"
+    },
+    "style_refine_user_write": {
+      "prompt_path": "seeds/prompts/style_refine_user_write.md"
+    },
+    "optimize_from_template": {
+      "prompt_path": "seeds/prompts/optimize_from_template.md"
+    },
+    "extract_template_from_draft": {
+      "prompt_path": "seeds/prompts/extract_template_from_draft.md"
+    }
+  },
+  "background_triggers": [
+    {
+      "name": "style_observe_after_stories",
+      "fires_on": {
+        "type": "after_structured_upsert",
+        "record_type": "story_short_drama"
+      },
+      "throttle": {
+        "min_records_since_last_fire": 3,
+        "min_interval": "10m"
+      },
+      "action": {
+        "system_prompt_id": "style_observe"
+      }
+    },
+    {
+      "name": "style_observe_after_lianxian_stories",
+      "fires_on": {
+        "type": "after_structured_upsert",
+        "record_type": "story_lianxian"
+      },
+      "throttle": {
+        "min_records_since_last_fire": 3,
+        "min_interval": "10m"
+      },
+      "action": {
+        "system_prompt_id": "style_observe"
+      }
+    },
+    {
+      "name": "style_observe_after_douyin_stories",
+      "fires_on": {
+        "type": "after_structured_upsert",
+        "record_type": "story_douyin"
+      },
+      "throttle": {
+        "min_records_since_last_fire": 3,
+        "min_interval": "10m"
+      },
+      "action": {
+        "system_prompt_id": "style_observe"
+      }
+    },
+    {
+      "name": "style_observe_after_variety_stories",
+      "fires_on": {
+        "type": "after_structured_upsert",
+        "record_type": "story_variety"
+      },
+      "throttle": {
+        "min_records_since_last_fire": 3,
+        "min_interval": "10m"
+      },
+      "action": {
+        "system_prompt_id": "style_observe"
+      }
+    }
+  ],
+  "read_only_allowlist": [
+    "structured.get",
+    "structured.list",
+    "structured.query"
+  ]
+}

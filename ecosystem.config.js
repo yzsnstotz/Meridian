@@ -1,7 +1,9 @@
 const path = require("node:path");
+const { resolveMeridianPaths } = require("@meridian/contracts");
 
-const LOG_DIR = process.env.LOG_DIR || "/var/log/hub";
-const HUB_SOCKET_PATH = process.env.HUB_SOCKET_PATH || "/tmp/hub-socks/hub-core.sock";
+const meridianPaths = resolveMeridianPaths();
+const LOG_DIR = process.env.LOG_DIR || meridianPaths.logDir;
+const HUB_SOCKET_PATH = process.env.HUB_SOCKET_PATH || meridianPaths.hubSocketPath;
 const ROOT_DIR = __dirname;
 
 const baseApp = {
@@ -28,28 +30,28 @@ module.exports = {
     {
       ...baseApp,
       name: "calling-hub",
-      script: "./dist/hub/index.js",
+      script: "./packages/runtime/dist/hub/index.js",
       out_file: path.join(LOG_DIR, "hub.log"),
       error_file: path.join(LOG_DIR, "hub-error.log")
     },
     {
       ...baseApp,
       name: "calling-interface",
-      script: "./dist/interface/index.js",
+      script: "./packages/runtime/dist/interface/index.js",
       out_file: path.join(LOG_DIR, "interface.log"),
       error_file: path.join(LOG_DIR, "interface-error.log")
     },
     {
       ...baseApp,
       name: "calling-monitor",
-      script: "./dist/monitor/index.js",
+      script: "./packages/runtime/dist/monitor/index.js",
       out_file: path.join(LOG_DIR, "monitor.log"),
       error_file: path.join(LOG_DIR, "monitor-error.log")
     },
     {
       ...baseApp,
       name: "calling-web",
-      script: "./dist/web/server.js",
+      script: "./packages/runtime/dist/web/server.js",
       out_file: path.join(LOG_DIR, "web.log"),
       error_file: path.join(LOG_DIR, "web-error.log")
     }

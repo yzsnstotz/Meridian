@@ -10,11 +10,13 @@ x-meridian-common: &meridian-common
   environment:
     NODE_ENV: production
     LOG_LEVEL: ${LOG_LEVEL:-info}
-    LOG_DIR: /var/log/hub
-    HUB_SOCKET_PATH: /tmp/hub-socks/hub-core.sock
+    MERIDIAN_STATE_DIR: /var/lib/meridian
+    MERIDIAN_RUNTIME_DIR: /run/meridian
+    LOG_DIR: /var/lib/meridian/logs
+    HUB_SOCKET_PATH: /run/meridian/sockets/hub-core.sock
   volumes:
-    - /tmp/hub-socks:/tmp/hub-socks
-    - /var/log/hub:/var/log/hub
+    - meridian-state:/var/lib/meridian
+    - meridian-runtime:/run/meridian
   restart: unless-stopped
 
 services:
@@ -38,3 +40,7 @@ services:
       - hub
     profiles:
       - monitor
+
+volumes:
+  meridian-state:
+  meridian-runtime:

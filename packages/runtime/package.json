@@ -1,0 +1,39 @@
+{
+  "name": "@meridian/runtime",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    }
+  },
+  "engines": {
+    "node": "^22.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && rm -rf dist/web/public && cp -r src/web/public dist/web/public",
+    "start:hub": "tsx src/hub/index.ts",
+    "start:interface": "tsx src/interface/index.ts",
+    "start:monitor": "tsx src/monitor/index.ts",
+    "start:web": "tsx src/web/server.ts",
+    "test": "TELEGRAM_BOT_TOKEN=123456789:test_token ALLOWED_USER_IDS=123456789 MERIDIAN_DISABLE_WEB_AUTOSTART=true node --test --test-force-exit --import tsx src/**/*.test.ts",
+    "test:integration": "TELEGRAM_BOT_TOKEN=123456789:test_token ALLOWED_USER_IDS=123456789 MERIDIAN_DISABLE_WEB_AUTOSTART=true node --test --import tsx tests/integration/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@grammyjs/types": "^3.23.0",
+    "@meridian/contracts": "1.0.0",
+    "dotenv": "^17.2.3",
+    "eventsource": "^4.0.0",
+    "grammy": "^1.41.1",
+    "pino": "^10.1.0",
+    "zod": "^4.1.11"
+  }
+}

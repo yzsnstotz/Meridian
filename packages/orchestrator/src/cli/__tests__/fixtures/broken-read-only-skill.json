@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "layers": "flat",
+  "index": "none",
+  "bindings": {},
+  "record_schemas": {
+    "template_short_drama": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" }
+      }
+    }
+  },
+  "read_only_allowlist": ["structured.missing"]
+}

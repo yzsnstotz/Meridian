@@ -1,0 +1,492 @@
+#!/usr/bin/env bash
+# Rebuild and restart meridian-roles from this repo (no hard-coded paths).
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+LOG_DIR="$ROOT_DIR/logs"
+PID_FILE="$LOG_DIR/meridian-roles.pid"
+RUN_LOG="$LOG_DIR/meridian-roles.out.log"
+GUI_PORT="${GUI_PORT:-7701}"
+GUI_LISTEN_HOST="${GUI_LISTEN_HOST:-0.0.0.0}"
+ROLES_SOCKET_PATH="${ROLES_SOCKET_PATH:-/tmp/meridian-roles.sock}"
+PM2_APP_NAME="${PM2_APP_NAME:-meridian-roles}"
+
+mkdir -p "$LOG_DIR"
+
+cd "$ROOT_DIR"
+
+echo "meridian-roles rebuild_restart: ROOT_DIR=$ROOT_DIR" >&2
+echo "meridian-roles rebuild_restart: CWD=$(pwd) USER=$(id -un) UID=$(id -u) GID=$(id -g)" >&2
+echo "meridian-roles rebuild_restart: node=$(command -v node 2>/dev/null || echo MISSING) npm=$(command -v npm 2>/dev/null || echo MISSING)" >&2
+echo "meridian-roles rebuild_restart: node_version=$(node -v 2>/dev/null || echo MISSING) npm_version=$(npm -v 2>/dev/null || echo MISSING)" >&2
+
+find_pm2_binary() {
+  local candidate
+  if candidate="$(command -v pm2 2>/dev/null)" && [[ -n "${candidate}" ]]; then
+    printf '%s' "${candidate}"
+    return 0
+  fi
+  # Do not glob fnm_multishells; that directory can accumulate thousands of
+  # entries and freeze maintenance scripts under a minimal launchd PATH.
+  for candidate in \
+    "${HOME}/.local/share/fnm/node-versions"/*/installation/bin/pm2 \
+    /opt/homebrew/bin/pm2 \
+    /usr/local/bin/pm2 \
+    /usr/bin/pm2; do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+pm2_daemon_running() {
+  pgrep -f 'PM2.*ProcessContainerFork\.js' >/dev/null 2>&1 ||
+    pgrep -f 'PM2 v.*: God Daemon' >/dev/null 2>&1
+}
+
+PM2_BIN="$(find_pm2_binary || true)"
+if [[ -z "${PM2_BIN}" ]] && pm2_daemon_running; then
+  echo "meridian-roles rebuild_restart: WARNING PM2 daemon is running but pm2 binary is not on PATH or fallback paths" >&2
+fi
+
+sync_origin_main() {
+  if [[ "${MERIDIAN_ROLES_REBUILD_SKIP_GIT_SYNC:-}" == "1" ]]; then
+    echo "meridian-roles rebuild_restart: skipping origin/main sync (MERIDIAN_ROLES_REBUILD_SKIP_GIT_SYNC=1)" >&2
+    return 0
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    echo "git is required to sync origin/main before rebuilding meridian-roles" >&2
+    exit 1
+  fi
+
+  git rev-parse --is-inside-work-tree >/dev/null
+
+  local dirty
+  dirty="$(git status --porcelain --untracked-files=no)"
+  if [[ -n "${dirty}" ]]; then
+    echo "Refusing to rebuild meridian-roles from a tracked-dirty checkout; source must be origin/main." >&2
+    printf '%s\n' "${dirty}" >&2
+    exit 1
+  fi
+
+  local before target after
+  before="$(git rev-parse HEAD)"
+
+  echo "meridian-roles rebuild_restart: fetching origin/main" >&2
+  git fetch origin main --prune
+  target="$(git rev-parse FETCH_HEAD)"
+  git merge --ff-only FETCH_HEAD
+  after="$(git rev-parse HEAD)"
+
+  if [[ "${after}" != "${target}" ]]; then
+    echo "Refusing to rebuild meridian-roles: HEAD ${after} does not match origin/main ${target}" >&2
+    exit 1
+  fi
+
+  dirty="$(git status --porcelain --untracked-files=no)"
+  if [[ -n "${dirty}" ]]; then
+    echo "Refusing to rebuild meridian-roles from a tracked-dirty checkout after origin/main sync." >&2
+    printf '%s\n' "${dirty}" >&2
+    exit 1
+  fi
+
+  if [[ "${before}" != "${after}" && "${MERIDIAN_ROLES_REBUILD_ORIGIN_MAIN_SYNCED:-}" != "1" ]]; then
+    echo "meridian-roles rebuild_restart: checkout updated to origin/main; re-executing rebuild script from the new source" >&2
+    export MERIDIAN_ROLES_REBUILD_ORIGIN_MAIN_SYNCED=1
+    exec "${ROOT_DIR}/user_scripts/rebuild_restart.sh" "$@"
+  fi
+
+  echo "meridian-roles rebuild_restart: source commit $(git rev-parse --short HEAD)" >&2
+}
+
+sync_origin_main "$@"
+
+RESET_STATE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --reset-state)
+      RESET_STATE=1
+      shift
+      ;;
+    -h|--help)
+      echo "Usage: ./user_scripts/rebuild_restart.sh [--reset-state]"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      echo "Usage: ./user_scripts/rebuild_restart.sh [--reset-state]" >&2
+      exit 1
+      ;;
+  esac
+done
+
+for env_file in "$ROOT_DIR/.env" "$ROOT_DIR/.env.local"; do
+  if [[ -f "$env_file" ]]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$env_file"
+    set +a
+  fi
+done
+
+# meridian-roles authenticates to the hub as a built-in caller; the bootstrap
+# secret used to derive caller_key lives in the Meridian repo's .env. Source it
+# from _meridian_hub (symlink to the Meridian checkout) when not already in env
+# so launches via this script work standalone.
+if [[ -z "${MERIDIAN_INTERNAL_BOOTSTRAP_KEY:-}" ]]; then
+  for hub_env in "$ROOT_DIR/_meridian_hub/.env" "$ROOT_DIR/_meridian_hub/.env.local"; do
+    if [[ -f "$hub_env" ]]; then
+      set -a
+      # shellcheck source=/dev/null
+      source "$hub_env"
+      set +a
+    fi
+  done
+fi
+
+export GUI_PORT
+export GUI_LISTEN_HOST
+export ROLES_SOCKET_PATH
+if [[ -n "${MERIDIAN_INTERNAL_BOOTSTRAP_KEY:-}" ]]; then
+  export MERIDIAN_INTERNAL_BOOTSTRAP_KEY
+fi
+
+resolve_state_file_path() {
+  if [[ -n "${STATE_FILE_PATH:-}" ]]; then
+    printf '%s\n' "${STATE_FILE_PATH}"
+    return 0
+  fi
+
+  local state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+  printf '%s\n' "${state_home}/meridian-roles/state.json"
+}
+
+reset_roles_state() {
+  local state_path legacy_state_path
+  state_path="$(resolve_state_file_path)"
+  legacy_state_path="/tmp/meridian-roles/state.json"
+
+  echo "Resetting meridian-roles state: ${state_path}"
+  rm -f "${state_path}" 2>/dev/null || true
+  if [[ "${state_path}" != "${legacy_state_path}" ]]; then
+    echo "Resetting legacy meridian-roles state: ${legacy_state_path}"
+    rm -f "${legacy_state_path}" 2>/dev/null || true
+  fi
+}
+
+service_launcher_is_alive() {
+  local pid="${1:-}"
+
+  if [[ -n "$pid" ]]; then
+    kill -0 "$pid" 2>/dev/null
+    return $?
+  fi
+
+  return 1
+}
+
+canonical_cwd() {
+  local directory="$1"
+  (cd "$directory" 2>/dev/null && pwd -P) || true
+}
+
+process_cwd() {
+  local pid="$1"
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 0
+  fi
+  # timeout 5 guards against lsof blocking on a stuck mount.
+  timeout 5 lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
+}
+
+repo_owned_pids() {
+  local pid cwd canonical canonical_lower root_lower
+  root_lower="$(printf '%s' "$ROOT_DIR" | tr '[:upper:]' '[:lower:]')"
+  for pid in "$@"; do
+    [[ -n "$pid" ]] || continue
+    cwd="$(process_cwd "$pid")"
+    canonical="$(canonical_cwd "$cwd")"
+    canonical_lower="$(printf '%s' "$canonical" | tr '[:upper:]' '[:lower:]')"
+    if [[ -n "$canonical" && "$canonical_lower" == "$root_lower" ]]; then
+      printf '%s\n' "$pid"
+    fi
+  done
+}
+
+# Lists PIDs whose argv references this repo's runtime — directly via an
+# absolute entrypoint path ("${ROOT_DIR}/dist/index.js"), or via a relative
+# argv whose cwd resolves to "${ROOT_DIR}". Mirrors Meridian's
+# user_scripts/restart.sh::runtime_pids_for_service. The old pgrep regex
+# missed relative `npm start` and `node dist/index.js` children, so the
+# pre-rebuild kill step was a no-op and the new process hit EADDRINUSE.
+runtime_pids_for_service() {
+  local npm_script="$1"
+  shift
+
+  local pid command cwd entrypoint matched
+  while read -r pid command; do
+    [[ -z "${pid}" || -z "${command}" ]] && continue
+
+    matched=0
+    for entrypoint in "$@"; do
+      if [[ "${command}" == *"${ROOT_DIR}/${entrypoint}"* ]]; then
+        matched=1
+        break
+      fi
+
+      if [[ "${command}" == *" ${entrypoint}"* || "${command}" == "${entrypoint}"* ]]; then
+        cwd="$(process_cwd "${pid}")"
+        if [[ "${cwd}" == "${ROOT_DIR}" ]]; then
+          matched=1
+          break
+        fi
+      fi
+    done
+
+    if [[ "${matched}" -eq 0 ]] &&
+       [[ "${command}" == *"npm run ${npm_script}"* || "${command}" == *"npm ${npm_script}"* ]]; then
+      cwd="$(process_cwd "${pid}")"
+      if [[ "${cwd}" == "${ROOT_DIR}" ]]; then
+        matched=1
+      fi
+    fi
+
+    if [[ "${matched}" -eq 1 ]]; then
+      printf '%s\n' "${pid}"
+    fi
+  done < <(ps -axo pid=,command=) | sort -u
+}
+
+kill_runtime_service() {
+  local label="$1"
+  local npm_script="$2"
+  shift 2
+
+  local pids
+  pids="$(runtime_pids_for_service "${npm_script}" "$@" || true)"
+  if [[ -n "${pids}" ]]; then
+    # kill_pids already prints "Stopping ${label}: ${pids}" — don't double-log.
+    kill_pids "${label}" ${pids}
+  fi
+}
+
+delete_pm2_service() {
+  if [[ -z "${PM2_BIN}" ]]; then
+    return 0
+  fi
+
+  "${PM2_BIN}" delete "${PM2_APP_NAME}" >/dev/null 2>&1 || true
+}
+
+pm2_service_pid() {
+  if [[ -z "${PM2_BIN}" ]]; then
+    return 0
+  fi
+
+  local pid
+  pid="$("${PM2_BIN}" pid "${PM2_APP_NAME}" 2>/dev/null || true)"
+  if [[ "${pid}" =~ ^[0-9]+$ ]] && [[ "${pid}" != "0" ]]; then
+    printf '%s\n' "${pid}"
+  fi
+}
+
+pm2_service_is_alive() {
+  local pid
+  pid="$(pm2_service_pid)"
+  [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null
+}
+
+start_service() {
+  if [[ -n "${PM2_BIN}" ]] && "${PM2_BIN}" ping >/dev/null 2>&1; then
+    echo "Starting meridian-roles with PM2 (${PM2_BIN})..."
+    (
+      cd "$ROOT_DIR"
+      "${PM2_BIN}" start npm --name "${PM2_APP_NAME}" --cwd "$ROOT_DIR" -- start >/dev/null
+    )
+    launch_mode="pm2"
+    new_pid="$(pm2_service_pid)"
+    return 0
+  fi
+
+  echo "Starting meridian-roles with nohup fallback..."
+  nohup "${START_CMD[@]}" < /dev/null >> "$RUN_LOG" 2>&1 &
+  new_pid=$!
+  launch_mode="nohup"
+}
+
+find_repo_port_listener_pids() {
+  local pids
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 0
+  fi
+  pids="$(lsof -tiTCP:"${GUI_PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -n "$pids" ]]; then
+    repo_owned_pids ${pids}
+  fi
+}
+
+kill_pids() {
+  local label="$1"
+  shift
+  local pids=("$@")
+  if [[ "${#pids[@]}" -eq 0 ]]; then
+    return 0
+  fi
+  echo "Stopping ${label}: ${pids[*]}"
+  kill "${pids[@]}" 2>/dev/null || true
+  sleep 1
+  kill -9 "${pids[@]}" 2>/dev/null || true
+}
+
+kill_repo_port_listeners() {
+  local pids
+  pids="$(find_repo_port_listener_pids)"
+  if [[ -n "$pids" ]]; then
+    kill_pids "repo-owned meridian-roles listener(s) on port ${GUI_PORT}" ${pids}
+  fi
+}
+
+if [[ -f "$PID_FILE" ]]; then
+  old_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  if [[ -n "${old_pid}" ]] && kill -0 "${old_pid}" 2>/dev/null; then
+    echo "Stopping existing meridian-roles process (pid=${old_pid})..."
+    kill "${old_pid}" || true
+    # Best-effort: stop any immediate children (npm -> node/tsx) to avoid orphans.
+    if command -v pgrep >/dev/null 2>&1; then
+      child_pids="$(pgrep -P "${old_pid}" 2>/dev/null || true)"
+      if [[ -n "${child_pids}" ]]; then
+        echo "Stopping child processes: ${child_pids}"
+        kill ${child_pids} 2>/dev/null || true
+      fi
+    fi
+    sleep 1
+    if kill -0 "${old_pid}" 2>/dev/null; then
+      echo "Process still alive, sending SIGKILL (pid=${old_pid})..."
+      kill -9 "${old_pid}" || true
+    fi
+  fi
+  rm -f "$PID_FILE"
+fi
+
+# Identify processes by cwd, not by argv-substring. `npm start` and the
+# `node dist/index.js` it spawns both run with cwd=${ROOT_DIR} but neither has
+# an absolute ROOT_DIR in argv — a pgrep regex would silently miss them and
+# the next `npm start` below would hit EADDRINUSE on port 7701.
+delete_pm2_service
+kill_runtime_service "meridian-roles" "start" "src/index.ts" "dist/index.js"
+kill_repo_port_listeners
+
+echo "Cleaning stale socket: ${ROLES_SOCKET_PATH}"
+rm -f "${ROLES_SOCKET_PATH}" 2>/dev/null || true
+if [[ "${RESET_STATE}" -eq 1 ]]; then
+  reset_roles_state
+else
+  echo "Preserving meridian-roles state: $(resolve_state_file_path)"
+fi
+
+# Install / refresh node_modules. The Maintenance Hub "Rebuild & restart"
+# button at http://127.0.0.1:8765/ is the entry point operators use after a
+# fresh git pull, so the script has to make sure node_modules matches
+# package-lock.json — not just that node_modules exists. On 2026-05-20 PR #263
+# (chatter manifest schema) added `import Ajv2020 from "ajv/dist/2020"` and
+# bumped package-lock.json to ajv@8.20.0, but the operator's node_modules
+# still had the pre-merge ajv@6.14.0 hoisted from eslint. The "exists"-only
+# guard skipped `npm ci`, `tsc -p tsconfig.json` failed at
+# `error TS2307: Cannot find module 'ajv/dist/2020'`, and rebuild_restart
+# bailed out before re-launching the service.
+#
+# npm writes node_modules/.package-lock.json on every install (npm 7+);
+# comparing its mtime to package-lock.json detects a stale tree without
+# paying for `npm ls --depth=0` on every restart.
+if [[ ! -d "$ROOT_DIR/node_modules" ]]; then
+  echo "node_modules missing; installing dependencies via npm ci..."
+  npm ci
+elif [[ -f "$ROOT_DIR/package-lock.json" ]] && \
+     { [[ ! -f "$ROOT_DIR/node_modules/.package-lock.json" ]] || \
+       [[ "$ROOT_DIR/package-lock.json" -nt "$ROOT_DIR/node_modules/.package-lock.json" ]]; }; then
+  echo "package-lock.json is newer than node_modules/.package-lock.json; syncing via npm ci..."
+  npm ci
+fi
+
+echo "Building meridian-roles..."
+npm run build
+
+START_CMD=(npm start)
+new_pid=""
+launch_mode=""
+
+echo "meridian-roles rebuild_restart: listen_host=${GUI_LISTEN_HOST} gui_port=${GUI_PORT} socket=${ROLES_SOCKET_PATH}" >&2
+echo "meridian-roles rebuild_restart: start_command=${START_CMD[*]}" >&2
+
+start_service
+
+if [[ -n "$new_pid" ]]; then
+  echo "$new_pid" > "$PID_FILE"
+else
+  rm -f "$PID_FILE"
+fi
+
+echo "Waiting for meridian-roles to become healthy (http://127.0.0.1:${GUI_PORT}/, socket: ${ROLES_SOCKET_PATH})..."
+echo "meridian-roles rebuild_restart: launch_mode=${launch_mode}${new_pid:+ pid=${new_pid}}" >&2
+
+healthy="false"
+healthy_streak=0
+# Cold start (tsx + Hub probes + reconciliation) can exceed 30s; killing the service on a tight
+# timeout makes Telegram /restart look like "7701 never came up".
+HEALTH_MAX_ATTEMPTS="${HEALTH_MAX_ATTEMPTS:-90}"
+HEALTH_STREAK_REQUIRED="${HEALTH_STREAK_REQUIRED:-3}"
+for _ in $(seq 1 "${HEALTH_MAX_ATTEMPTS}"); do
+  launcher_alive="true"
+  if [[ "${launch_mode}" == "pm2" ]]; then
+    if ! pm2_service_is_alive; then
+      launcher_alive="false"
+    fi
+  elif ! service_launcher_is_alive "$new_pid"; then
+    launcher_alive="false"
+  fi
+
+  if command -v curl >/dev/null 2>&1 && curl -fsS --max-time 1 "http://127.0.0.1:${GUI_PORT}/" >/dev/null 2>&1; then
+    if [[ -S "${ROLES_SOCKET_PATH}" ]]; then
+      healthy_streak=$((healthy_streak + 1))
+      if [[ "$healthy_streak" -ge "${HEALTH_STREAK_REQUIRED}" ]]; then
+        healthy="true"
+        break
+      fi
+    else
+      healthy_streak=0
+    fi
+  else
+    healthy_streak=0
+  fi
+
+  if [[ "$launcher_alive" == "false" ]] && [[ -z "$(find_repo_port_listener_pids)" ]]; then
+    break
+  fi
+
+  sleep 1
+done
+
+if [[ "${healthy}" == "true" ]]; then
+  actual_pid="$(find_repo_port_listener_pids | head -n 1)"
+  if [[ -n "${actual_pid}" ]]; then
+    new_pid="$actual_pid"
+    printf '%s\n' "$new_pid" > "$PID_FILE"
+  fi
+  echo "meridian-roles restarted successfully."
+  echo "PID: $new_pid"
+  echo "Log: $RUN_LOG"
+  exit 0
+fi
+
+echo "Failed to start meridian-roles (health check did not pass). Check log: $RUN_LOG" >&2
+kill_repo_port_listeners
+if [[ -f "$RUN_LOG" ]]; then
+  echo "--- last 200 lines of $RUN_LOG ---" >&2
+  tail -n 200 "$RUN_LOG" >&2 || true
+  echo "--- end log ---" >&2
+fi
+exit 1

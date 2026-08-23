@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Config Editor — meridian-roles</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script defer src="/app.js"></script>
+  </head>
+  <body data-page="config-editor">
+    <nav class="global-nav">
+      <a class="nav-brand" href="/">
+        <span class="nav-brand-mark">M</span>
+        meridian-roles
+      </a>
+      <div class="nav-tabs">
+        <a class="nav-tab" href="/">Dispatchers</a>
+        <a class="nav-tab" href="/?tab=processes">Processes</a>
+        <a class="nav-tab" href="/monitor">System Monitor<span id="nav-monitor-red-dot" class="nav-tab-leak-dot" hidden title="system monitor has a red indicator"></span></a>
+        <a class="nav-tab" href="/">Schedulers</a>
+        <a class="nav-tab" href="/">Roles</a>
+      </div>
+    </nav>
+
+    <main class="shell">
+      <section class="hero hero-compact">
+        <a id="config-detail-link" class="back-link" href="/">← Role Detail</a>
+        <p class="eyebrow">Config Editor</p>
+        <h1 id="config-title">Loading config...</h1>
+        <p id="config-lede" class="lede">Edit dispatcher JSON for `tasks` and `taskspec`. Prompt content stays on the prompt editor.</p>
+      </section>
+
+      <section class="panel panel-form">
+        <div class="panel-heading">
+          <h2 id="config-section-title">Dispatch Plan JSON</h2>
+          <p id="config-status" class="muted">Only tasks and taskspec are editable here. Runtime task fields are reset on save.</p>
+        </div>
+        <form id="config-form" class="stack">
+          <!-- Structured fields for agent-dispatcher config -->
+          <div id="config-fields" hidden>
+            <div class="summary-grid">
+              <label class="field">
+                <span>dispatch_plan_path</span>
+                <input id="cfg-dispatch-plan-path" type="text" />
+              </label>
+              <label class="field">
+                <span>command_file_path</span>
+                <input id="cfg-command-file-path" type="text" />
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>dispatch_repo_root</span>
+                <input id="cfg-dispatch-repo-root" type="text" readonly />
+              </label>
+              <label class="field">
+                <span>docs_root</span>
+                <input id="cfg-docs-root" type="text" readonly />
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>agent_type</span>
+                <select id="cfg-agent-type">
+                  <option value="claude">claude</option>
+                  <option value="codex">codex</option>
+                  <option value="gemini">gemini</option>
+                  <option value="cursor">cursor</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>model_id</span>
+                <select id="cfg-model-id" data-model-select>
+                  <option value="">(provider default)</option>
+                  <optgroup label="codex">
+                    <option value="gpt-5.2-codex">codex: gpt-5.2-codex</option>
+                    <option value="gpt-5.3-codex">codex: gpt-5.3-codex</option>
+                    <option value="gpt-5.4">codex: gpt-5.4</option>
+                    <option value="gpt-5.4 medium">codex: gpt-5.4 medium</option>
+                    <option value="gpt-5.4 high">codex: gpt-5.4 high</option>
+                    <option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>
+                    <option value="gpt-5.5 medium">codex: gpt-5.5 medium</option>
+                    <option value="gpt-5.5 high">codex: gpt-5.5 high</option>
+                    <option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>
+                    <option value="codex-5.3-max">codex: codex-5.3-max</option>
+                  </optgroup>
+                  <optgroup label="claude">
+                    <option value="claude-opus-4-7">claude: claude-opus-4-7</option>
+                    <option value="claude-opus-4-6">claude: claude-opus-4-6</option>
+                    <option value="claude-sonnet-4-6">claude: claude-sonnet-4-6</option>
+                  </optgroup>
+                  <optgroup label="gemini">
+                    <option value="gemini-2.5-pro">gemini: gemini-2.5-pro</option>
+                  </optgroup>
+                </select>
+              </label>
+              <label class="field">
+                <span>mode</span>
+                <select id="cfg-mode">
+                  <option value="bridge">bridge</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Credential</span>
+                <select id="cfg-credential-id" name="credential_id" data-credential-select>
+                  <option value="">Use default codex login (~/.codex)</option>
+                </select>
+                <small class="field-hint muted">
+                  Overrides the credential set forwarded to /api/spawn. Leave default
+                  unless an operator-issued credential is required.
+                </small>
+              </label>
+            </div>
+            <div class="summary-grid">
+              <label class="field">
+                <span>kill_policy</span>
+                <select id="cfg-kill-policy">
+                  <option value="always">always</option>
+                  <option value="on_success">on_success</option>
+                  <option value="never">never</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>auto_approve</span>
+                <select id="cfg-auto-approve">
+                  <option value="false">false</option>
+                  <option value="true">true</option>
+                </select>
+              </label>
+            </div>
+            <fieldset class="field-group">
+              <legend>Parallel Dispatch</legend>
+              <div class="summary-grid">
+                <label class="field">
+                  <span>enabled</span>
+                  <select id="cfg-parallel-enabled">
+                    <option value="false">false</option>
+                    <option value="true">true</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>max_concurrency</span>
+                  <input id="cfg-parallel-max-concurrency" type="number" min="1" max="32" step="1" value="1" />
+                </label>
+              </div>
+            </fieldset>
+            <label class="field">
+              <span>user_reply_channels</span>
+              <textarea id="cfg-reply-channels" class="editor-textarea" rows="4" readonly style="min-height: 80px"></textarea>
+            </label>
+
+            <fieldset class="field-group">
+              <legend>Validator</legend>
+              <div class="summary-grid">
+                <label class="field">
+                  <span>enabled</span>
+                  <select id="cfg-validator-enabled">
+                    <option value="false">false</option>
+                    <option value="true">true</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>agent_type</span>
+                  <select id="cfg-validator-agent-type">
+                    <option value="codex">codex</option>
+                    <option value="claude">claude</option>
+                    <option value="gemini">gemini</option>
+                    <option value="cursor">cursor</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>mode</span>
+                  <select id="cfg-validator-mode">
+                    <option value="stateless_call">stateless_call</option>
+                    <option value="bridge">bridge</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>model_id</span>
+                  <select id="cfg-validator-model-id" data-model-select>
+                    <option value="">(provider default)</option>
+                    <optgroup label="codex">
+                      <option value="gpt-5.2-codex">codex: gpt-5.2-codex</option>
+                      <option value="gpt-5.3-codex">codex: gpt-5.3-codex</option>
+                      <option value="gpt-5.4">codex: gpt-5.4</option>
+                      <option value="gpt-5.4 medium">codex: gpt-5.4 medium</option>
+                      <option value="gpt-5.4 high">codex: gpt-5.4 high</option>
+                      <option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>
+                      <option value="gpt-5.5 medium">codex: gpt-5.5 medium</option>
+                      <option value="gpt-5.5 high">codex: gpt-5.5 high</option>
+                      <option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>
+                      <option value="codex-5.3-max">codex: codex-5.3-max</option>
+                    </optgroup>
+                    <optgroup label="claude">
+                      <option value="claude-opus-4-7">claude: claude-opus-4-7</option>
+                      <option value="claude-opus-4-6">claude: claude-opus-4-6</option>
+                      <option value="claude-sonnet-4-6">claude: claude-sonnet-4-6</option>
+                    </optgroup>
+                    <optgroup label="gemini">
+                      <option value="gemini-2.5-pro">gemini: gemini-2.5-pro</option>
+                    </optgroup>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>threshold_type</span>
+                  <select id="cfg-validator-threshold-type">
+                    <option value="score">score</option>
+                    <option value="binary">binary</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Override credential</span>
+                  <select id="cfg-validator-credential-id" name="validator_credential_id" data-credential-select>
+                    <option value="">Use default codex login (~/.codex)</option>
+                  </select>
+                </label>
+              </div>
+              <div class="summary-grid">
+                <label class="field">
+                  <span>pass_threshold</span>
+                  <input id="cfg-validator-pass-threshold" type="number" min="0" max="1" step="0.05" value="0.7" />
+                </label>
+                <label class="field">
+                  <span>max_fix_cycles</span>
+                  <input id="cfg-validator-max-fix-cycles" type="number" min="0" max="10" step="1" value="3" />
+                </label>
+                <label class="field">
+                  <span>base_branch</span>
+                  <input id="cfg-validator-base-branch" type="text" value="main" />
+                </label>
+              </div>
+            </fieldset>
+            <fieldset class="field-group">
+              <legend>PM Resolver</legend>
+              <div class="summary-grid">
+                <label class="field">
+                  <span>enabled</span>
+                  <select id="cfg-pm-enabled">
+                    <option value="false">false</option>
+                    <option value="true">true</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>agent_type</span>
+                  <select id="cfg-pm-agent-type">
+                    <option value="codex">codex</option>
+                    <option value="claude">claude</option>
+                    <option value="gemini">gemini</option>
+                    <option value="cursor">cursor</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>mode</span>
+                  <select id="cfg-pm-mode">
+                    <option value="bridge">bridge</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>model_id</span>
+                  <select id="cfg-pm-model-id" data-model-select>
+                    <option value="">(provider default)</option>
+                    <optgroup label="codex">
+                      <option value="gpt-5.2-codex">codex: gpt-5.2-codex</option>
+                      <option value="gpt-5.3-codex">codex: gpt-5.3-codex</option>
+                      <option value="gpt-5.4">codex: gpt-5.4</option>
+                      <option value="gpt-5.4 medium">codex: gpt-5.4 medium</option>
+                      <option value="gpt-5.4 high">codex: gpt-5.4 high</option>
+                      <option value="gpt-5.4 xhigh">codex: gpt-5.4 xhigh</option>
+                      <option value="gpt-5.5 medium">codex: gpt-5.5 medium</option>
+                      <option value="gpt-5.5 high">codex: gpt-5.5 high</option>
+                      <option value="gpt-5.5 xhigh">codex: gpt-5.5 xhigh</option>
+                      <option value="codex-5.3-max">codex: codex-5.3-max</option>
+                    </optgroup>
+                    <optgroup label="claude">
+                      <option value="claude-opus-4-7">claude: claude-opus-4-7</option>
+                      <option value="claude-opus-4-6">claude: claude-opus-4-6</option>
+                      <option value="claude-sonnet-4-6">claude: claude-sonnet-4-6</option>
+                    </optgroup>
+                    <optgroup label="gemini">
+                      <option value="gemini-2.5-pro">gemini: gemini-2.5-pro</option>
+                    </optgroup>
+                  </select>
+                </label>
+              </div>
+              <div class="summary-grid">
+                <label class="field">
+                  <span>auto_approve</span>
+                  <select id="cfg-pm-auto-approve">
+                    <option value="false">false</option>
+                    <option value="true">true</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Override credential</span>
+                  <select id="cfg-pm-credential-id" name="pm_credential_id" data-credential-select>
+                    <option value="">Use default codex login (~/.codex)</option>
+                  </select>
+                </label>
+                <label class="field field-wide">
+                  <span>user_reply_channels</span>
+                  <textarea id="cfg-pm-reply-channels" class="editor-textarea" rows="3" placeholder="Blank inherits dispatcher channels"></textarea>
+                </label>
+              </div>
+            </fieldset>
+          </div>
+          <!-- Fallback raw JSON textarea for non-agent-dispatcher configs -->
+          <label class="field" id="config-raw-field">
+            <span>dispatcher_config</span>
+            <textarea id="config-input" class="editor-textarea" rows="18" spellcheck="false"></textarea>
+          </label>
+          <div class="actions">
+            <button id="config-save-button" type="submit" class="primary-button">Save Config</button>
+            <p id="config-feedback" class="feedback" role="status" aria-live="polite"></p>
+          </div>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

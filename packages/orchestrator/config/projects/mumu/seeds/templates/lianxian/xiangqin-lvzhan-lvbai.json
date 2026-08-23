@@ -1,0 +1,16 @@
+{
+  "id": "xiangqin-lvzhan-lvbai",
+  "title": "相亲屡战屡败型",
+  "overall_arc": "从连线人反复相亲失败的挫败感切入，拆解标准、表达方式和筛选渠道，帮助主播把焦虑从“我是不是没人要”转成“我是否在用错误方式筛选对的人”。",
+  "typical_duration_min": 16,
+  "segment_pattern": [
+    { "no": 1, "type": "hook", "duration_min": 2, "purpose": "用一次离谱相亲经历开场，先让直播间笑出来。" },
+    { "no": 2, "type": "buildup", "duration_min": 4, "purpose": "梳理年龄、城市、收入期待、家庭压力和相亲渠道。" },
+    { "no": 3, "type": "conflict", "duration_min": 4, "purpose": "指出标准和表达的错位：想要稳定，却只展示焦虑。" },
+    { "no": 4, "type": "empathy_line", "duration_min": 2, "purpose": "把相亲疲惫说成正常反应，不让连线人自我贬低。" },
+    { "no": 5, "type": "interaction", "duration_min": 3, "purpose": "让观众补充相亲避雷点，带动弹幕经验池。" },
+    { "no": 6, "type": "closing", "duration_min": 1, "purpose": "给出下一次相亲前的三个筛选问题。" }
+  ],
+  "audience_note": "适合轻松但有实用建议的情感直播段落。",
+  "notes": "不要羞辱单身状态，重点是重建筛选策略。"
+}

@@ -1,0 +1,22 @@
+node_modules
+dist/
+*.tsbuildinfo
+*.js.map
+.env
+.env.local
+.env.bak*
+.meridian_n02/.env
+.DS_Store
+AGENT.md
+agent.md
+_meridian_hub
+logs/
+.worktrees/
+.claude/
+roles copy/
+
+# Ephemeral Hub dispatcher system prompt (written next to dispatch_plan.md)
+.meridian-roles-dispatcher-prompt-*.md
+
+# Ignore documentation directories
+**/docs/

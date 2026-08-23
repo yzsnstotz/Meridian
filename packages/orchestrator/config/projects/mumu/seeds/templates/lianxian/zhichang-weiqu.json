@@ -1,0 +1,16 @@
+{
+  "id": "zhichang-weiqu",
+  "title": "职场委屈倾诉型",
+  "overall_arc": "从连线人在职场被抢功、背锅或被领导情绪压榨切入，先接住委屈，再拆分事实证据、沟通窗口和离职成本，帮助主播把情绪倾诉转成下一步可执行的保护方案。",
+  "typical_duration_min": 20,
+  "segment_pattern": [
+    { "no": 1, "type": "hook", "duration_min": 2, "purpose": "用“方案是我写的，汇报人却不是我”开场，制造职场共鸣。" },
+    { "no": 2, "type": "buildup", "duration_min": 5, "purpose": "补齐岗位、事件时间线、证据留存、领导关系和连线人的现实顾虑。" },
+    { "no": 3, "type": "conflict", "duration_min": 5, "purpose": "区分一次性委屈、长期职场霸凌和能力曝光不足三个方向。" },
+    { "no": 4, "type": "empathy_line", "duration_min": 3, "purpose": "落一句“你难受的不只是被抢功，是努力被当成默认资源”。" },
+    { "no": 5, "type": "interaction", "duration_min": 3, "purpose": "让观众补充留证、汇报和向上沟通经验。" },
+    { "no": 6, "type": "closing", "duration_min": 2, "purpose": "给出三步：整理成果记录、约一次事实沟通、同步评估内部转岗或外部机会。" }
+  ],
+  "audience_note": "适合午休或晚间职场情绪场，能吸引非情感关系观众。",
+  "notes": "不要鼓励冲动裸辞；建议必须同时考虑证据、现金流和职业路径。"
+}
