@@ -112,7 +112,8 @@ const VALID_INSTANCE_STATUSES = new Set<AgentInstanceStatus>([
 ]);
 const DEFAULT_NODE_ENV = process.env.NODE_ENV ?? "development";
 const DEFAULT_LOG_DIR = process.env.LOG_DIR ?? "/var/log/hub";
-const DEFAULT_AGENT_WORKDIR = config.AGENT_WORKDIR;
+// Read on use, not at import — see the note in interface/index.ts.
+const defaultAgentWorkdir = () => config.AGENT_WORKDIR;
 const INTERRUPT_ESCAPE_SEQUENCE = "\u001b";
 const STATELESS_SOCKET_PREFIX = "stateless:";
 type SpawnStdioMode = "inherit" | ["ignore", number, number];
@@ -156,7 +157,7 @@ export class InstanceManager {
   ) {
     this.agentapiBinPath = options.agentapiBinPath ?? path.resolve(process.cwd(), "bin/agentapi");
     this.logDir = options.logDir ?? DEFAULT_LOG_DIR;
-    this.agentWorkdir = this.resolveWorkdir(options.agentWorkdir ?? DEFAULT_AGENT_WORKDIR);
+    this.agentWorkdir = this.resolveWorkdir(options.agentWorkdir ?? defaultAgentWorkdir());
     this.spawnFn = options.spawnFn ?? spawn;
     this.execSyncFn = options.execSyncFn ?? execSync;
     this.execAsyncFn = options.execAsyncFn ?? defaultExecAsyncFn;
