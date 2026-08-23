@@ -29,7 +29,10 @@ const interfaceLog = createLogger("interface");
 const SPAWN_TYPES: AgentType[] = ["claude", "codex", "gemini", "cursor"];
 const CALLBACK_PREFIX = "pk";
 const LIVE_INSTANCE_STATUSES = new Set<AgentInstance["status"]>(["idle", "running", "waiting"]);
-const SPAWN_DIR_ROOT = config.AGENT_WORKDIR;
+// Read on use, not at import: this module is pulled in by the CLI entry point,
+// so reading configuration here made `meridian --version` require a full
+// environment before it could print a version string.
+const spawnDirRoot = () => config.AGENT_WORKDIR;
 const SPAWN_DIR_MAX_BUTTONS = 24;
 const BROWSE_ROOT = process.cwd();
 const BROWSE_MAX_BUTTONS = 24;
@@ -346,7 +349,7 @@ function sanitizeCallbackToken(value: string): string {
 }
 
 function normalizeSpawnDirectory(candidate: string): string | null {
-  const resolvedRoot = path.resolve(SPAWN_DIR_ROOT);
+  const resolvedRoot = path.resolve(spawnDirRoot());
   const resolvedCandidate = path.resolve(candidate);
   if (
     resolvedCandidate !== resolvedRoot &&
@@ -434,7 +437,7 @@ function buildSpawnDirectoryPrompt(session: SpawnDirectorySession): string {
   return [
     `Provider: ${session.type}`,
     `Mode: ${session.mode}`,
-    `Root: ${SPAWN_DIR_ROOT}`,
+    `Root: ${spawnDirRoot()}`,
     `Current: ${session.currentDir}`,
     session.awaitingFolderName
       ? "Create folder mode: send the new folder name in chat, or send 'cancel'."
@@ -479,9 +482,9 @@ function beginSpawnDirectorySession(
   type: AgentType,
   mode: "bridge"
 ): SpawnDirectorySession {
-  const initialDir = normalizeSpawnDirectory(SPAWN_DIR_ROOT);
+  const initialDir = normalizeSpawnDirectory(spawnDirRoot());
   if (!initialDir || !fs.existsSync(initialDir) || !fs.statSync(initialDir).isDirectory()) {
-    throw new Error(`Spawn root directory is unavailable: ${SPAWN_DIR_ROOT}`);
+    throw new Error(`Spawn root directory is unavailable: ${spawnDirRoot()}`);
   }
 
   const sessionId = sanitizeCallbackToken(randomUUID().slice(0, 8));

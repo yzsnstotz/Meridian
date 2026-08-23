@@ -80,12 +80,19 @@ class CliError extends Error {
   }
 }
 
-const defaultProviderModelCatalog = new SharedProviderModelCatalog();
+// Constructed on first use, not at import. Its constructor reads configuration,
+// so building it here meant `meridian --version` needed a full environment
+// before it could print a version string.
+let sharedProviderModelCatalog: SharedProviderModelCatalog | undefined;
+const defaultProviderModelCatalog = () => {
+  sharedProviderModelCatalog ??= new SharedProviderModelCatalog();
+  return sharedProviderModelCatalog;
+};
 
 export const defaultCliDependencies: CliDependencies = {
   connectToHub,
   hubHttpRequest,
-  listProviderModels: async (provider: AgentType) => defaultProviderModelCatalog.listModels(provider),
+  listProviderModels: async (provider: AgentType) => defaultProviderModelCatalog().listModels(provider),
   serviceCommand: runServiceCommand,
   supervisorCommand: runSupervisorControlCommand,
   now: () => new Date(),
@@ -1186,9 +1193,20 @@ async function ensureHubReachable(deps: CliDependencies): Promise<void> {
   }
 }
 
+const MERIDIAN_CLI_VERSION = "1.0.0";
+
 export async function runCli(args: string[], deps: CliDependencies = defaultCliDependencies): Promise<number> {
   if (args.length === 0 || (args.length === 1 && args[0] === "--help")) {
     showHelp(deps);
+    return EXIT_SUCCESS;
+  }
+
+  // Answering "which build are you?" must not require configuration or a
+  // credential. Anything inspecting an existing installation — including
+  // deciding whether it is new enough to adopt rather than reinstall — asks
+  // this first, and it can only ask before the user has onboarded anything.
+  if (args.length === 1 && (args[0] === "--version" || args[0] === "-v")) {
+    deps.stdout(`meridian ${MERIDIAN_CLI_VERSION}\n`);
     return EXIT_SUCCESS;
   }
 
@@ -1296,8 +1314,28 @@ async function main(): Promise<void> {
   }
 }
 
+/**
+ * Identity is only needed to talk to the hub. This rule defaults to `true`, so
+ * anything not listed below is treated as a hub call — which used to include
+ * asking the tool what version it is or what it can do. Those are local
+ * questions and must be answerable by an installation that has not been given
+ * any credential yet, otherwise the tool cannot be inspected at all before a
+ * user has onboarded secrets.
+ */
 function requiresHubCallerIdentity(args: string[]): boolean {
   const [command, ...commandArgs] = args;
+  if (command === undefined) {
+    return false;
+  }
+  if (
+    command === "--version"
+    || command === "-v"
+    || command === "--help"
+    || command === "-h"
+    || command === "help"
+  ) {
+    return false;
+  }
   if (command === "service" || command === "start" || command === "doctor") {
     return false;
   }

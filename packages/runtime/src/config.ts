@@ -188,8 +188,55 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env) {
   return parsed.data;
 }
 
-export const config = parseConfig();
 export type AppConfig = ReturnType<typeof parseConfig>;
+
+let cachedConfig: AppConfig | undefined;
+
+/**
+ * Resolve the validated configuration, parsing it on first use.
+ *
+ * This used to be `export const config = parseConfig()`, which ran at *import*
+ * time. Because almost everything transitively imports this module, a missing
+ * TELEGRAM_BOT_TOKEN made the process exit before `main()` ever looked at argv
+ * — so `meridian --version` and `meridian --help` could not answer either, and
+ * a tool that cannot say who it is without being handed a credential cannot be
+ * inspected by anything that refuses to hand out credentials first.
+ *
+ * Parsing on first read keeps the behaviour identical for every consumer that
+ * actually needs configuration: they still fail, with the same message, at the
+ * moment they read it. Commands that never read it now work.
+ */
+export function getConfig(): AppConfig {
+  if (cachedConfig === undefined) {
+    cachedConfig = parseConfig();
+  }
+  return cachedConfig;
+}
+
+/** Test seam: forget the parsed configuration so the next read re-parses. */
+export function resetConfigForTesting(): void {
+  cachedConfig = undefined;
+}
+
+/**
+ * Property-for-property stand-in for the previous eager export, so all existing
+ * `config.x` call sites keep working untouched — the parse simply happens on
+ * the first property read instead of at import.
+ */
+export const config: AppConfig = new Proxy({} as AppConfig, {
+  get: (_target, property) => Reflect.get(getConfig() as object, property),
+  has: (_target, property) => Reflect.has(getConfig() as object, property),
+  ownKeys: () => Reflect.ownKeys(getConfig() as object),
+  getOwnPropertyDescriptor: (_target, property) => {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      getConfig() as object,
+      property,
+    );
+    return descriptor === undefined
+      ? undefined
+      : { ...descriptor, configurable: true };
+  },
+});
 
 function resolveRuntimePaths(env: NodeJS.ProcessEnv) {
   const normalizedEnv = { ...env };
