@@ -322,6 +322,12 @@ export class HubServer {
 
     loadOrGenerateBootstrapKey({ logger: this.log });
 
+    // Ensure the socket's parent directory exists before binding. macOS wipes
+    // /tmp on reboot, deleting the default /tmp/hub-socks dir; without this the
+    // listen() bind below throws ENOENT and launchd crash-loops the hub silently
+    // (the fatal goes to a possibly-absent LOG_DIR, so the failure is invisible).
+    fs.mkdirSync(path.dirname(this.socketPath), { recursive: true });
+
     await this.removeStaleSocket();
     await this.router.initialize();
     this.router.ensureBuiltinCallers(BUILTIN_CALLERS, deriveBuiltinCallerKey);
