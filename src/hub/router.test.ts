@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough, Readable } from "node:stream";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 
 process.env.LOG_DIR ??= "/tmp/meridian-test-logs";
 
@@ -11,6 +11,15 @@ import { CredentialStore } from "./credential-store";
 import { OutputBus } from "./output-bus";
 import { InstanceRegistry } from "./registry";
 import { HubRouter } from "./router";
+
+function useCliSurface(t: TestContext): void {
+  const previous = process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
+    else process.env.MERIDIAN_CODEX_EXECUTION_SURFACE = previous;
+  });
+  process.env.MERIDIAN_CODEX_EXECUTION_SURFACE = "cli";
+}
 
 function baseMessage(overrides: Partial<HubMessage> = {}): HubMessage {
   return {
@@ -177,7 +186,8 @@ test("HubRouter run skips summary protocol injection when instance supports stre
   assert.equal(connectCount, 0);
 });
 
-test("HubRouter resolves an instance credential before direct streaming run", async () => {
+test("HubRouter resolves an instance credential before an explicit CLI streaming run", async (t) => {
+  useCliSurface(t);
   const registry = new InstanceRegistry();
   registry.register({
     thread_id: "codex_stream_credential_01",
@@ -274,7 +284,8 @@ test("HubRouter resolves an instance credential before direct streaming run", as
   assert.equal(streamCredentialHome, "/tmp/managed-nobuaki-codex-home");
 });
 
-test("HubRouter interrupt stops the active stream run without unregistering the thread", async () => {
+test("HubRouter interrupt stops the explicit CLI stream without unregistering the thread", async (t) => {
+  useCliSurface(t);
   const registry = new InstanceRegistry();
   registry.register({
     thread_id: "codex_stream_interrupt_01",

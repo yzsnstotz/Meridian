@@ -6,8 +6,21 @@ import { PassThrough } from "node:stream";
 import { test } from "node:test";
 
 import { buildClaudeStreamArgs, DEFAULT_CLAUDE_ALLOWED_TOOLS } from "../agents/claude";
-import { InstanceManager } from "./instance-manager";
+import { InstanceManager as ProductionInstanceManager, type InstanceManagerOptions } from "./instance-manager";
 import { InstanceRegistry } from "./registry";
+
+// Every fixture in this file uses synthetic PIDs. Never let teardown send a
+// real signal, even after a simulated child exit removes its managed handle.
+class InstanceManager extends ProductionInstanceManager {
+  constructor(registry: InstanceRegistry, options: InstanceManagerOptions = {}) {
+    super(registry, {
+      processKillFn: () => {
+        throw Object.assign(new Error("synthetic PID does not exist"), { code: "ESRCH" });
+      },
+      ...options
+    });
+  }
+}
 
 class FakeChildProcess extends EventEmitter {
   pid: number;
@@ -1563,8 +1576,8 @@ test("waitForChildExit does not short-circuit on child.killed before the process
   // Node's `subprocess.killed` becomes true as soon as `kill(sig)` successfully
   // delivers a signal — it does NOT mean the process has exited. This child
   // mirrors that: kill() flips `killed` and the public exit fields stay null
-  // until we explicitly emit exit. PID is set to an arbitrary unreachable
-  // value so the escalation path's process.kill probes are no-ops.
+  // until we explicitly emit exit. The injected signal boundary keeps this
+  // synthetic PID isolated from the operating system.
   const stuckChild = new FakeChildProcess(2_147_483_640);
   stuckChild.kill = function (): boolean {
     this.killed = true;
@@ -1701,14 +1714,13 @@ test("rehydrateFromState reaps the orphan when all probe retries fail but PID is
   // when the same thread_id was reused. Now the rehydrate path actively
   // SIGTERMs the orphan and unlinks its socket.
   const registry = new InstanceRegistry();
-  const killSignals: Array<{ pid: number; signal: number | NodeJS.Signals }> = [];
-  const originalKill = process.kill.bind(process);
+  const killSignals: Array<{ pid: number; signal: number | string }> = [];
   let probeCalls = 0;
   const stuckPid = 9200;
 
-  process.kill = ((pid: number, signal: number | NodeJS.Signals): true => {
+  const processKillFn: typeof process.kill = (pid, signal): true => {
     if (pid === stuckPid && signal !== 0) {
-      killSignals.push({ pid, signal });
+      killSignals.push({ pid, signal: signal ?? "SIGTERM" });
       return true;
     }
     // process.kill(pid, 0) is the liveness check inside waitForPidExit;
@@ -1721,58 +1733,56 @@ test("rehydrateFromState reaps the orphan when all probe retries fail but PID is
       }
       return true;
     }
-    return originalKill(pid, signal) as true;
-  }) as typeof process.kill;
+    throw new Error(`unexpected synthetic signal target ${pid}`);
+  };
 
-  try {
-    const manager = new InstanceManager(registry, {
-      ...socketModeOptions,
-      pidLivenessFn: () => true,
-      rehydrateProbeRetries: 2,
-      rehydrateProbeRetryDelayMs: 1,
-      clientFactory: () => ({
-        connect: async () => {
-          probeCalls += 1;
-          throw new Error("connect timeout (agentapi unhealthy)");
-        },
-        disconnect: () => undefined,
-        getStatus: async () => ({ status: "idle" })
-      })
-    });
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    processKillFn,
+    pidLivenessFn: () => true,
+    rehydrateProbeRetries: 2,
+    rehydrateProbeRetryDelayMs: 1,
+    clientFactory: () => ({
+      connect: async () => {
+        probeCalls += 1;
+        throw new Error("connect timeout (agentapi unhealthy)");
+      },
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
 
-    const result = await manager.rehydrateFromState({
-      version: 4,
-      updated_at: new Date().toISOString(),
-      instances: [
-        {
-          thread_id: "codex_12",
-          agent_type: "codex",
-          mode: "bridge",
-          socket_path: socketPathForThread("codex_12"),
-          working_dir: "/tmp",
-          pid: stuckPid,
-                status: "idle",
-          created_at: new Date().toISOString(),
-          auto_approve: false
-        }
-      ],
-      session_bindings: {}
-    });
+  const result = await manager.rehydrateFromState({
+    version: 4,
+    updated_at: new Date().toISOString(),
+    instances: [
+      {
+        thread_id: "codex_12",
+        agent_type: "codex",
+        mode: "bridge",
+        socket_path: socketPathForThread("codex_12"),
+        working_dir: "/tmp",
+        pid: stuckPid,
+              status: "idle",
+        created_at: new Date().toISOString(),
+        auto_approve: false
+      }
+    ],
+    session_bindings: {}
+  });
 
-    assert.deepEqual(result.restored_thread_ids, []);
-    assert.deepEqual(result.pruned_thread_ids, ["codex_12"]);
-    assert.equal(probeCalls, 2, "probe must exhaust the configured retry budget");
+  assert.deepEqual(result.restored_thread_ids, []);
+  assert.deepEqual(result.pruned_thread_ids, ["codex_12"]);
+  assert.equal(probeCalls, 2, "probe must exhaust the configured retry budget");
 
-    // The orphan reap runs as fire-and-forget after rehydrateFromState
-    // returns. Give it a brief window to deliver SIGTERM.
-    await new Promise((r) => setTimeout(r, 50));
-    assert.ok(
-      killSignals.some((entry) => entry.pid === stuckPid && entry.signal === "SIGTERM"),
-      `expected SIGTERM to ${stuckPid}; saw ${JSON.stringify(killSignals)}`
-    );
-  } finally {
-    process.kill = originalKill;
-  }
+  // The orphan reap runs as fire-and-forget after rehydrateFromState
+  // returns. Give it a brief window to deliver SIGTERM.
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(
+    killSignals.some((entry) => entry.pid === stuckPid && entry.signal === "SIGTERM"),
+    `expected SIGTERM to ${stuckPid}; saw ${JSON.stringify(killSignals)}`
+  );
+
 });
 
 test("spawn triggers onStateChange BEFORE the readiness wait to close the spawn-then-persist race", async () => {
@@ -1844,4 +1854,53 @@ test("kill triggers onStateChange after registry.unregister so deletions also pe
 
   assert.ok(postKillCallback >= 1, "onStateChange must fire on kill so disk view tracks the removal");
   assert.equal(registry.get(threadId), undefined);
+});
+
+
+test("PID-only cleanup uses the injected signal boundary including exit probes", async () => {
+  const registry = new InstanceRegistry();
+  const calls: Array<[number, number | string | undefined]> = [];
+  let alive = true;
+  const manager = new InstanceManager(registry, {
+    ...socketModeOptions,
+    processKillFn: (pid, signal) => {
+      calls.push([pid, signal]);
+      if (signal === "SIGTERM") alive = false;
+      if (signal === 0 && !alive) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+      return true;
+    },
+    clientFactory: () => ({
+      connect: async () => undefined,
+      disconnect: () => undefined,
+      getStatus: async () => ({ status: "idle" })
+    })
+  });
+  await manager.rehydrateFromState({
+    version: 4, updated_at: new Date().toISOString(), session_bindings: {},
+    instances: [{
+      thread_id: "codex_99", agent_type: "codex", mode: "bridge",
+      socket_path: socketPathForThread("codex_99"), working_dir: "/tmp",
+      pid: 2401, status: "idle", created_at: new Date().toISOString(), auto_approve: false
+    }]
+  });
+  await manager.kill("codex_99");
+  assert.deepEqual(calls, [[2401, 0], [2401, "SIGTERM"], [2401, 0]]);
+  assert.equal(registry.get("codex_99"), undefined);
+});
+
+test("PID escalation and post-escalation probes remain inside the injected boundary", async () => {
+  const calls: Array<[number, number | string | undefined]> = [];
+  const manager = new InstanceManager(new InstanceRegistry(), {
+    processKillFn: (pid, signal) => {
+      calls.push([pid, signal]);
+      if (signal === 0) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+      return true;
+    }
+  });
+  const teardown = manager as unknown as {
+    waitForPidExit: (pid: number, thread: string, timeout: number, escalated?: boolean) => Promise<void>;
+  };
+  await teardown.waitForPidExit(6502, "synthetic", 0);
+  await teardown.waitForPidExit(6502, "synthetic", 50, true);
+  assert.deepEqual(calls, [[-6502, "SIGKILL"], [6502, "SIGKILL"], [6502, 0], [6502, 0]]);
 });

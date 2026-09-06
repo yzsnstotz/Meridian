@@ -96,6 +96,8 @@ export interface InstanceManagerOptions {
    * Tests inject `() => true` so fake pids count as live; production uses default.
    */
   pidLivenessFn?: (pid: number) => boolean;
+  /** OS signal/probe boundary. Tests with synthetic PIDs must inject a fake. */
+  processKillFn?: typeof process.kill;
   /** Max attempts for the rehydrate probe before reaping a stuck child. Default 3. */
   rehydrateProbeRetries?: number;
   /** Base delay between rehydrate probe retries (multiplied by attempt count). Default 500ms. */
@@ -146,6 +148,7 @@ export class InstanceManager {
   private readonly spawnAttempts = 3;
   private readonly spawnRetryDelayMs = 500;
   private readonly pidLivenessFn: (pid: number) => boolean;
+  private readonly processKillFn: typeof process.kill;
   private readonly rehydrateProbeRetries: number;
   private readonly rehydrateProbeRetryDelayMs: number;
   private onStateChange: (() => void) | null = null;
@@ -169,6 +172,7 @@ export class InstanceManager {
       });
     this.modelCatalog = options.modelCatalog ?? new ProviderModelCatalog();
     this.now = options.now ?? (() => new Date());
+    this.processKillFn = options.processKillFn ?? process.kill.bind(process);
     this.pidLivenessFn =
       options.pidLivenessFn ??
       ((pid: number) => {
@@ -176,7 +180,7 @@ export class InstanceManager {
           return false;
         }
         try {
-          process.kill(pid, 0);
+          this.processKillFn(pid, 0);
           return true;
         } catch (error) {
           // EPERM means the PID exists but is owned by another user — still alive.
@@ -1438,7 +1442,7 @@ export class InstanceManager {
       // group if it does not exit promptly. agentapi was spawned detached,
       // so its pgid equals its pid — `-pid` reaches the whole subtree.
       try {
-        process.kill(instance.pid, "SIGTERM");
+        this.processKillFn(instance.pid, "SIGTERM");
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         if (code !== "ESRCH") {
@@ -1516,7 +1520,7 @@ export class InstanceManager {
       await this.waitForChildExit(child, threadId);
     } else {
       try {
-        process.kill(instance.pid, "SIGTERM");
+        this.processKillFn(instance.pid, "SIGTERM");
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
           throw error;
@@ -1572,7 +1576,7 @@ export class InstanceManager {
     }
     let groupKilled = false;
     try {
-      process.kill(-pid, "SIGKILL");
+      this.processKillFn(-pid, "SIGKILL");
       groupKilled = true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
@@ -1584,7 +1588,7 @@ export class InstanceManager {
       }
     }
     try {
-      process.kill(pid, "SIGKILL");
+      this.processKillFn(pid, "SIGKILL");
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ESRCH") {
@@ -1649,7 +1653,7 @@ export class InstanceManager {
     while (Date.now() < deadline) {
       try {
         // Signal 0 checks if process exists without sending a signal.
-        process.kill(pid, 0);
+        this.processKillFn(pid, 0);
       } catch {
         // Process is gone.
         return;
@@ -1667,7 +1671,7 @@ export class InstanceManager {
     const reapDeadline = Date.now() + 2_000;
     while (Date.now() < reapDeadline) {
       try {
-        process.kill(pid, 0);
+        this.processKillFn(pid, 0);
       } catch {
         return;
       }
