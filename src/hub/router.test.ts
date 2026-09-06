@@ -3685,3 +3685,52 @@ test("resolveStreamingDeliveryRequest does not match a legacy prefix that is not
 
   assert.deepEqual(decision, { activate: false, reason: "not_requested" });
 });
+
+test("default App routing preserves model/session and refuses destructive lifecycle changes until terminal", async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const { AppHandoffQueue } = await import("../agents/codex-app-queue");
+  const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-router-app-"));
+  const previousSurface = process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
+  const previousQueue = process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+  delete process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
+  process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = dir;
+  const registry = new InstanceRegistry();
+  const uuid = "01a07727-ac38-7c23-8ef3-4bc90f594b9a";
+  registry.register({ thread_id: "codex_app_test", agent_type: "codex", mode: "bridge", pid: 0,
+    status: "idle", supportsStream: true, created_at: new Date().toISOString(),
+    model_id: "gpt-6-astra", reasoning_effort: "xhigh", codexSessionId: uuid });
+  const router = new HubRouter(registry, { instanceManager: {
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    interrupt: async () => undefined
+  } as never });
+  const queue = new AppHandoffQueue(dir);
+  try {
+    const instance = registry.get("codex_app_test")!;
+    const build = (router as unknown as { buildStreamArgs: (v: typeof instance, images: string[], id: string) => string[] }).buildStreamArgs.bind(router);
+    const args = build(instance, [], "app-trace");
+    assert.ok(args.some(arg => arg.includes("codex-app-executor")));
+    assert.ok(args.includes("gpt-6-astra"));
+    assert.ok(args.includes("xhigh"));
+    assert.ok(args.includes(uuid));
+    assert.ok(build({ ...instance, sandbox_mode: "read-only" }, [], "audit").includes("read-only"));
+    queue.create({ id: "app-trace", workerId: "codex_app_test", threadId: uuid, cwd: "/tmp", prompt: "task" });
+    queue.claim("app-trace", "controller");
+    queue.submit("app-trace", "controller");
+    queue.started("app-trace", "controller", "app-turn");
+    for (const intent of ["kill", "restart", "reboot"] as const) {
+      const result = await router.route(baseMessage({ intent, target: "codex_app_test", thread_id: "codex_app_test" }));
+      assert.equal(result.status, "error");
+      assert.match(result.content, /reserved/);
+      assert.equal(registry.has("codex_app_test"), true);
+    }
+    const result = await router.route(baseMessage({ intent: "interrupt", target: "codex_app_test", thread_id: "codex_app_test" }));
+    assert.match(result.content, /Cancellation requested/);
+    assert.equal(queue.read("app-trace").state, "cancel_requested");
+  } finally {
+    if (previousSurface === undefined) delete process.env.MERIDIAN_CODEX_EXECUTION_SURFACE; else process.env.MERIDIAN_CODEX_EXECUTION_SURFACE = previousSurface;
+    if (previousQueue === undefined) delete process.env.MERIDIAN_CODEX_APP_QUEUE_DIR; else process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = previousQueue;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
