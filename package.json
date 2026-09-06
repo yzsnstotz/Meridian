@@ -26,11 +26,13 @@
     "@grammyjs/types": "^3.23.0",
     "dotenv": "^17.2.3",
     "eventsource": "^5.0.0",
+    "fs-ext": "^2.1.1",
     "grammy": "^1.41.1",
     "pino": "^10.1.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/fs-ext": "^2.0.3",
     "@types/node": "^24.6.0",
     "@typescript-eslint/eslint-plugin": "^8.46.1",
     "@typescript-eslint/parser": "^8.67.0",

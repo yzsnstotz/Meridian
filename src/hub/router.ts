@@ -7,6 +7,8 @@ import { config } from "../config";
 import { createLogger } from "../logger";
 import { buildClaudeStreamArgs } from "../agents/claude";
 import { buildCodexExecArgs, buildCodexResumeArgs } from "../agents/codex";
+import { assertCodexAppIdentity, buildCodexAppArgs, useCodexApp } from "../agents/codex-app-executor";
+import { AppHandoffQueue } from "../agents/codex-app-queue";
 import { buildGeminiStreamArgs } from "../agents/gemini";
 import { isApprovalPrompt, parseApprovalSummaryFromRawContent } from "../shared/approval";
 import { cleanupStagedAttachments, transformAttachments } from "../shared/attachment-transform";
@@ -153,6 +155,7 @@ interface ActiveRunState {
   traceId: string;
   streamProcess?: ChildProcess | null;
   interrupted?: boolean;
+  appHandoff?: boolean;
 }
 
 interface CompletedRunRecord {
@@ -924,7 +927,8 @@ export class HubRouter {
     if (message.caller) {
       this.registry.setCaller(threadId, message.caller, this.now().toISOString());
     }
-    this.activeRunsByThread.set(instance.thread_id, { traceId: message.trace_id });
+    this.activeRunsByThread.set(instance.thread_id, { traceId: message.trace_id,
+      appHandoff: instance.agent_type === "codex" && instance.supportsStream === true && useCodexApp(instance.sandbox_mode) });
     this.recordUserConversationEntry(threadId, message.payload.content, message.trace_id, "user_send", message.caller);
     this.persistStateSafely();
 
@@ -1139,7 +1143,9 @@ export class HubRouter {
       ...imageAttachments.map((attachment) => attachment.result),
       ...transformedAttachments.rejected.map((attachment) => attachment.result)
     ];
-    const args = this.buildStreamArgs(instance, imagePaths);
+    const appHandoff = instance.agent_type === "codex" && useCodexApp(instance.sandbox_mode);
+    if (appHandoff) assertCodexAppIdentity(resolvedCredential);
+    const args = this.buildStreamArgs(instance, imagePaths, message.trace_id);
     const prompt = promptWithAttachments.prompt;
     const parser = this.createStreamParser(instance);
     let process: ChildProcess | null = null;
@@ -1185,6 +1191,7 @@ export class HubRouter {
     }
 
     try {
+      if (this.isRunInterrupted(threadId, message.trace_id)) throw new RunInterruptedError(threadId);
       const spawnedAgent = this.instanceManager.spawnStreamAgent(
         threadId,
         instance.agent_type,
@@ -1197,6 +1204,7 @@ export class HubRouter {
       const activeRun = this.activeRunsByThread.get(threadId);
       if (activeRun?.traceId === message.trace_id) {
         activeRun.streamProcess = process;
+        activeRun.appHandoff = appHandoff;
       }
       const stderrSummary = this.captureProcessStderr(spawnedAgent.process);
 
@@ -1268,7 +1276,7 @@ export class HubRouter {
     }
   }
 
-  private buildStreamArgs(instance: AgentInstance, imagePaths: string[] = []): string[] {
+  private buildStreamArgs(instance: AgentInstance, imagePaths: string[] = [], requestId: string = randomUUID()): string[] {
     if (instance.agent_type === "claude") {
       return [
         ...buildClaudeStreamArgs(instance.model_id, instance.auto_approve),
@@ -1279,6 +1287,12 @@ export class HubRouter {
       return buildGeminiStreamArgs(instance.model_id);
     }
     if (instance.agent_type === "codex") {
+      if (useCodexApp(instance.sandbox_mode)) {
+        if (imagePaths.length > 0) throw new Error("Codex App handoff does not yet accept image attachments; no task was started");
+        return buildCodexAppArgs({ requestId, workerId: instance.thread_id,
+          sessionId: instance.mode !== "stateless_call" ? instance.codexSessionId : undefined,
+          model: instance.model_id, effort: instance.reasoning_effort });
+      }
       return instance.mode !== "stateless_call" && instance.codexSessionId
         ? buildCodexResumeArgs(
             instance.codexSessionId,
@@ -1735,8 +1749,17 @@ export class HubRouter {
     });
   }
 
+  private assertAppWorkerTerminated(threadId: string): void {
+    const active = this.activeRunsByThread.get(threadId);
+    const queued = new AppHandoffQueue().list().find(record => record.workerId === threadId);
+    if (active?.appHandoff || queued) {
+      throw new Error(`App worker ${threadId} is still reserved; request interrupt and wait for verified App termination before kill/restart/reboot`);
+    }
+  }
+
   private async handleKill(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadId(message);
+    this.assertAppWorkerTerminated(threadId);
     const instance = this.resolveInstance(threadId);
     const attachment = this.instanceManager.getThreadAttachment(threadId);
     const attachmentSummary = this.buildAttachmentSummary(attachment.sessions);
@@ -1760,6 +1783,8 @@ export class HubRouter {
     const threadId = this.resolveThreadId(message);
     const instance = this.resolveInstance(threadId);
     const activeRun = this.activeRunsByThread.get(threadId);
+    const queuedApp = new AppHandoffQueue().list().find(record => record.workerId === threadId);
+    if (queuedApp) new AppHandoffQueue().cancel(queuedApp.id);
 
     if (activeRun) {
       activeRun.interrupted = true;
@@ -1777,13 +1802,16 @@ export class HubRouter {
       message,
       "success",
       instance.agent_type,
-      `Agent instance ${threadId} interrupted`,
+      activeRun?.appHandoff || queuedApp
+        ? `Cancellation requested for App worker ${threadId}; reserved until the App turn terminates.`
+        : `Agent instance ${threadId} interrupted`,
       threadId
     );
   }
 
   private async handleRestart(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadId(message);
+    this.assertAppWorkerTerminated(threadId);
     const instance = this.resolveInstance(threadId);
     const restartedThreadId = await this.instanceManager.restart(threadId);
     const restarted = this.registry.get(restartedThreadId);
@@ -1842,6 +1870,7 @@ export class HubRouter {
 
   private async handleReboot(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadId(message);
+    this.assertAppWorkerTerminated(threadId);
     const instance = this.resolveInstance(threadId);
     const rebootedThreadId = await this.instanceManager.restart(threadId);
     const rebooted = this.registry.get(rebootedThreadId);
