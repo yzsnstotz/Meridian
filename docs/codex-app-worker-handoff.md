@@ -12,7 +12,9 @@ Writable local Codex workers use the Codex App by default. This systematizes the
 - Sidebar section: `Meridian workers`; resolve by native list_threads, create only if absent.
 - Native App tools are required. Never replace them with a CLI app-server, internal state edits or UI automation.
 
-The existing Cyberent F1 heartbeat also services this queue every minute; it performs the F1 orchestration check at most every fifteen minutes or on a meaningful new event. F1 completion stops its F1 duties, not the generic App controller. The heartbeat services the queue every minute. Each pass does useful bounded work and yields; it must not wait for one worker to finish before starting independent queued workers. User instructions and TaskSpec dependencies remain authoritative.
+The existing Cyberent F1 heartbeat services this queue and checks its managed dispatcher's live state every minute. An empty App queue is not evidence that orchestration is idle or finished: read-only validators finish outside this queue. Check worker, validator and PM ownership before ending each pass. A validated completion with eligible downstream work requests one canonical continuation; a real blocker follows the authorized resolver path. A capsule held only as `awaiting_fill` needs that continuation to perform its fill. Never overwrite a capsule from the controller, bypass validation, ignore an explicit pause, or repeat a continuation against an active owner.
+
+Throttle only repeated expensive investigation to fifteen minutes, never terminal-state detection or ordinary progression. After any action, inspect its actual result and service newly queued App requests. Keep each pass bounded and yield; do not wait for one worker to finish before handling independent queued workers. Quiet termination is appropriate only after both queue and dispatcher checks found no action. F1 completion stops its F1 duties, not the generic App controller. User instructions and TaskSpec dependencies remain authoritative.
 
 ## Service one request
 
