@@ -24,7 +24,7 @@ def inspect_rollout(filename, marker):
         if row.get('type') == 'response_item':
             is_input = payload.get('role') == 'user' or (
                 payload.get('type') == 'function_call_output' and payload.get('namespace') == 'codex_app'
-                and payload.get('name') == 'create_thread')
+                and payload.get('name') in {'create_thread', 'send_message_to_thread'})
             if is_input and marker in json.dumps(payload, ensure_ascii=False):
                 current['matched'] = True
             if payload.get('role') == 'assistant' and payload.get('phase') == 'commentary':
