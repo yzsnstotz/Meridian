@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 
@@ -69,12 +70,25 @@ class CliError extends Error {
   }
 }
 
-const defaultProviderModelCatalog = new SharedProviderModelCatalog();
+let defaultProviderModelCatalog: SharedProviderModelCatalog | undefined;
+
+function getDefaultProviderModelCatalog(): SharedProviderModelCatalog {
+  defaultProviderModelCatalog ??= new SharedProviderModelCatalog();
+  return defaultProviderModelCatalog;
+}
+
+async function connectToHubAsCli(): Promise<HubConnection> {
+  const callerId = "meridian-cli";
+  const callerKey = deriveBuiltinCallerKey(callerId);
+  setCallerIdentity({ caller_id: callerId, caller_key: callerKey, caller_label: "Meridian CLI" });
+  return connectToHub();
+}
 
 export const defaultCliDependencies: CliDependencies = {
-  connectToHub,
+  connectToHub: connectToHubAsCli,
   hubHttpRequest,
-  listProviderModels: async (provider: AgentType) => defaultProviderModelCatalog.listModels(provider),
+  listProviderModels: async (provider: AgentType) =>
+    getDefaultProviderModelCatalog().listModels(provider),
   now: () => new Date(),
   stdout: (text: string) => {
     process.stdout.write(text);
@@ -109,6 +123,7 @@ function showHelp(deps: CliDependencies): void {
   }
   hint(deps, "\nOptions:");
   hint(deps, "  --help       Show help for a command");
+  hint(deps, "  --version    Show the installed Meridian version");
   hint(deps, "  --json       (default) JSON output on stdout");
   hint(deps, "\nExit codes:");
   hint(deps, "  0  Success");
@@ -116,6 +131,18 @@ function showHelp(deps: CliDependencies): void {
   hint(deps, "  2  Invalid arguments");
   hint(deps, "  3  Meridian API unreachable");
   hint(deps, "  4  Target not found");
+}
+
+function showVersion(deps: CliDependencies): void {
+  const packagePath = path.resolve(__dirname, "../../package.json");
+  const metadata = JSON.parse(readFileSync(packagePath, "utf8")) as {
+    name?: unknown;
+    version?: unknown;
+  };
+  if (typeof metadata.name !== "string" || typeof metadata.version !== "string") {
+    throw new Error(`Invalid package identity in ${packagePath}`);
+  }
+  deps.stdout(`${metadata.name} ${metadata.version}\n`);
 }
 
 function showCommandHelp(deps: CliDependencies, command: string): void {
@@ -1149,6 +1176,11 @@ async function ensureHubReachable(deps: CliDependencies): Promise<void> {
 }
 
 export async function runCli(args: string[], deps: CliDependencies = defaultCliDependencies): Promise<number> {
+  if (args.length === 1 && args[0] === "--version") {
+    showVersion(deps);
+    return EXIT_SUCCESS;
+  }
+
   if (args.length === 0 || (args.length === 1 && args[0] === "--help")) {
     showHelp(deps);
     return EXIT_SUCCESS;
@@ -1217,9 +1249,6 @@ export async function runCli(args: string[], deps: CliDependencies = defaultCliD
 
 async function main(): Promise<void> {
   try {
-    const callerId = "meridian-cli";
-    const callerKey = deriveBuiltinCallerKey(callerId);
-    setCallerIdentity({ caller_id: callerId, caller_key: callerKey, caller_label: "Meridian CLI" });
     const exitCode = await runCli(process.argv.slice(2));
     process.exit(exitCode);
   } catch (error) {

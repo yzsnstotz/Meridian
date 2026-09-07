@@ -172,5 +172,22 @@ export function parseConfig(env: NodeJS.ProcessEnv = process.env) {
   return parsed.data;
 }
 
-export const config = parseConfig();
 export type AppConfig = ReturnType<typeof parseConfig>;
+
+let cachedConfig: AppConfig | undefined;
+
+export function getConfig(): AppConfig {
+  cachedConfig ??= parseConfig();
+  return cachedConfig;
+}
+
+export const config: AppConfig = new Proxy({} as AppConfig, {
+  get: (_target, property) => Reflect.get(getConfig(), property),
+  set: (_target, property, value) => Reflect.set(getConfig(), property, value),
+  has: (_target, property) => Reflect.has(getConfig(), property),
+  ownKeys: () => Reflect.ownKeys(getConfig()),
+  getOwnPropertyDescriptor: (_target, property) => {
+    const descriptor = Reflect.getOwnPropertyDescriptor(getConfig(), property);
+    return descriptor ? { ...descriptor, configurable: true } : undefined;
+  }
+});
