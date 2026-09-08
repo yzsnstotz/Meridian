@@ -18,6 +18,13 @@ test("App is the default task surface; read-only reviews and explicit CLI choice
   assert.ok(args.includes(uuid));
 });
 
+test("App argument boundary rejects invalid policy values instead of treating them as absent", () => {
+  for (const executionPolicy of [null, false, 0]) {
+    assert.throws(() => buildCodexAppArgs({ requestId: "policy-invalid", workerId: "opaque",
+      executionPolicy } as never), /Invalid input/);
+  }
+});
+
 test("existing session is preserved and exact App result returns to the original stream", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-app-executor-"));
   const queue = new AppHandoffQueue(dir);
@@ -131,6 +138,26 @@ test("managed credentials and custom environments never silently run as the App 
   assert.throws(() => assertCodexAppIdentity(null, { CODEX_HOME: "/tmp/other-identity" }), /CODEX_HOME/);
 });
 
+test("upgrade retries do not retrofit policy into an already-submitted legacy request", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-app-policy-upgrade-"));
+  const queue = new AppHandoffQueue(dir);
+  try {
+    queue.create({ id: "legacy", workerId: "opaque-legacy", threadId: uuid, cwd: "/tmp", prompt: "original task" });
+    queue.claim("legacy", "controller");
+    queue.submit("legacy", "controller");
+    queue.started("legacy", "controller", "original-turn");
+    queue.complete("legacy", "controller", { threadId: uuid, turnId: "original-turn", status: "completed", text: "original result" });
+    const events: unknown[] = [];
+    await runAppHandoff({ requestId: "legacy", workerId: "opaque-legacy", sessionId: uuid, cwd: "/tmp",
+      executionPolicy: { autoApprove: false, sandboxMode: "workspace-write" } }, "original task", {
+      queue, emit: event => events.push(event), wait: async () => { throw new Error("must not submit again"); }
+    });
+    assert.equal(queue.read("legacy").executionPolicy, undefined);
+    assert.equal(queue.read("legacy").turnId, "original-turn");
+    assert.equal(events.length, 3);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("cancellation before startup creates a terminal request without launching a turn", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-app-cancel-"));
   const queue = new AppHandoffQueue(dir);
@@ -200,12 +227,14 @@ test("source-mode executor resolves its own loader outside Meridian's dependency
   const { setTimeout: delay } = await import("node:timers/promises");
   const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-app-external-cwd-"));
   const queue = new AppHandoffQueue(dir);
-  const [command, ...args] = buildCodexAppArgs({ requestId: "external-cwd", workerId: "external-worker" });
+  const executionPolicy = { autoApprove: false, sandboxMode: "workspace-write" as const };
+  const [command, ...args] = buildCodexAppArgs({ requestId: "external-cwd", workerId: "external-worker", executionPolicy });
   const child = spawn(command, args, { cwd: os.tmpdir(), env: { ...process.env, MERIDIAN_CODEX_APP_QUEUE_DIR: dir }, stdio: ["pipe", "pipe", "pipe"] });
   child.stdin.end("external task");
   try {
     for (let i = 0; i < 100 && queue.list().length === 0; i++) await delay(50);
     assert.equal(realpathSync(queue.read("external-cwd").cwd), realpathSync(os.tmpdir()));
+    assert.deepEqual(queue.read("external-cwd").executionPolicy, executionPolicy);
     const exited = once(child, "exit");
     child.kill("SIGINT");
     await exited;

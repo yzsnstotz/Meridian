@@ -7,9 +7,15 @@ import { flockSync } from "fs-ext";
 
 const Id = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,119}$/, "Invalid identifier");
 const ThreadId = z.string().uuid("Invalid Codex thread ID");
+/** Requested Hub policy, not an effective native permission grant. */
+export const AppExecutionPolicySchema = z.object({
+  autoApprove: z.boolean().optional(),
+  sandboxMode: z.enum(["read-only", "workspace-write"]).optional()
+}).strict();
 const Input = z.object({
   id: Id, workerId: z.string().min(1), threadId: ThreadId.optional(), cwd: z.string().min(1),
-  prompt: z.string().min(1), model: z.string().optional(), effort: z.string().optional()
+  prompt: z.string().min(1), model: z.string().optional(), effort: z.string().optional(),
+  executionPolicy: AppExecutionPolicySchema.optional()
 });
 const Result = z.object({
   threadId: ThreadId, turnId: z.string().min(1),

@@ -36,6 +36,29 @@ On this host the Hub runs Node 24 from `/Users/yzliu/.local/share/fnm/aliases/de
 
 ## Effective task environment
 
+Durable requests may include `executionPolicy`, containing the Hub's original
+optional `autoApprove` and `sandboxMode` values. This is **requested intent**,
+not effective permissions, an authorization grant, or proof of native support.
+False and missing values remain distinct; old requests without the field remain
+readable. A same-ID retry with changed policy is a request-content conflict.
+An executor retry of a legacy request does not retrofit newly available policy
+metadata; its missing policy remains unknown and its original result/ownership
+is preserved. New logical requests carry the registered policy.
+The App executor preserves this object through its process arguments and queue;
+it does not convert `autoApprove` to Full Access or silently select another
+executor. Read-only validators retain their existing enforced CLI route.
+
+The current public native create/send tools expose no permission-setting
+parameter. Controllers must not claim that this metadata applies a profile.
+Compare the requested policy with actual environment evidence for the exact
+native turn; a missing/incompatible effective environment is an explicit
+integration blocker, not missing owner consent. Preserve ownership and the
+actual worker result. Do not invent an unsupported tool argument, edit Codex
+state, or retry through a more privileged executor to satisfy this request.
+Automatic native profile provisioning remains unsupported until the native
+interface supplies a supported capability; this transport repair does not
+claim to implement it.
+
 The App host account, the project config default, and the controller's current
 permission profile do not prove the worker's effective permissions. A newly
 created native task can retain a different saved task profile. For a reported

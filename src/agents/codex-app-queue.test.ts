@@ -38,6 +38,22 @@ test("same request is idempotent but conflicting content or active thread cannot
   } finally { f.close(); }
 });
 
+test("execution policy intent survives for unrelated workers and binds idempotent request identity", () => {
+  const f = fixture();
+  try {
+    for (const [index, autoApprove] of [false, true].entries()) {
+      const input = { ...request(`policy-${index}`, `opaque-${index}`), threadId: undefined,
+        executionPolicy: { autoApprove, sandboxMode: "workspace-write" as const } };
+      f.queue.create(input);
+      assert.deepEqual(f.queue.read(input.id).executionPolicy, input.executionPolicy);
+      assert.deepEqual(f.queue.create(input).executionPolicy, input.executionPolicy);
+      assert.throws(() => f.queue.create({ ...input, executionPolicy: { autoApprove: !autoApprove, sandboxMode: "workspace-write" } }), /conflict/);
+    }
+    assert.throws(() => f.queue.create({ ...request("unsupported-policy", "opaque-third"),
+      executionPolicy: { autoApprove: true, grantFullAccess: true } } as never), /Unrecognized/);
+  } finally { f.close(); }
+});
+
 test("only the claimed App turn can complete, and failed turns cannot become successes", () => {
   const f = fixture();
   try {

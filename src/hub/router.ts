@@ -1293,7 +1293,9 @@ export class HubRouter {
         if (imagePaths.length > 0) throw new Error("Codex App handoff does not yet accept image attachments; no task was started");
         return buildCodexAppArgs({ requestId, workerId: instance.thread_id,
           sessionId: instance.mode !== "stateless_call" ? instance.codexSessionId : undefined,
-          model: instance.model_id, effort: instance.reasoning_effort });
+          model: instance.model_id, effort: instance.reasoning_effort,
+          executionPolicy: instance.auto_approve === undefined && instance.sandbox_mode === undefined
+            ? undefined : { autoApprove: instance.auto_approve, sandboxMode: instance.sandbox_mode } });
       }
       return instance.mode !== "stateless_call" && instance.codexSessionId
         ? buildCodexResumeArgs(

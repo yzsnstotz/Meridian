@@ -3937,6 +3937,15 @@ test("default App routing preserves model/session and refuses destructive lifecy
     assert.ok(args.includes("gpt-6-astra"));
     assert.ok(args.includes("xhigh"));
     assert.ok(args.includes(uuid));
+    for (const [index, autoApprove] of [false, true].entries()) {
+      const policyArgs = build({ ...instance, thread_id: `opaque-policy-${index}`,
+        auto_approve: autoApprove, sandbox_mode: "workspace-write" }, [], `policy-${index}`);
+      const policyIndex = policyArgs.indexOf("--execution-policy");
+      assert.ok(policyIndex >= 0, "App routing must not drop the requested execution policy");
+      assert.deepEqual(JSON.parse(policyArgs[policyIndex + 1]), {
+        autoApprove, sandboxMode: "workspace-write"
+      });
+    }
     assert.ok(build({ ...instance, sandbox_mode: "read-only" }, [], "audit").includes("read-only"));
     queue.create({ id: "app-trace", workerId: "codex_app_test", threadId: uuid, cwd: "/tmp", prompt: "task" });
     queue.claim("app-trace", "controller");
