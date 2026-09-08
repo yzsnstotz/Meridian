@@ -6,6 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import type { Socket } from "node:net";
 
+import { AppHandoffQueue } from "../agents/codex-app-queue";
 import { ProviderCapabilityListSchema, ProviderCapabilitySchema, type HubMessage, type ThreadProgressSnapshot } from "../types";
 
 process.env.TELEGRAM_BOT_TOKEN ??= "123456789:test_token";
@@ -377,6 +378,61 @@ test("Web Interface Server reads and writes file content in instance working dir
     });
   } finally {
     await fs.promises.rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server exposes authenticated, redacted App queue controller transitions", async () => {
+  const queueDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-app-queue-"));
+  const queue = new AppHandoffQueue(queueDir);
+  const requestId = "app-request-one";
+  const threadId = "01a0780f-c9ab-72e0-b9a2-6eeb724385b6";
+  queue.create({ id: requestId, workerId: "codex_42", cwd: "/tmp/project", prompt: "private worker prompt" });
+
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const endpoint = `${baseUrl}/api/codex-app-queue/${requestId}?token=secret-token`;
+      const post = async (body: Record<string, unknown>) => {
+        const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify(body) });
+        assert.equal(response.status, 200);
+        return await response.json() as Record<string, unknown>;
+      };
+
+      const claim = await post({ action: "claim", controller: "codex-app-controller" });
+      assert.equal(claim.state, "claimed");
+      assert.ok(!("prompt" in claim));
+      const submit = await post({ action: "submit", controller: "codex-app-controller" });
+      assert.equal(submit.submissionAttempted, true);
+      await post({ action: "bind", controller: "codex-app-controller", thread_id: threadId });
+      await post({ action: "started", controller: "codex-app-controller", turn_id: "turn-one" });
+      const observe = await post({ action: "observe", controller: "codex-app-controller",
+        receipt: "private native receipt", progress: "working" });
+      assert.ok(!("receipt" in observe));
+      const complete = await post({ action: "complete", controller: "codex-app-controller",
+        result: { threadId, turnId: "turn-one", status: "completed", text: "private final text" } });
+      assert.equal(complete.state, "completed");
+      assert.ok(!("result" in complete));
+      assert.equal(queue.read(requestId).result?.text, "private final text");
+    }, { appHandoffQueue: queue });
+  } finally {
+    await fs.promises.rm(queueDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server rejects unauthenticated App queue transitions without mutation", async () => {
+  const queueDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-app-queue-auth-"));
+  const queue = new AppHandoffQueue(queueDir);
+  queue.create({ id: "app-auth", workerId: "codex_43", cwd: "/tmp/project", prompt: "private" });
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/codex-app-queue/app-auth`, { method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "claim", controller: "codex-app-controller" }) });
+      assert.equal(response.status, 401);
+      assert.equal(queue.read("app-auth").state, "pending");
+    }, { appHandoffQueue: queue });
+  } finally {
+    await fs.promises.rm(queueDir, { recursive: true, force: true });
   }
 });
 
