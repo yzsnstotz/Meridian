@@ -140,6 +140,17 @@ test("restart.sh resolves pm2 binary by path when not on PATH (launchd / minimal
   assert.deepEqual(barePm2Lines, [], `unguarded pm2 invocations found:\n${barePm2Lines.join("\n")}`);
 });
 
+test("restart.sh pins PM2 apps to the Node installation that owns the selected PM2 CLI", async () => {
+  const restartScript = await readRestartScript();
+  const ecosystemConfig = await fs.readFile(path.resolve(process.cwd(), "ecosystem.config.js"), "utf8");
+
+  assert.match(restartScript, /MERIDIAN_NODE_INTERPRETER=.*dirname .*PM2_BIN.*\/node/);
+  assert.match(restartScript, /export MERIDIAN_NODE_INTERPRETER/);
+  assert.match(ecosystemConfig, /process\.env\.MERIDIAN_NODE_INTERPRETER \|\| "node"/);
+  assert.match(ecosystemConfig, /interpreter: NODE_INTERPRETER/);
+  assert.doesNotMatch(ecosystemConfig, /interpreter: "node"/);
+});
+
 test("terminate.sh stops Meridian and meridian-roles without starting services", async () => {
   const script = await readTerminateScript();
 
