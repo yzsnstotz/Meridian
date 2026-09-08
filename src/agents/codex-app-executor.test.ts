@@ -65,6 +65,46 @@ test("a new worker waits for native App registration instead of creating an exec
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("executor re-reads a bound turn after terminal reconciliation", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-app-reconcile-loop-"));
+  const queue = new AppHandoffQueue(dir);
+  const events: unknown[] = [];
+  let waits = 0;
+  let reconciliations = 0;
+  try {
+    await runAppHandoff({ requestId: "reconcile-trace", workerId: "native-worker", cwd: "/tmp" }, "new task", {
+      queue,
+      emit: event => events.push(event),
+      reconcile: async record => {
+        if (record.state !== "started") return;
+        reconciliations++;
+        queue.complete(record.id, "app-controller", {
+          threadId: uuid,
+          turnId: "native-turn",
+          status: "completed",
+          text: "recovered exact final"
+        });
+      },
+      wait: async () => {
+        waits++;
+        if (waits > 1) throw new Error("executor did not invoke terminal reconciliation");
+        queue.claim("reconcile-trace", "app-controller");
+        queue.submit("reconcile-trace", "app-controller");
+        queue.bindThread("reconcile-trace", "app-controller", uuid);
+        queue.started("reconcile-trace", "app-controller", "native-turn");
+      }
+    });
+    assert.equal(reconciliations, 1);
+    assert.deepEqual(events, [
+      { type: "thread.started", thread_id: uuid },
+      { type: "item.completed", item: { id: "native-turn", type: "agent_message", text: "recovered exact final" } },
+      { type: "turn.completed" }
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("restart reuses durable request without another seed or App turn; failed App result fails the run", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-app-resume-"));
   const queue = new AppHandoffQueue(dir);

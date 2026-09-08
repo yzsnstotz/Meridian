@@ -5,6 +5,7 @@ import type { ResolvedCredential } from "../hub/credential-store";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ReasoningEffort, SandboxMode } from "../types";
 import { AppHandoffQueue } from "./codex-app-queue";
+import { createAppTerminalReconciler } from "./codex-app-reconciler";
 
 export interface AppExecutorOptions {
   requestId: string;
@@ -48,6 +49,7 @@ interface Dependencies {
   cancelled?: () => boolean;
   emit: (event: unknown) => void;
   wait: () => Promise<void>;
+  reconcile?: (request: ReturnType<AppHandoffQueue["read"]>) => Promise<void>;
 }
 
 export async function runAppHandoff(options: AppExecutorOptions, prompt: string, deps: Dependencies): Promise<void> {
@@ -62,6 +64,10 @@ export async function runAppHandoff(options: AppExecutorOptions, prompt: string,
   while (true) {
     let record = deps.queue.read(options.requestId);
     if (deps.cancelled?.() && ["pending", "claimed", "started"].includes(record.state)) record = deps.queue.cancel(options.requestId);
+    if (deps.reconcile && ["started", "cancel_requested"].includes(record.state)) {
+      await deps.reconcile(record);
+      record = deps.queue.read(options.requestId);
+    }
     if (record.threadId && !emittedThread) {
       deps.emit({ type: "thread.started", thread_id: record.threadId });
       emittedThread = true;
@@ -93,6 +99,11 @@ if (require.main === module) {
     cwd: process.cwd()
   };
   const queue = new AppHandoffQueue();
+  const reconcile = createAppTerminalReconciler(queue, {
+    onError: (error, request) => {
+      process.stderr.write(`Codex App terminal reconciliation deferred for ${request.id}: ${error.message}\n`);
+    }
+  });
   let prompt = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", data => { prompt += data; });
@@ -104,7 +115,7 @@ if (require.main === module) {
   }
   process.stdin.on("end", () => {
     void runAppHandoff(options, prompt, {
-      queue, cancelled: () => cancelled, emit: event => process.stdout.write(JSON.stringify(event) + "\n"),
+      queue, cancelled: () => cancelled, emit: event => process.stdout.write(JSON.stringify(event) + "\n"), reconcile,
       wait: () => sleep(1000)
     }).catch(error => {
       process.stderr.write(`${error instanceof Error ? error.message : error}\n`);
