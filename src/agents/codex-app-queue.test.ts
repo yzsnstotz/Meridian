@@ -70,6 +70,43 @@ test("uncertain sends stay claimed; cancellation holds the original thread until
   } finally { f.close(); }
 });
 
+test("a proven thread-start rejection releases only an unbound creation, never an uncertain or bound turn", () => {
+  const f = fixture();
+  try {
+    const { threadId: _, ...input } = request();
+    const rejection = { requestId: input.id, outcome: "not_started" as const, error: "Invalid configuration", evidence: "Native thread/start returned invalid_config without creating a thread; exact create receipt and RPC log retained." };
+    f.queue.create(input);
+    f.queue.claim(input.id, "controller");
+    assert.throws(() => f.queue.rejectCreation(input.id, "controller", rejection), /submission/);
+    f.queue.submit(input.id, "controller");
+    assert.throws(() => f.queue.rejectCreation(input.id, "wrong", rejection), /controller/);
+    assert.throws(() => f.queue.rejectCreation(input.id, "controller", { ...rejection, requestId: "another" }), /mismatch/);
+    assert.throws(() => f.queue.rejectCreation(input.id, "controller", { ...rejection, outcome: "unknown" } as never));
+    const failed = f.queue.rejectCreation(input.id, "controller", rejection);
+    assert.equal(failed.state, "failed");
+    assert.equal(failed.submissionAttempted, true);
+    assert.equal(failed.result, undefined);
+    assert.equal(f.queue.list().length, 0);
+    assert.throws(() => f.queue.submit(input.id, "controller"), /never resend/);
+    f.queue.create({ ...input, id: "cancelled-creation" });
+    f.queue.claim("cancelled-creation", "controller");
+    f.queue.submit("cancelled-creation", "controller");
+    f.queue.observe("cancelled-creation", "controller", "original native receipt");
+    f.queue.cancel("cancelled-creation");
+    const cancelledRejection = { ...rejection, requestId: "cancelled-creation" };
+    assert.throws(() => f.queue.rejectCreation("cancelled-creation", "controller", { ...cancelledRejection, error: " " }));
+    assert.throws(() => f.queue.rejectCreation("cancelled-creation", "controller", { ...cancelledRejection, evidence: " " }));
+    const rejected = f.queue.rejectCreation("cancelled-creation", "controller", cancelledRejection);
+    assert.equal(rejected.state, "failed");
+    assert.deepEqual(JSON.parse(rejected.receipt!), { submissionReceipt: "original native receipt", rejection: cancelledRejection });
+    f.queue.create(request("bound"));
+    f.queue.claim("bound", "controller");
+    f.queue.submit("bound", "controller");
+    assert.throws(() => f.queue.rejectCreation("bound", "controller", { ...rejection, requestId: "bound" }), /bound/);
+    assert.equal(f.queue.read("bound").state, "claimed");
+  } finally { f.close(); }
+});
+
 test("path traversal and malformed thread IDs are rejected", () => {
   const f = fixture();
   try {

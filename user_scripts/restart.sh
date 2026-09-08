@@ -102,14 +102,9 @@ pm2_daemon_running() {
 }
 
 PM2_BIN="$(find_pm2_binary || true)"
-if [[ -n "${PM2_BIN}" ]]; then
-  # PM2's daemon can outlive the shell that launched it. An ecosystem entry
-  # with interpreter "node" then inherits the daemon's Node version rather
-  # than the Node installation that owns the selected PM2 CLI. Native modules
-  # built during this restart must run under that same installation.
-  MERIDIAN_NODE_INTERPRETER="${MERIDIAN_NODE_INTERPRETER:-$(dirname "${PM2_BIN}")/node}"
-  export MERIDIAN_NODE_INTERPRETER
-fi
+# shellcheck source=runtime_node.sh
+source "${ROOT_DIR}/user_scripts/runtime_node.sh"
+prepare_meridian_node "${ROOT_DIR}"
 if [[ -z "${PM2_BIN}" ]] && pm2_daemon_running; then
   echo "[restart] WARNING: PM2 daemon is running but the pm2 binary is not on PATH and not found in fallback locations" >&2
   echo "[restart] WARNING: standalone node dist mode will collide with PM2-managed processes on ports/sockets" >&2

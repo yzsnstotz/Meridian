@@ -1045,7 +1045,7 @@ export class HubRouter {
       if (error instanceof RunInterruptedError) {
         return this.buildResult(
           message,
-          "success",
+          "error",
           instance.agent_type,
           "Agent run interrupted.",
           instance.thread_id,

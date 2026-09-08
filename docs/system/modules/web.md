@@ -54,6 +54,10 @@ All API routes return JSON. Hub-backed routes construct `reply_channel.channel =
 | `/api/callers/:id/authority` | `PATCH` | [ADDED 2026-05-05] Updates an external caller's persisted authority. Body `{ caller_authority: "read" | "write" | "admin" }`. Gated by `Authorization: Bearer <WEB_GUI_TOKEN>`. Signs as `meridian-admin`. Built-in callers return `400`; unknown caller returns `404`. Dispatches `intent: "update_caller_authority"`. | `src/web/server.ts` (`handleUpdateCallerAuthorityRequest`, `callerAuthorityBodySchema`) |
 | `/api/callers/:id` | `DELETE` | [ADDED 2026-05-05] Revokes a caller (preserves the slot). Gated by `Authorization: Bearer <WEB_GUI_TOKEN>`. Signs as `meridian-admin`. Built-in callers return `400`. Unknown caller returns `404`. Dispatches `intent: "unregister_caller"`. Returns `{ revoked_at }`. | `src/web/server.ts` (`handleUnregisterCallerRequest`), `BUILTIN_CALLER_ID_SET` |
 
+### Codex App queue bridge [ADDED 2026-09-09]
+
+`POST /api/codex-app-queue/:id` is GUI-token authenticated and delegates `claim`, `submit`, `bind`, `started`, `observe`, and `complete` to the existing flock-protected queue. Controller binding, exact turn identity, and one-use submission remain enforced. Responses strip prompt, receipt, and final result. It does not create native tasks or expose `reject-creation`; definitive pre-thread failure recovery is local-controller-only. See `src/web/server.ts` and the HTTP regression tests in `src/web/server.test.ts`.
+
 ### WebSocket Bridge
 
 | Path | Auth / Query | Hub Bridge | Browser Event Types | Key refs |

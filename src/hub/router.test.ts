@@ -353,7 +353,10 @@ test("HubRouter interrupt stops the explicit CLI stream without unregistering th
 
   assert.equal(interruptResult.status, "success");
   assert.match(interruptResult.content, /interrupted/i);
-  assert.equal(runResult.status, "success");
+  assert.equal(runResult.status, "error");
+  assert.equal(runResult.run_state, "completed");
+  assert.equal(runResult.trace_id, "aaaaaaaa-1111-4111-8111-111111111111");
+  assert.equal(runResult.thread_id, "codex_stream_interrupt_01");
   assert.match(runResult.content, /interrupted/i);
   assert.equal(process.signalCode, "SIGINT");
   assert.equal(spawnAttempts, 1);
@@ -3695,6 +3698,82 @@ test("resolveStreamingDeliveryRequest does not match a legacy prefix that is not
   });
 
   assert.deepEqual(decision, { activate: false, reason: "not_requested" });
+});
+
+test("App interruption returns a terminal error only after its reservation is released", { timeout: 5000 }, async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { AppHandoffQueue } = await import("../agents/codex-app-queue");
+  const dir = mkdtempSync(join(tmpdir(), "meridian-router-app-interrupt-"));
+  const previousSurface = process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
+  const previousQueue = process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+  delete process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
+  process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = dir;
+  const queue = new AppHandoffQueue(dir);
+  try {
+    for (const submitted of [false, true]) {
+      const workerId = `codex_app_interrupt_${submitted}`;
+      const traceId = submitted ? "aaaaaaaa-1111-4111-8111-111111111112" : "aaaaaaaa-1111-4111-8111-111111111113";
+      const threadId = "01a07727-ac38-7c23-8ef3-4bc90f594b9a";
+      const registry = new InstanceRegistry();
+      registry.register({ thread_id: workerId, agent_type: "codex", mode: "bridge", pid: 0,
+        status: "idle", supportsStream: true, created_at: new Date().toISOString() });
+      const stdout = new PassThrough();
+      const child = createInterruptibleProcess(stdout);
+      const closeChild = child.kill;
+      // Like the App executor, a submitted turn keeps the transport alive until
+      // the controller observes that exact turn terminating.
+      child.kill = signal => queue.read(traceId).state === "cancel_requested" ? true : closeChild(signal);
+      let spawnAttempts = 0;
+      const router = new HubRouter(registry, {
+        instanceManager: {
+          getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+          spawnStreamAgent: () => {
+            spawnAttempts += 1;
+            queue.create({ id: traceId, workerId, threadId, cwd: dir, prompt: "task" });
+            if (submitted) {
+              queue.claim(traceId, "controller");
+              queue.submit(traceId, "controller");
+              queue.started(traceId, "controller", "exact-app-turn");
+            }
+            return { stdout, process: child };
+          }
+        } as never,
+        clientFactory: () => ({ connect: async () => undefined, disconnect: () => undefined,
+          sendMessage: async () => ({ ok: true }), getStatus: async () => ({ status: "idle" }) })
+      });
+      let settled = false;
+      const runPromise = router.route(baseMessage({ trace_id: traceId, thread_id: workerId, target: workerId }));
+      void runPromise.then(() => { settled = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const ack = await router.route(baseMessage({ intent: "interrupt", thread_id: workerId, target: workerId }));
+      assert.equal(ack.status, "success");
+      assert.equal(queue.read(traceId).state, submitted ? "cancel_requested" : "cancelled");
+      if (submitted) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(settled, false);
+        const kill = await router.route(baseMessage({ intent: "kill", thread_id: workerId, target: workerId }));
+        assert.equal(kill.status, "error");
+        assert.match(kill.content, /reserved/);
+        queue.complete(traceId, "controller", { threadId, turnId: "exact-app-turn", status: "interrupted", text: "Turn interrupted." });
+        closeChild("SIGINT");
+      }
+      const result = await runPromise;
+      assert.equal(result.status, "error");
+      assert.equal(result.run_state, "completed");
+      assert.equal(result.trace_id, traceId);
+      assert.equal(result.thread_id, workerId);
+      assert.match(result.content, /interrupted/i);
+      assert.equal(spawnAttempts, 1);
+      assert.equal(queue.list().length, 0);
+      assert.equal(registry.has(workerId), true);
+    }
+  } finally {
+    if (previousSurface === undefined) delete process.env.MERIDIAN_CODEX_EXECUTION_SURFACE; else process.env.MERIDIAN_CODEX_EXECUTION_SURFACE = previousSurface;
+    if (previousQueue === undefined) delete process.env.MERIDIAN_CODEX_APP_QUEUE_DIR; else process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = previousQueue;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("default App routing preserves model/session and refuses destructive lifecycle changes until terminal", async () => {

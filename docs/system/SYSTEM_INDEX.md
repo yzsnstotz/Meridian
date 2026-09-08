@@ -8,6 +8,10 @@
 
 ## Overview
 
+### Recovery update [2026-09-09]
+
+App terminal receipt recovery and definitive pre-thread rejection live in [agents](./modules/agents.md); the authenticated queue controller bridge is documented in [web](./modules/web.md). `HubRouter` reports typed interrupted runs as terminal errors, while interrupt acknowledgements remain successful. Build/restart entrypoints share `user_scripts/runtime_node.sh`: load the installed `fs-ext` using the chosen Node before stopping services, then pin its actual executable for both build and PM2. See [repair contract](../plans/2026-09-09-interrupted-run-result.md). The historical export counts below have not been rescanned.
+
 Meridian is a multi-surface agent orchestration system centered on the `hub` module.
 The primary ingress surfaces are `interface` for Telegram/webhook traffic, `web` for the authenticated browser UI, and `bin` for the JSON-first CLI.
 Those surfaces converge on `hub`, which owns thread lifecycle, IPC routing, persisted history, pane streaming, and reply delivery across channels.

@@ -15,6 +15,10 @@ const Result = z.object({
   threadId: ThreadId, turnId: z.string().min(1),
   status: z.enum(["completed", "failed", "interrupted"]), text: z.string().min(1)
 });
+const CreationRejection = z.object({
+  requestId: Id, outcome: z.literal("not_started"),
+  error: z.string().trim().min(1), evidence: z.string().trim().min(1)
+});
 const State = z.enum(["pending", "claimed", "started", "cancel_requested", "completed", "failed", "cancelled"]);
 const Record = Input.extend({
   submissionAttempted: z.boolean().default(false),
@@ -167,6 +171,25 @@ export class AppHandoffQueue {
     });
   }
 
+  /** Controller-only recovery for a definitive native thread/start rejection.
+   * Never use absence, elapsed time, a timeout, or a pending client ID as proof.
+   * Bound threads must use their exact terminal-turn protocol instead.
+   */
+  rejectCreation(id: string, controller: string, input: z.infer<typeof CreationRejection>): AppHandoffRequest {
+    const rejection = CreationRejection.parse(input);
+    if (rejection.requestId !== id) throw new Error("Creation rejection request mismatch");
+    return this.transition(id, record => {
+      this.assertController(record, controller);
+      if (!record.submissionAttempted) throw new Error("No native submission intent recorded");
+      if (record.threadId || record.turnId) throw new Error("Cannot reject a bound App thread; verify its terminal turn");
+      if (!["claimed", "cancel_requested"].includes(record.state)) throw new Error("No unresolved creation to reject");
+      // Retain both the original submission receipt and the exact rejection.
+      record.receipt = JSON.stringify({ submissionReceipt: record.receipt, rejection });
+      record.progress = `Native App creation rejected before execution: ${rejection.error}`;
+      record.state = "failed";
+    });
+  }
+
   cancel(id: string): AppHandoffRequest {
     return this.transition(id, record => {
       if (TERMINAL.has(record.state)) return;
@@ -188,13 +211,14 @@ if (require.main === module) {
       case "bind": result = queue.bindThread(id, controller, argument); break;
       case "started": result = queue.started(id, controller, argument); break;
       case "complete": result = queue.complete(id, controller, JSON.parse(readFileSync(argument, "utf8"))); break;
+      case "reject-creation": result = queue.rejectCreation(id, controller, JSON.parse(readFileSync(argument, "utf8"))); break;
       case "observe": {
         const observation = JSON.parse(readFileSync(argument, "utf8"));
         result = queue.observe(id, controller, observation.receipt, observation.progress);
         break;
       }
       case "cancel": result = queue.cancel(id); break;
-      default: throw new Error("Usage: codex-app-queue list|read ID|claim ID CONTROLLER|submit ID CONTROLLER|observe ID CONTROLLER FILE|bind ID CONTROLLER THREAD|started ID CONTROLLER TURN|complete ID CONTROLLER RESULT_FILE|cancel ID");
+      default: throw new Error("Usage: codex-app-queue list|read ID|claim ID CONTROLLER|submit ID CONTROLLER|observe ID CONTROLLER FILE|bind ID CONTROLLER THREAD|started ID CONTROLLER TURN|complete ID CONTROLLER RESULT_FILE|reject-creation ID CONTROLLER REJECTION_FILE|cancel ID");
     }
     process.stdout.write(JSON.stringify(result) + "\n");
   } catch (error) {

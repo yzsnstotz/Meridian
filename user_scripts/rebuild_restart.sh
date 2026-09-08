@@ -92,10 +92,24 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -f "${ROOT_DIR}/.env" ]]; then
+  set -a
+  # Match restart.sh before preflight so an env-file override cannot first
+  # appear after the existing services have already been stopped.
+  source "${ROOT_DIR}/.env"
+  set +a
+fi
+
 if ! command -v npm >/dev/null 2>&1; then
   echo "npm is required" >&2
   exit 1
 fi
+
+# Validate the installed native module before build or any service teardown,
+# then pass the same absolute Node through npm and the restart chain.
+# shellcheck source=runtime_node.sh
+source "${ROOT_DIR}/user_scripts/runtime_node.sh"
+prepare_meridian_node "${ROOT_DIR}"
 
 terminate_args=()
 restart_args=()
