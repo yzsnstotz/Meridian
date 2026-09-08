@@ -30,6 +30,7 @@ import {
   CallerIdentitySchema,
   CallerAuthoritySchema,
   HubMessageSchema,
+  ExternalExecutionOwnershipSchema,
   HubResultSchema,
   ThreadProgressSnapshotSchema,
   type AgentInstance,
@@ -37,6 +38,7 @@ import {
   type AttachmentResult,
   type CallerIdentity,
   type FileAttachment,
+  type ExternalExecutionOwnership,
   type HubMessage,
   type HubResult,
   type HubRunState,
@@ -1425,12 +1427,23 @@ export class HubRouter {
   private async handleStatus(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadId(message);
     const before = this.registry.get(threadId);
-    const status = await this.instanceManager.status(threadId);
+    let status;
+    try {
+      status = await this.instanceManager.status(threadId);
+    } catch (error) {
+      // A durable external reservation survives registry loss and provider
+      // probe failure. Report the owner without inventing an instance status.
+      const execution = this.getExternalExecutionOwnership(threadId);
+      if (!execution) throw error;
+      return this.buildResult(message, "success", this.resolveResultSource(message),
+        JSON.stringify({ execution }, null, 2), threadId);
+    }
     this.recordCallerInteraction(threadId, message, { adoptMissingSpawnedBy: true });
     if (this.didPersistentInstanceChange(before, status.instance)) {
       this.persistStateSafely();
     }
-    const content = this.appendAttachmentSummary(JSON.stringify(status, null, 2), status.instance.thread_id);
+    const execution = this.getExternalExecutionOwnership(threadId);
+    const content = this.appendAttachmentSummary(JSON.stringify({ ...status, ...(execution ? { execution } : {}) }, null, 2), status.instance.thread_id);
     return this.buildResult(
       message,
       "success",
@@ -1438,6 +1451,26 @@ export class HubRouter {
       content,
       status.instance.thread_id
     );
+  }
+
+  private getExternalExecutionOwnership(threadId: string): ExternalExecutionOwnership | undefined {
+    const records = new AppHandoffQueue().list(true);
+    for (const record of records) {
+      if (record.workerId !== threadId) continue;
+      const ownership = ExternalExecutionOwnershipSchema.safeParse({
+        kind: "external_handoff", state: record.state, request_id: record.id
+      });
+      if (ownership.success) return ownership.data;
+    }
+    const active = this.activeRunsByThread.get(threadId);
+    // Cover the synchronous reservation before the executor persists its
+    // queue record, but never resurrect a request with a terminal receipt.
+    if (active?.appHandoff && !records.some(record => record.id === active.traceId)) {
+      return ExternalExecutionOwnershipSchema.parse({
+        kind: "external_handoff", state: "pending", request_id: active.traceId
+      });
+    }
+    return undefined;
   }
 
   private isInstanceProcessAlive(instance: AgentInstance): boolean {

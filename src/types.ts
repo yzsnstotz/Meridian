@@ -84,6 +84,14 @@ export type HubRunState = z.infer<typeof HubRunStateSchema>;
 export const AgentInstanceStatusSchema = z.enum(["idle", "running", "waiting", "stopped", "error"]);
 export type AgentInstanceStatus = z.infer<typeof AgentInstanceStatusSchema>;
 
+/** Reservation ownership, independent of provider and registry liveness. */
+export const ExternalExecutionOwnershipSchema = z.object({
+  kind: z.literal("external_handoff"),
+  state: z.enum(["pending", "claimed", "started", "cancel_requested"]),
+  request_id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,119}$/)
+});
+export type ExternalExecutionOwnership = z.infer<typeof ExternalExecutionOwnershipSchema>;
+
 export const HubUsageSchema = z
   .object({
     input_tokens: z.number().finite().optional(),

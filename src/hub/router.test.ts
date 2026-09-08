@@ -3700,6 +3700,139 @@ test("resolveStreamingDeliveryRequest does not match a legacy prefix that is not
   assert.deepEqual(decision, { activate: false, reason: "not_requested" });
 });
 
+test("status exposes only durable external ownership for arbitrary caller and worker identities", async (t) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { AppHandoffQueue } = await import("../agents/codex-app-queue");
+  const dir = mkdtempSync(join(tmpdir(), "meridian-status-owner-"));
+  const previous = process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+  process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = dir;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+    else process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = previous;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const queue = new AppHandoffQueue(dir);
+  for (const [caller, workerId] of [["arbitrary-client-a", "task-amber"], ["independent-client-b", "worker-violet"]]) {
+    const registry = new InstanceRegistry();
+    registry.register({ thread_id: workerId, agent_type: "codex", mode: "bridge", pid: 0,
+      status: "running", supportsStream: true, created_at: new Date().toISOString() });
+    const requestId = `request-${workerId}`;
+    const threadId = "01a07727-ac38-7c23-8ef3-4bc90f594b9a";
+    queue.create({ id: requestId, workerId, cwd: dir, prompt: "private prompt" });
+    // A fresh router has no in-memory run: ownership must survive a restart.
+    const router = new HubRouter(registry);
+    for (const state of ["pending", "claimed", "started", "cancel_requested"] as const) {
+      if (state === "claimed") queue.claim(requestId, "controller");
+      if (state === "started") {
+        queue.submit(requestId, "controller");
+        queue.bindThread(requestId, "controller", threadId);
+        queue.started(requestId, "controller", "exact-turn");
+        queue.observe(requestId, "controller", "private receipt", "private progress");
+      }
+      if (state === "cancel_requested") queue.cancel(requestId);
+      const result = await router.route(baseMessage({ intent: "status", actor_id: caller, target: workerId, thread_id: workerId }));
+      assert.equal(result.status, "success");
+      const status = JSON.parse(result.content);
+      assert.deepEqual(status.execution, { kind: "external_handoff", state, request_id: requestId });
+      assert.equal(status.instance.thread_id, workerId);
+      assert.equal(status.agent_status.status, "running");
+      assert.doesNotMatch(result.content, /private prompt|private receipt|private progress|exact-turn/);
+    }
+    queue.complete(requestId, "controller", { threadId, turnId: "exact-turn", status: "interrupted", text: "private final" });
+    const terminal = await router.route(baseMessage({ intent: "status", actor_id: caller, target: workerId, thread_id: workerId }));
+    assert.equal(JSON.parse(terminal.content).execution, undefined);
+    assert.doesNotMatch(terminal.content, /private final/);
+  }
+});
+
+test("status retains durable external ownership when registry or provider status is unavailable", async (t) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { AppHandoffQueue } = await import("../agents/codex-app-queue");
+  const dir = mkdtempSync(join(tmpdir(), "meridian-status-unavailable-"));
+  const previous = process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+  process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = dir;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+    else process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = previous;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const queue = new AppHandoffQueue(dir);
+  for (const missing of [true, false]) {
+    const workerId = `reservation-${missing}`;
+    queue.create({ id: workerId, workerId, cwd: dir, prompt: "private" });
+    const registry = new InstanceRegistry();
+    if (!missing) registry.register({ thread_id: workerId, agent_type: "codex", mode: "bridge", pid: 0,
+      status: "error", supportsStream: true, created_at: new Date().toISOString() });
+    const router = new HubRouter(registry, missing ? {} : { instanceManager: {
+      status: async () => { throw new Error("provider socket unavailable"); },
+      getThreadAttachment: () => ({ sessions: [], interface_id: null })
+    } as never });
+    const result = await router.route(baseMessage({ intent: "status", target: workerId, thread_id: workerId }));
+    assert.equal(result.status, "success");
+    assert.deepEqual(JSON.parse(result.content).execution, { kind: "external_handoff", state: "pending", request_id: workerId });
+    queue.cancel(workerId);
+    const released = await router.route(baseMessage({ intent: "status", target: workerId, thread_id: workerId }));
+    assert.equal(released.status, "error");
+  }
+});
+
+test("status preserves an external reservation before enqueue and keeps attachment text compatible", async (t) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "meridian-status-before-enqueue-"));
+  const previous = process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+  const previousSurface = process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
+  process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = dir;
+  delete process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+    else process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = previous;
+    if (previousSurface === undefined) delete process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
+    else process.env.MERIDIAN_CODEX_EXECUTION_SURFACE = previousSurface;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const registry = new InstanceRegistry();
+  const workerId = "task-before-enqueue";
+  registry.register({ thread_id: workerId, agent_type: "codex", mode: "bridge", pid: 0,
+    status: "idle", supportsStream: true, created_at: new Date().toISOString() });
+  const stdout = new PassThrough();
+  const child = createInterruptibleProcess(stdout);
+  const router = new HubRouter(registry, { instanceManager: {
+    getThreadAttachment: () => ({ sessions: ["session-a"], interface_id: null }),
+    status: async () => ({ instance: registry.get(workerId), agent_status: { status: "running" } }),
+    spawnStreamAgent: () => ({ stdout, process: child })
+  } as never });
+  const run = router.route(baseMessage({ target: workerId, thread_id: workerId }));
+  await new Promise<void>(resolve => setImmediate(resolve));
+  try {
+    const status = await router.route(baseMessage({ intent: "status", target: workerId, thread_id: workerId }));
+    const [json, attachment] = status.content.split("\n\nAttached chat sessions:");
+    assert.deepEqual(JSON.parse(json).execution, { kind: "external_handoff", state: "pending", request_id: baseMessage().trace_id });
+    assert.match(attachment, /session-a/);
+    // The executor can still be unwinding after the exact App turn ends.
+    // Its in-memory reservation must not resurrect a terminal queue record.
+    const { AppHandoffQueue } = await import("../agents/codex-app-queue");
+    const queue = new AppHandoffQueue(dir);
+    const requestId = baseMessage().trace_id;
+    const threadId = "01a07727-ac38-7c23-8ef3-4bc90f594b9a";
+    queue.create({ id: requestId, workerId, threadId, cwd: dir, prompt: "task" });
+    queue.claim(requestId, "controller");
+    queue.submit(requestId, "controller");
+    queue.started(requestId, "controller", "exact-turn");
+    queue.complete(requestId, "controller", { threadId, turnId: "exact-turn", status: "completed", text: "terminal receipt" });
+    const terminal = await router.route(baseMessage({ intent: "status", target: workerId, thread_id: workerId }));
+    assert.equal(JSON.parse(terminal.content.split("\n\nAttached chat sessions:")[0]).execution, undefined);
+  } finally {
+    child.kill("SIGINT");
+    await run;
+  }
+});
+
 test("App interruption returns a terminal error only after its reservation is released", { timeout: 5000 }, async () => {
   const { mkdtempSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

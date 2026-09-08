@@ -34,6 +34,29 @@ On this host the Hub runs Node 24 from `/Users/yzliu/.local/share/fnm/aliases/de
 8. On subsequent passes, use native read_thread/wait_threads snapshots to observe active turns. Record real changed commentary/status with `observe`; do not invent periodic progress. The helper can extract the exact turn's latest commentary, final text and task_complete/turn_aborted event. Never use another turn's final or a title as evidence.
 9. Once native App state and the exact turn event confirm terminal, write `{threadId,turnId,status,text}` to a private result file and `complete ID codex-app-controller FILE`. `status` must be completed, failed or interrupted; `text` is the real final result. A task_complete without final text needs reconciliation. Meridian then receives the real result and applies its normal report/validator rules. App completion is not product acceptance.
 
+## Effective task environment
+
+The App host account, the project config default, and the controller's current
+permission profile do not prove the worker's effective permissions. A newly
+created native task can retain a different saved task profile. For a reported
+environment blocker, compare the exact worker turn's actual permission context
+and scoped failing operation before repeating long verification. Do not call a
+child-task denial missing owner authorization, or claim that editing a project
+default repaired native task inheritance.
+
+If the worker's scoped Git metadata or required dependency access is denied,
+preserve its checkout and report the exact refusal promptly. Do not change
+Codex permissions/config/database, bypass the denial through another executor,
+or rerun an unchanged failure each heartbeat. Open the actual native worker for
+the owner to select its intended permissions. After the owner changes that
+task's environment, prefer the canonical `meridian-tool run` against its retained
+Hub worker with the original command, model and validation settings; the new
+queue request must retain its native session ID and use one same-task send.
+Verify no active owner before this continuation, and verify the new turn's
+effective environment and real outcome afterward. Never reuse a terminal queue
+request, force-complete a row, or substitute worker evidence for independent
+acceptance.
+
 ## Cancellation and recovery
 
 If native **thread creation is definitively rejected before a thread exists**, the original trusted controller may use `reject-creation ID CONTROLLER REJECTION_FILE`. The private file contains `{requestId, outcome: "not_started", error, evidence}`. Retain the exact native create receipt and correlated native `thread/start` error in the evidence. This only accepts submitted, unbound `claimed`/`cancel_requested` creations, records a failed handoff without inventing a UUID or final answer, and never re-enables submission of the old request. A pending client ID, missing listing, timeout, elapsed time, absent marker, or uncertain send is NOT rejection evidence. Bound tasks must use the exact terminal-turn protocol. The local CLI is the only rejection entrypoint; the HTTP bridge deliberately does not expose it. Resolve the startup cause before a new canonical retry.
