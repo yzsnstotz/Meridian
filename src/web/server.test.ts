@@ -6,6 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import type { Socket } from "node:net";
 
+import { AppHandoffQueue } from "../agents/codex-app-queue";
 import { ProviderCapabilityListSchema, ProviderCapabilitySchema, type HubMessage, type ThreadProgressSnapshot } from "../types";
 
 process.env.TELEGRAM_BOT_TOKEN ??= "123456789:test_token";
@@ -63,6 +64,32 @@ async function withServer(
     await fs.promises.rm(staticDir, { recursive: true, force: true });
   }
 }
+
+test("status bridge preserves caller identity, attachment-compatible JSON and explicit errors", async () => {
+  const seen: HubMessage[] = [];
+  await withServer(async ({ baseUrl }) => {
+    assert.equal((await fetch(`${baseUrl}/api/status?thread_id=opaque-owner`)).status, 401);
+    const headers = { Authorization: "Bearer secret-token", "X-Meridian-Caller-Id": "unrelated-reader", "X-Meridian-Caller-Key": "reader-key" };
+    assert.equal((await fetch(`${baseUrl}/api/status`, { headers })).status, 400);
+    for (const threadId of ["opaque-owner", "another-task"]) {
+      const response = await fetch(`${baseUrl}/api/status?thread_id=${threadId}`, { headers });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { thread_id: threadId, execution: { kind: "external_handoff", state: "pending", request_id: "exact-request", delivery_phase: "queued" } });
+    }
+    assert.equal((await fetch(`${baseUrl}/api/status?thread_id=denied`, { headers })).status, 502);
+  }, {
+    requestHub: async () => { throw new Error("must not drop inbound caller identity"); },
+    requestHubAsCaller: async (message: HubMessage, auth: { caller_id: string; caller_key: string }) => {
+      assert.deepEqual(auth, { caller_id: "unrelated-reader", caller_key: "reader-key" });
+      seen.push(message);
+      return { trace_id: message.trace_id, thread_id: message.thread_id, source: "codex", status: message.thread_id === "denied" ? "error" : "success",
+        content: message.thread_id === "denied" ? "caller denied" : JSON.stringify({ execution: { kind: "external_handoff", state: "pending", request_id: "exact-request", delivery_phase: "queued" } }) + "\n\nAttached chat sessions: private-session",
+        attachments: [], timestamp: new Date().toISOString() };
+    }
+  });
+  assert.equal(seen.length, 3);
+  assert.ok(seen.every(message => message.intent === "status" && message.target === message.thread_id && message.caller?.caller_id === "unrelated-reader"));
+});
 
 test("Web Interface Server rejects unauthenticated requests", async () => {
   let hubCallCount = 0;
@@ -377,6 +404,61 @@ test("Web Interface Server reads and writes file content in instance working dir
     });
   } finally {
     await fs.promises.rm(repoDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server exposes authenticated, redacted App queue controller transitions", async () => {
+  const queueDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-app-queue-"));
+  const queue = new AppHandoffQueue(queueDir);
+  const requestId = "app-request-one";
+  const threadId = "01a0780f-c9ab-72e0-b9a2-6eeb724385b6";
+  queue.create({ id: requestId, workerId: "codex_42", cwd: "/tmp/project", prompt: "private worker prompt" });
+
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const endpoint = `${baseUrl}/api/codex-app-queue/${requestId}?token=secret-token`;
+      const post = async (body: Record<string, unknown>) => {
+        const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify(body) });
+        assert.equal(response.status, 200);
+        return await response.json() as Record<string, unknown>;
+      };
+
+      const claim = await post({ action: "claim", controller: "codex-app-controller" });
+      assert.equal(claim.state, "claimed");
+      assert.ok(!("prompt" in claim));
+      const submit = await post({ action: "submit", controller: "codex-app-controller" });
+      assert.equal(submit.submissionAttempted, true);
+      await post({ action: "bind", controller: "codex-app-controller", thread_id: threadId });
+      await post({ action: "started", controller: "codex-app-controller", turn_id: "turn-one" });
+      const observe = await post({ action: "observe", controller: "codex-app-controller",
+        receipt: "private native receipt", progress: "working" });
+      assert.ok(!("receipt" in observe));
+      const complete = await post({ action: "complete", controller: "codex-app-controller",
+        result: { threadId, turnId: "turn-one", status: "completed", text: "private final text" } });
+      assert.equal(complete.state, "completed");
+      assert.ok(!("result" in complete));
+      assert.equal(queue.read(requestId).result?.text, "private final text");
+    }, { appHandoffQueue: queue });
+  } finally {
+    await fs.promises.rm(queueDir, { recursive: true, force: true });
+  }
+});
+
+test("Web Interface Server rejects unauthenticated App queue transitions without mutation", async () => {
+  const queueDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "meridian-web-app-queue-auth-"));
+  const queue = new AppHandoffQueue(queueDir);
+  queue.create({ id: "app-auth", workerId: "codex_43", cwd: "/tmp/project", prompt: "private" });
+  try {
+    await withServer(async ({ baseUrl }) => {
+      const response = await fetch(`${baseUrl}/api/codex-app-queue/app-auth`, { method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "claim", controller: "codex-app-controller" }) });
+      assert.equal(response.status, 401);
+      assert.equal(queue.read("app-auth").state, "pending");
+    }, { appHandoffQueue: queue });
+  } finally {
+    await fs.promises.rm(queueDir, { recursive: true, force: true });
   }
 });
 
@@ -1265,6 +1347,23 @@ test("Web Interface Server accepts stateless_call spawn mode", async () => {
       };
     }
   });
+});
+
+test("Web Interface Server forwards explicit disposable validation capability", async () => {
+  const messages: HubMessage[] = [];
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "codex", mode: "stateless_call", sandbox_mode: "read-only", disposable_storage: true })
+    });
+    assert.equal(response.status, 200);
+    assert.equal(messages[0]?.payload.disposable_storage, true);
+    assert.equal(messages[0]?.payload.sandbox_mode, "read-only");
+  }, { requestHub: async (message: HubMessage) => {
+    messages.push(message);
+    return { trace_id: message.trace_id, thread_id: "codex_stateless", source: "codex", status: "success" as const,
+      content: "{}", attachments: [], timestamp: new Date().toISOString() };
+  } });
 });
 
 test("Web Interface Server enforces ADS profile spawn safety defaults", async () => {

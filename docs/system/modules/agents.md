@@ -185,6 +185,14 @@ Meridian is the single owner of provider launch-policy mapping. The public HTTP 
 
 ## Test Files
 
+### Codex App recovery additions [UPDATED 2026-09-09]
+
+- `src/agents/codex-app-reconciler.ts`: `reconcileStartedAppRequest` compares exact native thread/turn and nonempty terminal text, re-reads the durable binding, and uses controller-bound completion. `observeCodexAppTurn` invokes the bounded read-only Python observer; `createAppTerminalReconciler` throttles checks to 15 seconds. Ambiguity and nonterminal turns retain reservations.
+- `src/agents/codex-app-executor.ts`: `runAppHandoff` re-reads after reconciliation; it never launches native work itself or fabricates final text.
+- `src/agents/codex-app-queue.ts`: `rejectCreation` is a controller-only, request-matched terminal failure for a definitive native rejection before thread binding. It retains original and failure receipts. Unknown outcomes and bound threads cannot use it; submission intent stays consumed.
+- Tests: `codex-app-queue.test.ts`, `codex-app-executor.test.ts`, `codex-app-reconciler.test.ts`; observer fixtures in `scripts/tests/test_codex_app_observe.py`.
+- Dependencies: Node child-process/path, Zod, `AppHandoffQueue`, existing read-only observer. No caller-identity branching or permission changes.
+
 - `src/agents/claude.test.ts`
 - `src/agents/codex.test.ts`
 - `src/agents/gemini.test.ts`

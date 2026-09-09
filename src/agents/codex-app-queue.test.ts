@@ -1,16 +1,56 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { AppHandoffQueue } from "./codex-app-queue";
 
 const thread = "01a07727-ac38-7c23-8ef3-4bc90f594b9a";
+
+test("submission and native start timestamps survive reopen and are not refreshed by observations", () => {
+  const f = fixture();
+  try {
+    f.queue.create(request());
+    f.queue.claim("request-one", "controller");
+    const submitted = f.queue.submit("request-one", "controller") as unknown as { submittedAt?: string };
+    assert.ok(submitted.submittedAt, "durable submission needs its own timestamp");
+    const started = f.queue.started("request-one", "controller", "exact-turn") as unknown as { startedAt?: string };
+    assert.ok(started.startedAt, "native acknowledgement needs its own timestamp");
+    f.queue.observe("request-one", "controller", "receipt", "real changed progress");
+    const observedAt = f.queue.read("request-one").lastObservedAt;
+    assert.ok(observedAt);
+    f.queue.observe("request-one", "controller", "receipt-only-update", "real changed progress");
+    assert.equal(f.queue.read("request-one").lastObservedAt, observedAt, "a duplicate observation is not new progress");
+    f.queue.started("request-one", "controller", "exact-turn");
+    const reopened = new AppHandoffQueue(f.dir).read("request-one") as unknown as { submittedAt?: string; startedAt?: string };
+    assert.equal(reopened.submittedAt, submitted.submittedAt);
+    assert.equal(reopened.startedAt, started.startedAt);
+  } finally { f.close(); }
+});
 function fixture() {
   const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-app-test-"));
   return { queue: new AppHandoffQueue(dir), dir, close: () => rmSync(dir, { recursive: true, force: true }) };
 }
+
+test("replaying a legacy start acknowledgement cannot make an old native turn fresh", () => {
+  const f = fixture();
+  try {
+    f.queue.create(request()); f.queue.claim("request-one", "controller");
+    f.queue.submit("request-one", "controller"); f.queue.started("request-one", "controller", "exact-turn");
+    const filename = path.join(f.dir, "request-one.json");
+    const legacy = JSON.parse(readFileSync(filename, "utf8"));
+    delete legacy.startedAt;
+    const at = "2026-09-08T01:00:00.000Z";
+    legacy.history = [{ state: "started", at }];
+    writeFileSync(filename, JSON.stringify(legacy));
+    assert.equal(f.queue.started("request-one", "controller", "exact-turn").startedAt, at);
+    delete legacy.startedAt; legacy.history = [];
+    writeFileSync(filename, JSON.stringify(legacy));
+    assert.equal(f.queue.started("request-one", "controller", "exact-turn").startedAt, undefined);
+    assert.deepEqual(f.queue.read("request-one").history, [], "unknown history cannot acquire a fresh start from replay");
+  } finally { f.close(); }
+});
 function request(id = "request-one", workerId = "worker-one") {
   return { id, workerId, threadId: thread, cwd: "/tmp/work", prompt: "Run the assigned task", model: "gpt-6-astra", effort: "xhigh" };
 }
@@ -35,6 +75,22 @@ test("same request is idempotent but conflicting content or active thread cannot
     assert.equal(f.queue.create(request()).id, "request-one");
     assert.throws(() => f.queue.create({ ...request(), prompt: "changed" }), /conflict/);
     assert.throws(() => f.queue.create(request("different-request")), /active/);
+  } finally { f.close(); }
+});
+
+test("execution policy intent survives for unrelated workers and binds idempotent request identity", () => {
+  const f = fixture();
+  try {
+    for (const [index, autoApprove] of [false, true].entries()) {
+      const input = { ...request(`policy-${index}`, `opaque-${index}`), threadId: undefined,
+        executionPolicy: { autoApprove, sandboxMode: "workspace-write" as const } };
+      f.queue.create(input);
+      assert.deepEqual(f.queue.read(input.id).executionPolicy, input.executionPolicy);
+      assert.deepEqual(f.queue.create(input).executionPolicy, input.executionPolicy);
+      assert.throws(() => f.queue.create({ ...input, executionPolicy: { autoApprove: !autoApprove, sandboxMode: "workspace-write" } }), /conflict/);
+    }
+    assert.throws(() => f.queue.create({ ...request("unsupported-policy", "opaque-third"),
+      executionPolicy: { autoApprove: true, grantFullAccess: true } } as never), /Unrecognized/);
   } finally { f.close(); }
 });
 
@@ -67,6 +123,43 @@ test("uncertain sends stay claimed; cancellation holds the original thread until
     f.queue.complete("request-one", "controller-a", { threadId: thread, turnId: "turn-one", status: "completed", text: "late result" });
     assert.equal(f.queue.read("request-one").state, "cancelled");
     assert.match(readFileSync(path.join(f.dir, "request-one.json"), "utf8"), /cancel_requested/);
+  } finally { f.close(); }
+});
+
+test("a proven thread-start rejection releases only an unbound creation, never an uncertain or bound turn", () => {
+  const f = fixture();
+  try {
+    const { threadId: _, ...input } = request();
+    const rejection = { requestId: input.id, outcome: "not_started" as const, error: "Invalid configuration", evidence: "Native thread/start returned invalid_config without creating a thread; exact create receipt and RPC log retained." };
+    f.queue.create(input);
+    f.queue.claim(input.id, "controller");
+    assert.throws(() => f.queue.rejectCreation(input.id, "controller", rejection), /submission/);
+    f.queue.submit(input.id, "controller");
+    assert.throws(() => f.queue.rejectCreation(input.id, "wrong", rejection), /controller/);
+    assert.throws(() => f.queue.rejectCreation(input.id, "controller", { ...rejection, requestId: "another" }), /mismatch/);
+    assert.throws(() => f.queue.rejectCreation(input.id, "controller", { ...rejection, outcome: "unknown" } as never));
+    const failed = f.queue.rejectCreation(input.id, "controller", rejection);
+    assert.equal(failed.state, "failed");
+    assert.equal(failed.submissionAttempted, true);
+    assert.equal(failed.result, undefined);
+    assert.equal(f.queue.list().length, 0);
+    assert.throws(() => f.queue.submit(input.id, "controller"), /never resend/);
+    f.queue.create({ ...input, id: "cancelled-creation" });
+    f.queue.claim("cancelled-creation", "controller");
+    f.queue.submit("cancelled-creation", "controller");
+    f.queue.observe("cancelled-creation", "controller", "original native receipt");
+    f.queue.cancel("cancelled-creation");
+    const cancelledRejection = { ...rejection, requestId: "cancelled-creation" };
+    assert.throws(() => f.queue.rejectCreation("cancelled-creation", "controller", { ...cancelledRejection, error: " " }));
+    assert.throws(() => f.queue.rejectCreation("cancelled-creation", "controller", { ...cancelledRejection, evidence: " " }));
+    const rejected = f.queue.rejectCreation("cancelled-creation", "controller", cancelledRejection);
+    assert.equal(rejected.state, "failed");
+    assert.deepEqual(JSON.parse(rejected.receipt!), { submissionReceipt: "original native receipt", rejection: cancelledRejection });
+    f.queue.create(request("bound"));
+    f.queue.claim("bound", "controller");
+    f.queue.submit("bound", "controller");
+    assert.throws(() => f.queue.rejectCreation("bound", "controller", { ...rejection, requestId: "bound" }), /bound/);
+    assert.equal(f.queue.read("bound").state, "claimed");
   } finally { f.close(); }
 });
 

@@ -7,19 +7,31 @@ import { flockSync } from "fs-ext";
 
 const Id = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,119}$/, "Invalid identifier");
 const ThreadId = z.string().uuid("Invalid Codex thread ID");
+/** Requested Hub policy, not an effective native permission grant. */
+export const AppExecutionPolicySchema = z.object({
+  autoApprove: z.boolean().optional(),
+  sandboxMode: z.enum(["read-only", "workspace-write"]).optional()
+}).strict();
 const Input = z.object({
   id: Id, workerId: z.string().min(1), threadId: ThreadId.optional(), cwd: z.string().min(1),
-  prompt: z.string().min(1), model: z.string().optional(), effort: z.string().optional()
+  prompt: z.string().min(1), model: z.string().optional(), effort: z.string().optional(),
+  executionPolicy: AppExecutionPolicySchema.optional()
 });
 const Result = z.object({
   threadId: ThreadId, turnId: z.string().min(1),
   status: z.enum(["completed", "failed", "interrupted"]), text: z.string().min(1)
+});
+const CreationRejection = z.object({
+  requestId: Id, outcome: z.literal("not_started"),
+  error: z.string().trim().min(1), evidence: z.string().trim().min(1)
 });
 const State = z.enum(["pending", "claimed", "started", "cancel_requested", "completed", "failed", "cancelled"]);
 const Record = Input.extend({
   submissionAttempted: z.boolean().default(false),
   state: State, controller: Id.optional(), turnId: z.string().optional(),
   createdAt: z.string(), updatedAt: z.string(), result: Result.optional(),
+  submittedAt: z.string().datetime().optional(), startedAt: z.string().datetime().optional(),
+  lastObservedAt: z.string().datetime().optional(),
   receipt: z.string().optional(), progress: z.string().optional(),
   history: z.array(z.object({ state: State, at: z.string() }))
 });
@@ -92,10 +104,10 @@ export class AppHandoffQueue {
     });
   }
 
-  private transition(id: string, update: (record: AppHandoffRequest) => void): AppHandoffRequest {
+  private transition(id: string, update: (record: AppHandoffRequest) => void | false): AppHandoffRequest {
     return this.locked(() => {
       const record = this.read(id);
-      update(record);
+      if (update(record) === false) return record;
       record.updatedAt = new Date().toISOString();
       record.history.push({ state: record.state, at: record.updatedAt });
       return this.save(record);
@@ -116,6 +128,7 @@ export class AppHandoffQueue {
       this.assertController(record, controller);
       if (record.state !== "claimed" || record.submissionAttempted) throw new Error("Native submission is not allowed; never resend an uncertain request");
       record.submissionAttempted = true;
+      record.submittedAt = new Date().toISOString();
     });
   }
 
@@ -142,7 +155,17 @@ export class AppHandoffQueue {
       if (!record.threadId) throw new Error("No native App thread is bound");
       if (!["claimed", "started", "cancel_requested"].includes(record.state)) throw new Error("Request is not claimed");
       if (record.turnId && record.turnId !== turnId) throw new Error("App turn conflict; do not duplicate execution");
-      record.turnId = turnId;
+      if (record.turnId) {
+        // Same-turn acknowledgements are not fresh execution. For a legacy
+        // record recover only an original transition; unknown stays unknown.
+        if (record.startedAt) return false;
+        const original = record.history.find(item => item.state === "started")?.at;
+        if (!original || !Number.isFinite(Date.parse(original))) return false;
+        record.startedAt = new Date(original).toISOString();
+      } else {
+        record.turnId = turnId;
+        record.startedAt = new Date().toISOString();
+      }
       if (record.state !== "cancel_requested") record.state = "started";
     });
   }
@@ -163,7 +186,29 @@ export class AppHandoffQueue {
       this.assertController(record, controller);
       if (TERMINAL.has(record.state)) throw new Error("Cannot update a terminal request");
       record.receipt = receipt;
-      if (progress) record.progress = progress;
+      if (progress && progress !== record.progress) {
+        record.progress = progress;
+        if (record.turnId) record.lastObservedAt = new Date().toISOString();
+      }
+    });
+  }
+
+  /** Controller-only recovery for a definitive native thread/start rejection.
+   * Never use absence, elapsed time, a timeout, or a pending client ID as proof.
+   * Bound threads must use their exact terminal-turn protocol instead.
+   */
+  rejectCreation(id: string, controller: string, input: z.infer<typeof CreationRejection>): AppHandoffRequest {
+    const rejection = CreationRejection.parse(input);
+    if (rejection.requestId !== id) throw new Error("Creation rejection request mismatch");
+    return this.transition(id, record => {
+      this.assertController(record, controller);
+      if (!record.submissionAttempted) throw new Error("No native submission intent recorded");
+      if (record.threadId || record.turnId) throw new Error("Cannot reject a bound App thread; verify its terminal turn");
+      if (!["claimed", "cancel_requested"].includes(record.state)) throw new Error("No unresolved creation to reject");
+      // Retain both the original submission receipt and the exact rejection.
+      record.receipt = JSON.stringify({ submissionReceipt: record.receipt, rejection });
+      record.progress = `Native App creation rejected before execution: ${rejection.error}`;
+      record.state = "failed";
     });
   }
 
@@ -188,13 +233,14 @@ if (require.main === module) {
       case "bind": result = queue.bindThread(id, controller, argument); break;
       case "started": result = queue.started(id, controller, argument); break;
       case "complete": result = queue.complete(id, controller, JSON.parse(readFileSync(argument, "utf8"))); break;
+      case "reject-creation": result = queue.rejectCreation(id, controller, JSON.parse(readFileSync(argument, "utf8"))); break;
       case "observe": {
         const observation = JSON.parse(readFileSync(argument, "utf8"));
         result = queue.observe(id, controller, observation.receipt, observation.progress);
         break;
       }
       case "cancel": result = queue.cancel(id); break;
-      default: throw new Error("Usage: codex-app-queue list|read ID|claim ID CONTROLLER|submit ID CONTROLLER|observe ID CONTROLLER FILE|bind ID CONTROLLER THREAD|started ID CONTROLLER TURN|complete ID CONTROLLER RESULT_FILE|cancel ID");
+      default: throw new Error("Usage: codex-app-queue list|read ID|claim ID CONTROLLER|submit ID CONTROLLER|observe ID CONTROLLER FILE|bind ID CONTROLLER THREAD|started ID CONTROLLER TURN|complete ID CONTROLLER RESULT_FILE|reject-creation ID CONTROLLER REJECTION_FILE|cancel ID");
     }
     process.stdout.write(JSON.stringify(result) + "\n");
   } catch (error) {

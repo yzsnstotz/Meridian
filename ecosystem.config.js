@@ -3,10 +3,11 @@ const path = require("node:path");
 const LOG_DIR = process.env.LOG_DIR || "/var/log/hub";
 const HUB_SOCKET_PATH = process.env.HUB_SOCKET_PATH || "/tmp/hub-socks/hub-core.sock";
 const ROOT_DIR = __dirname;
+const NODE_INTERPRETER = process.env.MERIDIAN_NODE_INTERPRETER || "node";
 
 const baseApp = {
   cwd: ROOT_DIR,
-  interpreter: "node",
+  interpreter: NODE_INTERPRETER,
   exec_mode: "fork",
   instances: 1,
   merge_logs: true,

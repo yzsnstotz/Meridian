@@ -18,6 +18,13 @@ test("App is the default task surface; read-only reviews and explicit CLI choice
   assert.ok(args.includes(uuid));
 });
 
+test("App argument boundary rejects invalid policy values instead of treating them as absent", () => {
+  for (const executionPolicy of [null, false, 0]) {
+    assert.throws(() => buildCodexAppArgs({ requestId: "policy-invalid", workerId: "opaque",
+      executionPolicy } as never), /Invalid input/);
+  }
+});
+
 test("existing session is preserved and exact App result returns to the original stream", async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-app-executor-"));
   const queue = new AppHandoffQueue(dir);
@@ -65,7 +72,47 @@ test("a new worker waits for native App registration instead of creating an exec
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("restart reuses durable request without another seed or App turn; failed App result fails the run", async () => {
+test("executor re-reads a bound turn after terminal reconciliation", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-app-reconcile-loop-"));
+  const queue = new AppHandoffQueue(dir);
+  const events: unknown[] = [];
+  let waits = 0;
+  let reconciliations = 0;
+  try {
+    await runAppHandoff({ requestId: "reconcile-trace", workerId: "native-worker", cwd: "/tmp" }, "new task", {
+      queue,
+      emit: event => events.push(event),
+      reconcile: async record => {
+        if (record.state !== "started") return;
+        reconciliations++;
+        queue.complete(record.id, "app-controller", {
+          threadId: uuid,
+          turnId: "native-turn",
+          status: "completed",
+          text: "recovered exact final"
+        });
+      },
+      wait: async () => {
+        waits++;
+        if (waits > 1) throw new Error("executor did not invoke terminal reconciliation");
+        queue.claim("reconcile-trace", "app-controller");
+        queue.submit("reconcile-trace", "app-controller");
+        queue.bindThread("reconcile-trace", "app-controller", uuid);
+        queue.started("reconcile-trace", "app-controller", "native-turn");
+      }
+    });
+    assert.equal(reconciliations, 1);
+    assert.deepEqual(events, [
+      { type: "thread.started", thread_id: uuid },
+      { type: "item.completed", item: { id: "native-turn", type: "agent_message", text: "recovered exact final" } },
+      { type: "turn.completed" }
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+for (const terminalStatus of ["failed", "interrupted"] as const) test(`restart reuses durable ${terminalStatus} without another seed or App turn and emits one terminal failure`, async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-app-resume-"));
   const queue = new AppHandoffQueue(dir);
   try {
@@ -73,10 +120,15 @@ test("restart reuses durable request without another seed or App turn; failed Ap
     queue.claim("trace-one", "app-controller");
     queue.submit("trace-one", "app-controller");
     queue.started("trace-one", "app-controller", "app-turn");
-    queue.complete("trace-one", "app-controller", { threadId: uuid, turnId: "app-turn", status: "failed", text: "denied" });
-    await assert.rejects(runAppHandoff({ requestId: "trace-one", workerId: "worker-one", cwd: "/tmp" }, "real task", {
-      queue, emit: () => {}, wait: async () => {}
-    }), /denied/);
+    queue.complete("trace-one", "app-controller", { threadId: uuid, turnId: "app-turn", status: terminalStatus, text: "denied" });
+    const events: unknown[] = [];
+    await runAppHandoff({ requestId: "trace-one", workerId: "worker-one", cwd: "/tmp" }, "real task", {
+      queue, emit: event => events.push(event), wait: async () => assert.fail("terminal failure must not wait or resubmit")
+    });
+    assert.deepEqual(events, [
+      { type: "thread.started", thread_id: uuid },
+      { type: "turn.failed", turn_id: "app-turn", error: { message: "denied" } }
+    ]);
     assert.equal(queue.list(true).length, 1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -89,6 +141,26 @@ test("managed credentials and custom environments never silently run as the App 
   assert.throws(() => assertCodexAppIdentity({ ...host, is_host_default: false }, {}), /managed/);
   assert.throws(() => assertCodexAppIdentity({ ...host, env_overrides: { API_KEY: "private" } }, {}), /binding/);
   assert.throws(() => assertCodexAppIdentity(null, { CODEX_HOME: "/tmp/other-identity" }), /CODEX_HOME/);
+});
+
+test("upgrade retries do not retrofit policy into an already-submitted legacy request", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-app-policy-upgrade-"));
+  const queue = new AppHandoffQueue(dir);
+  try {
+    queue.create({ id: "legacy", workerId: "opaque-legacy", threadId: uuid, cwd: "/tmp", prompt: "original task" });
+    queue.claim("legacy", "controller");
+    queue.submit("legacy", "controller");
+    queue.started("legacy", "controller", "original-turn");
+    queue.complete("legacy", "controller", { threadId: uuid, turnId: "original-turn", status: "completed", text: "original result" });
+    const events: unknown[] = [];
+    await runAppHandoff({ requestId: "legacy", workerId: "opaque-legacy", sessionId: uuid, cwd: "/tmp",
+      executionPolicy: { autoApprove: false, sandboxMode: "workspace-write" } }, "original task", {
+      queue, emit: event => events.push(event), wait: async () => { throw new Error("must not submit again"); }
+    });
+    assert.equal(queue.read("legacy").executionPolicy, undefined);
+    assert.equal(queue.read("legacy").turnId, "original-turn");
+    assert.equal(events.length, 3);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("cancellation before startup creates a terminal request without launching a turn", async () => {
@@ -160,12 +232,14 @@ test("source-mode executor resolves its own loader outside Meridian's dependency
   const { setTimeout: delay } = await import("node:timers/promises");
   const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-app-external-cwd-"));
   const queue = new AppHandoffQueue(dir);
-  const [command, ...args] = buildCodexAppArgs({ requestId: "external-cwd", workerId: "external-worker" });
+  const executionPolicy = { autoApprove: false, sandboxMode: "workspace-write" as const };
+  const [command, ...args] = buildCodexAppArgs({ requestId: "external-cwd", workerId: "external-worker", executionPolicy });
   const child = spawn(command, args, { cwd: os.tmpdir(), env: { ...process.env, MERIDIAN_CODEX_APP_QUEUE_DIR: dir }, stdio: ["pipe", "pipe", "pipe"] });
   child.stdin.end("external task");
   try {
     for (let i = 0; i < 100 && queue.list().length === 0; i++) await delay(50);
     assert.equal(realpathSync(queue.read("external-cwd").cwd), realpathSync(os.tmpdir()));
+    assert.deepEqual(queue.read("external-cwd").executionPolicy, executionPolicy);
     const exited = once(child, "exit");
     child.kill("SIGINT");
     await exited;

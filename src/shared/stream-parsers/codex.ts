@@ -153,6 +153,17 @@ export function parseCodexEvent(event: unknown): OutputDelta | null {
     };
   }
 
+  if (type === "turn.failed") {
+    const error = asRecord(record.error);
+    return {
+      traceId,
+      phase: "error",
+      text: asString(error?.message) ?? "Codex turn failed.",
+      data: { type: "turn.failed", recoverable: false, error: record.error },
+      final: true
+    };
+  }
+
   return null;
 }
 

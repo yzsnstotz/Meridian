@@ -8,6 +8,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import { config } from "../config";
+import { AppHandoffQueue, type AppTurnResult } from "../agents/codex-app-queue";
 import { IpcSender, requestHubMessage, requestHubRunMessage, setCallerIdentity } from "../interface/ipc-sender";
 import { BUILTIN_CALLERS, deriveBuiltinCallerKey } from "../shared/caller-bootstrap";
 import { callerEnvelopeFromHttpHeaders, type WireAuth } from "../shared/caller-wire";
@@ -72,6 +73,7 @@ const spawnRequestBodySchema = z.object({
   auto_approve: z.boolean().default(true),
   integration_profile: IntegrationProfileSchema.optional(),
   sandbox_mode: SandboxModeSchema.optional(),
+  disposable_storage: z.boolean().optional(),
   /** GUI picker path or direct absolute directory override. */
   repo: z.string().optional(),
   /**
@@ -157,6 +159,19 @@ const terminalInputBodySchema = z.object({
   thread_id: z.string().min(1).optional(),
   content: z.string().min(1, "content is required")
 });
+
+const appQueueControllerSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,119}$/);
+const appQueueActionBodySchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("claim"), controller: appQueueControllerSchema }),
+  z.object({ action: z.literal("submit"), controller: appQueueControllerSchema }),
+  z.object({ action: z.literal("bind"), controller: appQueueControllerSchema, thread_id: z.string().uuid() }),
+  z.object({ action: z.literal("started"), controller: appQueueControllerSchema, turn_id: z.string().min(1) }),
+  z.object({ action: z.literal("observe"), controller: appQueueControllerSchema,
+    receipt: z.string(), progress: z.string().min(1).optional() }),
+  z.object({ action: z.literal("complete"), controller: appQueueControllerSchema,
+    result: z.object({ threadId: z.string().uuid(), turnId: z.string().min(1),
+      status: z.enum(["completed", "failed", "interrupted"]), text: z.string().min(1) }) })
+]);
 
 const pushToggleBodySchema = z.object({
   thread_id: z.string().min(1).optional(),
@@ -245,6 +260,7 @@ export interface WebInterfaceServerOptions {
   providerModelCatalog?: ProviderModelCatalogLookup;
   hubSocketFactory?: (socketPath: string) => net.Socket;
   logger?: WebInterfaceLogger;
+  appHandoffQueue?: AppHandoffQueue;
   /**
    * Test seam: when supplied, the four hub-sender slots default to in-process
    * `router.route()` calls (instead of opening real IPC sockets to a HubServer).
@@ -590,6 +606,7 @@ export class WebInterfaceServer {
   private readonly hubSocketFactory: (socketPath: string) => net.Socket;
   private readonly logger: WebInterfaceLogger;
   private readonly usageLedger: UsageLedger;
+  private readonly appHandoffQueue: AppHandoffQueue;
   private server: http.Server | https.Server | null = null;
   private loopbackSentinels: Array<http.Server | https.Server> = [];
 
@@ -642,6 +659,7 @@ export class WebInterfaceServer {
     this.hubSocketFactory = options.hubSocketFactory ?? ((socketPath: string) => net.createConnection(socketPath));
     this.logger = options.logger ?? createLogger("web");
     this.usageLedger = new UsageLedger(path.join(this.logDir, "usage-ledger.jsonl"));
+    this.appHandoffQueue = options.appHandoffQueue ?? new AppHandoffQueue();
 
     if (this.enabled && !this.token) {
       throw new Error("WEB_GUI_TOKEN is required when Web Interface Server is enabled");
@@ -779,6 +797,11 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/status" && request.method === "GET") {
+      await this.handleStatusRequest(request, response);
+      return;
+    }
+
     if (requestUrl.pathname === "/api/health" && request.method === "GET") {
       await this.handleHealthRequest(request, response);
       return;
@@ -886,6 +909,11 @@ export class WebInterfaceServer {
 
     if (requestUrl.pathname === "/api/terminal_input" && request.method === "POST") {
       await this.handleTerminalInputRequest(request, response);
+      return;
+    }
+
+    if (requestUrl.pathname.startsWith("/api/codex-app-queue/") && request.method === "POST") {
+      await this.handleAppQueueActionRequest(request, response, requestUrl.pathname);
       return;
     }
 
@@ -1018,6 +1046,24 @@ export class WebInterfaceServer {
     }
 
     await this.serveStaticAsset(requestUrl.pathname, response);
+  }
+
+  private async handleStatusRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    const threadId = z.string().trim().min(1).max(240).parse(requestUrl.searchParams.get("thread_id"));
+    const sessionId = this.resolveSessionId(request, requestUrl, response);
+    const result = HubResultSchema.parse(await this.requestHubForRequest(request, this.buildHubMessage({
+      sessionId, intent: "status", thread_id: threadId, target: threadId, content: "",
+      caller: this.extractInboundCaller(request)
+    })));
+    if (result.status !== "success") {
+      this.respondJson(response, 502, { error: this.friendlyErrorMessage(result.content) });
+      return;
+    }
+    // The Hub appends human-readable attachments after the leading status JSON.
+    const content = result.content.split("\n\nAttached chat sessions:", 1)[0];
+    const status = z.record(z.string(), z.unknown()).parse(JSON.parse(content));
+    this.respondJson(response, 200, { ...status, thread_id: result.thread_id });
   }
 
   private async handleInstancesRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -1489,6 +1535,7 @@ export class WebInterfaceServer {
           effort: modelReference.reasoningEffort,
           integrationProfile: body.integration_profile,
           sandboxMode,
+          disposableStorage: body.disposable_storage,
           credentialId: body.credential_id,
           caller: this.extractInboundCaller(request)
         })
@@ -1758,6 +1805,34 @@ export class WebInterfaceServer {
       )
     );
     this.respondJson(response, 200, result);
+  }
+
+  /** Authenticated bridge for a native App controller whose task sandbox cannot open ~/.meridian directly. */
+  private async handleAppQueueActionRequest(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    pathname: string
+  ): Promise<void> {
+    const id = decodeURIComponent(pathname.slice("/api/codex-app-queue/".length));
+    if (!id || id.includes("/")) {
+      this.respondJson(response, 400, { error: "Invalid App queue request id" });
+      return;
+    }
+    const body = appQueueActionBodySchema.parse(await this.readJsonBody(request));
+    let record;
+    switch (body.action) {
+      case "claim": record = this.appHandoffQueue.claim(id, body.controller); break;
+      case "submit": record = this.appHandoffQueue.submit(id, body.controller); break;
+      case "bind": record = this.appHandoffQueue.bindThread(id, body.controller, body.thread_id); break;
+      case "started": record = this.appHandoffQueue.started(id, body.controller, body.turn_id); break;
+      case "observe": record = this.appHandoffQueue.observe(id, body.controller, body.receipt, body.progress); break;
+      case "complete": record = this.appHandoffQueue.complete(id, body.controller, body.result as AppTurnResult); break;
+    }
+    const safeRecord: Record<string, unknown> = { ...record };
+    delete safeRecord.prompt;
+    delete safeRecord.receipt;
+    delete safeRecord.result;
+    this.respondJson(response, 200, safeRecord);
   }
 
   private async handleModelsRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -2097,6 +2172,7 @@ export class WebInterfaceServer {
     effort?: ReasoningEffort;
     integrationProfile?: IntegrationProfile;
     sandboxMode?: SandboxMode;
+    disposableStorage?: boolean;
     credentialId?: string;
     historyLimit?: number;
     historyMaxContentChars?: number;
@@ -2121,6 +2197,7 @@ export class WebInterfaceServer {
         ...(params.effort && { effort: params.effort }),
         ...(params.integrationProfile && { integration_profile: params.integrationProfile }),
         ...(params.sandboxMode && { sandbox_mode: params.sandboxMode }),
+        ...(params.disposableStorage !== undefined && { disposable_storage: params.disposableStorage }),
         ...(params.credentialId && { credential_id: params.credentialId }),
         ...(params.historyLimit !== undefined && { history_limit: params.historyLimit }),
         ...(params.historyMaxContentChars !== undefined && { history_max_content_chars: params.historyMaxContentChars }),

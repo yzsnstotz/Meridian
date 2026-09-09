@@ -12,6 +12,157 @@ import { OutputBus } from "./output-bus";
 import { InstanceRegistry } from "./registry";
 import { HubRouter } from "./router";
 
+test("HubRouter provisions unique disposable scratch for exact runs and cleans it on terminal", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const registry = new InstanceRegistry();
+  registry.register({ thread_id: "codex_scratch", agent_type: "codex", sandbox_mode: "read-only",
+    disposable_storage: true, mode: "stateless_call", socket_path: "stateless:codex_scratch", pid: 0,
+    status: "idle", supportsStream: true, created_at: new Date().toISOString() });
+  const scratches: string[] = [];
+  const fake = {
+    verifyDisposableStoragePermissions: async () => {},
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    spawnStreamAgent: (_id: string, _type: string, args: string[], _prompt: string, _trace: string, _credential: unknown, scratch: string) => {
+      assert.equal(typeof scratch, "string");
+      assert.equal(fs.statSync(scratch).isDirectory(), true);
+      assert.equal(fs.statSync(path.dirname(scratch)).mode & 0o777, 0o700);
+      assert.ok(args.some(arg => arg.includes(JSON.stringify(scratch) + '="write"')));
+      assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
+      scratches.push(scratch);
+      return { stdout: Readable.from(['{"type":"thread.started","thread_id":"validation-session"}\n{"type":"item.completed","thread_id":"validation-session","item":{"id":"v-msg","type":"agent_message","text":"storage checked"}}\n{"type":"turn.completed","thread_id":"validation-session","usage":{"total_tokens":10}}\n']), process: createClosedProcess() };
+    }
+  };
+  const router = new HubRouter(registry, { instanceManager: fake as never });
+  for (const trace_id of ["11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]) {
+    const result = await router.route(baseMessage({ trace_id, thread_id: "codex_scratch", target: "codex_scratch", mode: "stateless_call" }));
+    assert.equal(result.status, "success", result.content);
+    assert.equal(fs.existsSync(path.dirname(scratches.at(-1)!)), false);
+  }
+  assert.equal(new Set(scratches).size, 2);
+});
+
+test("HubRouter cleans disposable scratch after failed spawn attempts", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const registry = new InstanceRegistry();
+  registry.register({ thread_id: "codex_scratch_failure", agent_type: "codex", sandbox_mode: "read-only",
+    disposable_storage: true, mode: "stateless_call", socket_path: "stateless:codex_scratch_failure", pid: 0,
+    status: "idle", supportsStream: true, created_at: new Date().toISOString() });
+  const scratches: string[] = [];
+  const fake = {
+    verifyDisposableStoragePermissions: async () => {},
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    spawnStreamAgent: (_id: string, _type: string, _args: string[], _prompt: string, _trace: string, _credential: unknown, scratch: string) => {
+      assert.equal(fs.existsSync(scratch), true);
+      scratches.push(scratch);
+      throw new Error("unsupported CLI capability");
+    }
+  };
+  const router = new HubRouter(registry, { instanceManager: fake as never });
+  const result = await router.route(baseMessage({ thread_id: "codex_scratch_failure", target: "codex_scratch_failure", mode: "stateless_call" }));
+  assert.equal(result.status, "error");
+  assert.ok(scratches.length > 0);
+  for (const scratch of scratches) assert.equal(fs.existsSync(path.dirname(scratch)), false);
+});
+
+test("HubRouter retains scratch for a spawned but unconfirmed child and reclaims on close", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const registry = new InstanceRegistry();
+  registry.register({ thread_id: "codex_scratch_late", agent_type: "codex", sandbox_mode: "read-only",
+    disposable_storage: true, mode: "stateless_call", socket_path: "stateless:codex_scratch_late", pid: 0,
+    status: "idle", supportsStream: true, created_at: new Date().toISOString() });
+  const pending: Array<{ scratch: string; child: ReturnType<typeof createClosedProcess> }> = [];
+  const fake = {
+    verifyDisposableStoragePermissions: async () => {},
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    spawnStreamAgent: (_id: string, _type: string, _args: string[], _prompt: string, _trace: string,
+      _credential: unknown, scratch: string, onSpawn: (child: unknown) => void) => {
+      const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null,
+        stderr: Readable.from([]), kill: () => true }) as ReturnType<typeof createClosedProcess>;
+      pending.push({ scratch, child });
+      onSpawn(child);
+      throw new Error("stdio unavailable after real process spawn");
+    }
+  };
+  const router = new HubRouter(registry, { instanceManager: fake as never });
+  const result = await router.route(baseMessage({ thread_id: "codex_scratch_late", target: "codex_scratch_late", mode: "stateless_call" }));
+  assert.equal(result.status, "error");
+  assert.ok(pending.length > 0);
+  for (const { scratch, child } of pending) {
+    assert.equal(fs.existsSync(scratch), true, "live or unconfirmed child retains scratch");
+    child.exitCode = 1;
+    child.emit("close", 1, null);
+    assert.equal(fs.existsSync(path.dirname(scratch)), false, "terminal callback reclaims scratch");
+  }
+});
+
+test("HubRouter interrupt during permission preflight prevents validator spawn", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({ thread_id: "codex_preflight_interrupt", agent_type: "codex", sandbox_mode: "read-only",
+    disposable_storage: true, mode: "stateless_call", socket_path: "stateless:codex_preflight_interrupt", pid: 0,
+    status: "idle", supportsStream: true, created_at: new Date().toISOString() });
+  let unblock!: () => void, entered!: () => void, spawns = 0;
+  const gate = new Promise<void>(resolve => { unblock = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const fake = {
+    verifyDisposableStoragePermissions: async () => { entered(); await gate; },
+    interrupt: async () => "interrupted",
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    spawnStreamAgent: () => { spawns++; throw new Error("validator must not start after interruption"); }
+  };
+  const router = new HubRouter(registry, { instanceManager: fake as never });
+  const running = router.route(baseMessage({ thread_id: "codex_preflight_interrupt", target: "codex_preflight_interrupt", mode: "stateless_call" }));
+  await started;
+  const interrupted = await router.route(baseMessage({ intent: "interrupt", thread_id: "codex_preflight_interrupt", target: "codex_preflight_interrupt",
+    trace_id: "33333333-cccc-4ccc-8ccc-cccccccccccc" }));
+  assert.equal(interrupted.status, "success");
+  unblock();
+  const result = await running;
+  assert.equal(result.status, "error");
+  assert.equal(spawns, 0);
+});
+
+test("HubRouter keeps preflight scratch until an unconfirmed diagnostic child closes", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const registry = new InstanceRegistry();
+  registry.register({ thread_id: "codex_preflight_late", agent_type: "codex", sandbox_mode: "read-only",
+    disposable_storage: true, mode: "stateless_call", socket_path: "stateless:codex_preflight_late", pid: 0,
+    status: "idle", supportsStream: true, created_at: new Date().toISOString() });
+  const pending: Array<{ scratch: string; child: ReturnType<typeof createClosedProcess> }> = [];
+  let spawns = 0;
+  const fake = {
+    verifyDisposableStoragePermissions: async (_id: string, _args: string[], scratch: string, _credential: unknown, onSpawn: (child: unknown) => void) => {
+      const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null,
+        stderr: Readable.from([]), kill: () => true }) as ReturnType<typeof createClosedProcess>;
+      pending.push({ scratch, child }); onSpawn(child);
+      throw new Error("permission preflight timed out before its child terminated");
+    },
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    spawnStreamAgent: () => { spawns++; throw new Error("must not launch"); }
+  };
+  const router = new HubRouter(registry, { instanceManager: fake as never });
+  const result = await router.route(baseMessage({ thread_id: "codex_preflight_late", target: "codex_preflight_late", mode: "stateless_call" }));
+  assert.equal(result.status, "error"); assert.equal(spawns, 0); assert.ok(pending.length > 0);
+  for (const { scratch, child } of pending) {
+    assert.equal(fs.existsSync(scratch), true);
+    child.exitCode = 1; child.emit("close", 1, null);
+    assert.equal(fs.existsSync(path.dirname(scratch)), false);
+  }
+});
+
 function useCliSurface(t: TestContext): void {
   const previous = process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
   t.after(() => {
@@ -353,7 +504,10 @@ test("HubRouter interrupt stops the explicit CLI stream without unregistering th
 
   assert.equal(interruptResult.status, "success");
   assert.match(interruptResult.content, /interrupted/i);
-  assert.equal(runResult.status, "success");
+  assert.equal(runResult.status, "error");
+  assert.equal(runResult.run_state, "completed");
+  assert.equal(runResult.trace_id, "aaaaaaaa-1111-4111-8111-111111111111");
+  assert.equal(runResult.thread_id, "codex_stream_interrupt_01");
   assert.match(runResult.content, /interrupted/i);
   assert.equal(process.signalCode, "SIGINT");
   assert.equal(spawnAttempts, 1);
@@ -3697,6 +3851,232 @@ test("resolveStreamingDeliveryRequest does not match a legacy prefix that is not
   assert.deepEqual(decision, { activate: false, reason: "not_requested" });
 });
 
+test("status exposes only durable external ownership for arbitrary caller and worker identities", async (t) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { AppHandoffQueue } = await import("../agents/codex-app-queue");
+  const dir = mkdtempSync(join(tmpdir(), "meridian-status-owner-"));
+  const previous = process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+  process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = dir;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+    else process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = previous;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const queue = new AppHandoffQueue(dir);
+  for (const [caller, workerId] of [["arbitrary-client-a", "task-amber"], ["independent-client-b", "worker-violet"]]) {
+    const registry = new InstanceRegistry();
+    registry.register({ thread_id: workerId, agent_type: "codex", mode: "bridge", pid: 0,
+      status: "running", supportsStream: true, created_at: new Date().toISOString() });
+    const requestId = `request-${workerId}`;
+    const threadId = "01a07727-ac38-7c23-8ef3-4bc90f594b9a";
+    queue.create({ id: requestId, workerId, cwd: dir, prompt: "private prompt" });
+    // A fresh router has no in-memory run: ownership must survive a restart.
+    const router = new HubRouter(registry);
+    for (const state of ["pending", "claimed", "started", "cancel_requested"] as const) {
+      if (state === "claimed") queue.claim(requestId, "controller");
+      if (state === "started") {
+        queue.submit(requestId, "controller");
+        queue.bindThread(requestId, "controller", threadId);
+        queue.started(requestId, "controller", "exact-turn");
+        queue.observe(requestId, "controller", "private receipt", "private progress");
+      }
+      if (state === "cancel_requested") queue.cancel(requestId);
+      const result = await router.route(baseMessage({ intent: "status", actor_id: caller, target: workerId, thread_id: workerId }));
+      assert.equal(result.status, "success");
+      const status = JSON.parse(result.content);
+      assert.equal(status.execution.kind, "external_handoff");
+      assert.equal(status.execution.state, state);
+      assert.equal(status.execution.request_id, requestId);
+      assert.equal(status.execution.delivery_phase, state === "pending" ? "queued" : state === "started" ? "running" : state);
+      assert.equal(status.execution.enqueued_at, queue.read(requestId).createdAt);
+      if (state === "started" || state === "cancel_requested") {
+        assert.equal(status.execution.native_thread_id, threadId);
+        assert.equal(status.execution.native_turn_id, "exact-turn");
+        assert.ok(status.execution.submitted_at);
+        assert.ok(status.execution.started_at);
+      }
+      assert.equal(status.instance.thread_id, workerId);
+      assert.equal(status.agent_status.status, "running");
+      assert.doesNotMatch(result.content, /private prompt|private receipt|private progress/);
+    }
+    queue.complete(requestId, "controller", { threadId, turnId: "exact-turn", status: "interrupted", text: "private final" });
+    const terminal = await router.route(baseMessage({ intent: "status", actor_id: caller, target: workerId, thread_id: workerId }));
+    assert.equal(JSON.parse(terminal.content).execution, undefined);
+    assert.doesNotMatch(terminal.content, /private final/);
+  }
+});
+
+test("status retains durable external ownership when registry or provider status is unavailable", async (t) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { AppHandoffQueue } = await import("../agents/codex-app-queue");
+  const dir = mkdtempSync(join(tmpdir(), "meridian-status-unavailable-"));
+  const previous = process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+  process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = dir;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+    else process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = previous;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const queue = new AppHandoffQueue(dir);
+  for (const missing of [true, false]) {
+    const workerId = `reservation-${missing}`;
+    queue.create({ id: workerId, workerId, cwd: dir, prompt: "private" });
+    const registry = new InstanceRegistry();
+    if (!missing) registry.register({ thread_id: workerId, agent_type: "codex", mode: "bridge", pid: 0,
+      status: "error", supportsStream: true, created_at: new Date().toISOString() });
+    const router = new HubRouter(registry, missing ? {} : { instanceManager: {
+      status: async () => { throw new Error("provider socket unavailable"); },
+      getThreadAttachment: () => ({ sessions: [], interface_id: null })
+    } as never });
+    const result = await router.route(baseMessage({ intent: "status", target: workerId, thread_id: workerId }));
+    assert.equal(result.status, "success");
+    assert.deepEqual(JSON.parse(result.content).execution, { kind: "external_handoff", state: "pending", request_id: workerId,
+      delivery_phase: "queued", enqueued_at: queue.read(workerId).createdAt });
+    queue.cancel(workerId);
+    const released = await router.route(baseMessage({ intent: "status", target: workerId, thread_id: workerId }));
+    assert.equal(released.status, "error");
+    const repairId = `new-request-${missing}`;
+    queue.create({ id: repairId, workerId, cwd: dir, prompt: "private repair" });
+    const repair = await router.route(baseMessage({ intent: "status", target: workerId, thread_id: workerId }));
+    assert.equal(JSON.parse(repair.content).execution.request_id, repairId, "old terminal receipts cannot hide the next request");
+    assert.equal(JSON.parse(repair.content).execution.delivery_phase, "queued");
+  }
+});
+
+test("status preserves an external reservation before enqueue and keeps attachment text compatible", async (t) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "meridian-status-before-enqueue-"));
+  const previous = process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+  const previousSurface = process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
+  process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = dir;
+  delete process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+    else process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = previous;
+    if (previousSurface === undefined) delete process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
+    else process.env.MERIDIAN_CODEX_EXECUTION_SURFACE = previousSurface;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const registry = new InstanceRegistry();
+  const workerId = "task-before-enqueue";
+  registry.register({ thread_id: workerId, agent_type: "codex", mode: "bridge", pid: 0,
+    status: "idle", supportsStream: true, created_at: new Date().toISOString() });
+  const stdout = new PassThrough();
+  const child = createInterruptibleProcess(stdout);
+  const router = new HubRouter(registry, { instanceManager: {
+    getThreadAttachment: () => ({ sessions: ["session-a"], interface_id: null }),
+    status: async () => ({ instance: registry.get(workerId), agent_status: { status: "running" } }),
+    spawnStreamAgent: () => ({ stdout, process: child })
+  } as never });
+  const run = router.route(baseMessage({ target: workerId, thread_id: workerId }));
+  await new Promise<void>(resolve => setImmediate(resolve));
+  try {
+    const status = await router.route(baseMessage({ intent: "status", target: workerId, thread_id: workerId }));
+    const [json, attachment] = status.content.split("\n\nAttached chat sessions:");
+    assert.deepEqual(JSON.parse(json).execution, { kind: "external_handoff", state: "pending", request_id: baseMessage().trace_id,
+      delivery_phase: "queued" });
+    assert.match(attachment, /session-a/);
+    // The executor can still be unwinding after the exact App turn ends.
+    // Its in-memory reservation must not resurrect a terminal queue record.
+    const { AppHandoffQueue } = await import("../agents/codex-app-queue");
+    const queue = new AppHandoffQueue(dir);
+    const requestId = baseMessage().trace_id;
+    const threadId = "01a07727-ac38-7c23-8ef3-4bc90f594b9a";
+    queue.create({ id: requestId, workerId, threadId, cwd: dir, prompt: "task" });
+    queue.claim(requestId, "controller");
+    queue.submit(requestId, "controller");
+    queue.started(requestId, "controller", "exact-turn");
+    queue.complete(requestId, "controller", { threadId, turnId: "exact-turn", status: "completed", text: "terminal receipt" });
+    const terminal = await router.route(baseMessage({ intent: "status", target: workerId, thread_id: workerId }));
+    assert.equal(JSON.parse(terminal.content.split("\n\nAttached chat sessions:")[0]).execution, undefined);
+  } finally {
+    child.kill("SIGINT");
+    await run;
+  }
+});
+
+test("App interruption returns a terminal error only after its reservation is released", { timeout: 5000 }, async () => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { AppHandoffQueue } = await import("../agents/codex-app-queue");
+  const dir = mkdtempSync(join(tmpdir(), "meridian-router-app-interrupt-"));
+  const previousSurface = process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
+  const previousQueue = process.env.MERIDIAN_CODEX_APP_QUEUE_DIR;
+  delete process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
+  process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = dir;
+  const queue = new AppHandoffQueue(dir);
+  try {
+    for (const submitted of [false, true]) {
+      const workerId = `codex_app_interrupt_${submitted}`;
+      const traceId = submitted ? "aaaaaaaa-1111-4111-8111-111111111112" : "aaaaaaaa-1111-4111-8111-111111111113";
+      const threadId = "01a07727-ac38-7c23-8ef3-4bc90f594b9a";
+      const registry = new InstanceRegistry();
+      registry.register({ thread_id: workerId, agent_type: "codex", mode: "bridge", pid: 0,
+        status: "idle", supportsStream: true, created_at: new Date().toISOString() });
+      const stdout = new PassThrough();
+      const child = createInterruptibleProcess(stdout);
+      const closeChild = child.kill;
+      // Like the App executor, a submitted turn keeps the transport alive until
+      // the controller observes that exact turn terminating.
+      child.kill = signal => queue.read(traceId).state === "cancel_requested" ? true : closeChild(signal);
+      let spawnAttempts = 0;
+      const router = new HubRouter(registry, {
+        instanceManager: {
+          getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+          spawnStreamAgent: () => {
+            spawnAttempts += 1;
+            queue.create({ id: traceId, workerId, threadId, cwd: dir, prompt: "task" });
+            if (submitted) {
+              queue.claim(traceId, "controller");
+              queue.submit(traceId, "controller");
+              queue.started(traceId, "controller", "exact-app-turn");
+            }
+            return { stdout, process: child };
+          }
+        } as never,
+        clientFactory: () => ({ connect: async () => undefined, disconnect: () => undefined,
+          sendMessage: async () => ({ ok: true }), getStatus: async () => ({ status: "idle" }) })
+      });
+      let settled = false;
+      const runPromise = router.route(baseMessage({ trace_id: traceId, thread_id: workerId, target: workerId }));
+      void runPromise.then(() => { settled = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const ack = await router.route(baseMessage({ intent: "interrupt", thread_id: workerId, target: workerId }));
+      assert.equal(ack.status, "success");
+      assert.equal(queue.read(traceId).state, submitted ? "cancel_requested" : "cancelled");
+      if (submitted) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(settled, false);
+        const kill = await router.route(baseMessage({ intent: "kill", thread_id: workerId, target: workerId }));
+        assert.equal(kill.status, "error");
+        assert.match(kill.content, /reserved/);
+        queue.complete(traceId, "controller", { threadId, turnId: "exact-app-turn", status: "interrupted", text: "Turn interrupted." });
+        closeChild("SIGINT");
+      }
+      const result = await runPromise;
+      assert.equal(result.status, "error");
+      assert.equal(result.run_state, "completed");
+      assert.equal(result.trace_id, traceId);
+      assert.equal(result.thread_id, workerId);
+      assert.match(result.content, /interrupted/i);
+      assert.equal(spawnAttempts, 1);
+      assert.equal(queue.list().length, 0);
+      assert.equal(registry.has(workerId), true);
+    }
+  } finally {
+    if (previousSurface === undefined) delete process.env.MERIDIAN_CODEX_EXECUTION_SURFACE; else process.env.MERIDIAN_CODEX_EXECUTION_SURFACE = previousSurface;
+    if (previousQueue === undefined) delete process.env.MERIDIAN_CODEX_APP_QUEUE_DIR; else process.env.MERIDIAN_CODEX_APP_QUEUE_DIR = previousQueue;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("default App routing preserves model/session and refuses destructive lifecycle changes until terminal", async () => {
   const { mkdtempSync, rmSync } = await import("node:fs");
   const os = await import("node:os");
@@ -3725,6 +4105,15 @@ test("default App routing preserves model/session and refuses destructive lifecy
     assert.ok(args.includes("gpt-6-astra"));
     assert.ok(args.includes("xhigh"));
     assert.ok(args.includes(uuid));
+    for (const [index, autoApprove] of [false, true].entries()) {
+      const policyArgs = build({ ...instance, thread_id: `opaque-policy-${index}`,
+        auto_approve: autoApprove, sandbox_mode: "workspace-write" }, [], `policy-${index}`);
+      const policyIndex = policyArgs.indexOf("--execution-policy");
+      assert.ok(policyIndex >= 0, "App routing must not drop the requested execution policy");
+      assert.deepEqual(JSON.parse(policyArgs[policyIndex + 1]), {
+        autoApprove, sandboxMode: "workspace-write"
+      });
+    }
     assert.ok(build({ ...instance, sandbox_mode: "read-only" }, [], "audit").includes("read-only"));
     queue.create({ id: "app-trace", workerId: "codex_app_test", threadId: uuid, cwd: "/tmp", prompt: "task" });
     queue.claim("app-trace", "controller");

@@ -1,7 +1,30 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildCodexExecArgs, buildCodexResumeArgs, buildCodexSpawnArgs } from "./codex";
+import { assertCodexDisposableStorageVersion, buildCodexExecArgs, buildCodexResumeArgs, buildCodexSpawnArgs } from "./codex";
+
+test("disposable storage refuses unknown or unsupported Codex versions before model execution", () => {
+  for (const version of ["codex-cli 0.153.3", "codex-cli 0.146.0", "unknown"]) {
+    assert.throws(() => assertCodexDisposableStorageVersion(version), /0.153.4/);
+  }
+  assert.doesNotThrow(() => assertCodexDisposableStorageVersion("codex-cli 0.153.4\n"));
+});
+
+test("disposable validation storage selects an invocation-only readonly-derived profile", () => {
+  const args = buildCodexExecArgs("gpt-5.4", false, "xhigh", "read-only", "/private/tmp/meridian-validation-test/scratch");
+  assert.ok(args.includes('default_permissions="meridian-validation-test"'));
+  assert.ok(args.some(arg => arg.includes('extends=":read-only"') && arg.includes('"/private/tmp/meridian-validation-test/scratch"="write"')));
+  assert.ok(args.includes('approval_policy="never"'));
+  assert.equal(args.includes("--sandbox"), false);
+  assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
+});
+
+test("disposable storage refuses relative, broad, or writable-source policy inputs", () => {
+  for (const directory of ["/", "/tmp", "/private/tmp", "relative", "/Users/yzliu/work"]) {
+    assert.throws(() => buildCodexExecArgs("gpt-5.4", false, "xhigh", "read-only", directory), /scratch/);
+  }
+  assert.throws(() => buildCodexExecArgs("gpt-5.4", false, "xhigh", "workspace-write", "/private/tmp/meridian-validation-test/scratch"), /read-only/);
+});
 
 // Every builder appends these by default; see appendLeanContextConfig in codex.ts.
 const LEAN_CONTEXT_ARGS = [

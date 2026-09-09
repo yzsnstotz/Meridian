@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { z } from "zod";
 
@@ -11,6 +14,7 @@ import { assertCodexAppIdentity, buildCodexAppArgs, useCodexApp } from "../agent
 import { AppHandoffQueue } from "../agents/codex-app-queue";
 import { buildGeminiStreamArgs } from "../agents/gemini";
 import { isApprovalPrompt, parseApprovalSummaryFromRawContent } from "../shared/approval";
+import { appHandoffExecution } from "../agents/codex-app-delivery";
 import { cleanupStagedAttachments, transformAttachments } from "../shared/attachment-transform";
 import { classifyAgentOutput, type AgentOutputKind } from "../shared/agent-output";
 import { shapeHistoryPayload } from "../shared/history-payload";
@@ -30,6 +34,7 @@ import {
   CallerIdentitySchema,
   CallerAuthoritySchema,
   HubMessageSchema,
+  ExternalExecutionOwnershipSchema,
   HubResultSchema,
   ThreadProgressSnapshotSchema,
   type AgentInstance,
@@ -37,6 +42,7 @@ import {
   type AttachmentResult,
   type CallerIdentity,
   type FileAttachment,
+  type ExternalExecutionOwnership,
   type HubMessage,
   type HubResult,
   type HubRunState,
@@ -99,6 +105,7 @@ type AgentReplyWaitResult =
     };
 
 interface StreamRunResult {
+  status: "success" | "error";
   content: string;
   attachmentResults: AttachmentResult[];
   usage?: Record<string, unknown>;
@@ -149,6 +156,8 @@ export interface ConversationHistoryEntry {
   replace_key: string | null;
   caller_id: string | null;
   caller_label: string | null;
+  status?: HubResult["status"];
+  run_state?: HubResult["run_state"];
 }
 
 interface ActiveRunState {
@@ -947,13 +956,15 @@ export class HubRouter {
           );
         }
         const content = this.formatRunContent(instance.thread_id, streamContent.content);
-        const result = this.buildResult(message, "success", instance.agent_type, content, instance.thread_id, {
+        const result = this.buildResult(message, streamContent.status, instance.agent_type, content, instance.thread_id, {
+          runState: "completed",
           attachmentResults: streamContent.attachmentResults,
           usage: streamContent.usage,
           modelId: instance.model_id,
           credentialId: instance.credential_id ?? null
         });
-        this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
+        this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content,
+          { status: streamContent.status, run_state: "completed" });
         return result;
       }
 
@@ -1045,7 +1056,7 @@ export class HubRouter {
       if (error instanceof RunInterruptedError) {
         return this.buildResult(
           message,
-          "success",
+          "error",
           instance.agent_type,
           "Agent run interrupted.",
           instance.thread_id,
@@ -1145,11 +1156,11 @@ export class HubRouter {
     ];
     const appHandoff = instance.agent_type === "codex" && useCodexApp(instance.sandbox_mode);
     if (appHandoff) assertCodexAppIdentity(resolvedCredential);
-    const args = this.buildStreamArgs(instance, imagePaths, message.trace_id);
     const prompt = promptWithAttachments.prompt;
     const parser = this.createStreamParser(instance);
     let process: ChildProcess | null = null;
     let finalDelta: OutputDelta | null = null;
+    let terminalObserved = false;
     let streamedText = "";
     let explicitResultText: string | null = null;
 
@@ -1178,6 +1189,7 @@ export class HubRouter {
       );
     }
     let streamingDeliveryActive = false;
+    let scratchRoot: string | undefined;
     if (streamingDecision.activate) {
       this.outputBus.beginAdapterDelivery(message.trace_id, {
         threadId: message.thread_id,
@@ -1192,13 +1204,40 @@ export class HubRouter {
 
     try {
       if (this.isRunInterrupted(threadId, message.trace_id)) throw new RunInterruptedError(threadId);
+      let scratchDirectory: string | undefined;
+      if (instance.disposable_storage === true) {
+        if (instance.agent_type !== "codex" || instance.mode !== "stateless_call"
+          || instance.sandbox_mode !== "read-only" || instance.integration_profile !== undefined) {
+          throw new Error("Disposable storage requires an opted-in read-only stateless Codex instance");
+        }
+        scratchRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "meridian-validation-")));
+        fs.chmodSync(scratchRoot, 0o700);
+        scratchDirectory = path.join(scratchRoot, "scratch");
+        fs.mkdirSync(scratchDirectory, { mode: 0o700 });
+        this.log.info({ operation: "validator_disposable_storage", thread_id: threadId,
+          trace_id: message.trace_id, scratch_directory: scratchDirectory,
+          source_access: "read-only", network_access: false }, "Provisioned isolated validation storage");
+      }
+      const args = this.buildStreamArgs(instance, imagePaths, message.trace_id, scratchDirectory);
+      if (scratchDirectory) await this.instanceManager.verifyDisposableStoragePermissions(threadId, args, scratchDirectory, resolvedCredential, child => {
+        process = child;
+        const activeRun = this.activeRunsByThread.get(threadId);
+        if (activeRun?.traceId === message.trace_id) activeRun.streamProcess = child;
+      });
+      if (this.isRunInterrupted(threadId, message.trace_id)) throw new RunInterruptedError(threadId);
       const spawnedAgent = this.instanceManager.spawnStreamAgent(
         threadId,
         instance.agent_type,
         args,
         prompt,
         message.trace_id,
-        resolvedCredential
+        resolvedCredential,
+        scratchDirectory,
+        child => {
+          process = child;
+          const activeRun = this.activeRunsByThread.get(threadId);
+          if (activeRun?.traceId === message.trace_id) activeRun.streamProcess = child;
+        }
       );
       process = spawnedAgent.process;
       const activeRun = this.activeRunsByThread.get(threadId);
@@ -1209,13 +1248,24 @@ export class HubRouter {
       const stderrSummary = this.captureProcessStderr(spawnedAgent.process);
 
       for await (const delta of streamFromSpawn(spawnedAgent.stdout, parser)) {
+        // An authentic terminal error outranks a later transport failure or
+        // trailing result. Retrying after that evidence would repeat a task.
+        if (finalDelta?.phase === "error" && !this.isRecoverableStreamError(finalDelta)) continue;
         // Awaiting blocks the loop until the adapter sink has fully
         // delivered this delta to the reply_channel socket FIFO. That
         // ordering is required for mumu2 streaming so partials never
         // arrive after the run-return final. For non-streaming traces
         // (no delivery context registered) the adapter sink is a no-op
         // and this await resolves immediately.
-        await this.outputBus.pushDelta(message.trace_id, delta);
+        try {
+          await this.outputBus.pushDelta(message.trace_id, delta);
+        } catch (error) {
+          if (!delta.final || delta.phase !== "error" || this.isRecoverableStreamError(delta)) throw error;
+          // Delivery has its own failure channel; it cannot invalidate native
+          // terminal evidence or authorize another model execution.
+          this.log.warn({ trace_id: message.trace_id, thread_id: threadId,
+            err: error instanceof Error ? error.message : String(error) }, "Terminal error delivery failed; retaining terminal result");
+        }
 
         if (typeof delta.text === "string") {
           if (delta.phase === "working") {
@@ -1243,9 +1293,11 @@ export class HubRouter {
       if (exitCode !== 0 && finalDelta.phase !== "error") {
         throw new Error(this.describeStreamExit(exitCode, signal, stderrSummary()));
       }
+      terminalObserved = true;
 
       if (finalDelta.phase === "error") {
         return {
+          status: "error",
           content: finalDelta.text ?? explicitResultText ?? (streamedText || "Task failed."),
           attachmentResults,
           usage: this.extractStreamUsage(finalDelta)
@@ -1253,6 +1305,7 @@ export class HubRouter {
       }
 
       return {
+        status: "success",
         content: explicitResultText ?? (streamedText || "Task completed."),
         attachmentResults,
         usage: this.extractStreamUsage(finalDelta)
@@ -1269,14 +1322,35 @@ export class HubRouter {
       if (process && process.exitCode === null && process.signalCode === null) {
         process.kill();
       }
-      if (instance.mode === "stateless_call" && this.registry.get(threadId)?.status === "running") {
+      const currentRun = this.activeRunsByThread.get(threadId);
+      if ((instance.mode === "stateless_call" || terminalObserved)
+          && currentRun?.traceId === message.trace_id
+          && currentRun.streamProcess === process
+          && this.registry.get(threadId)?.status === "running"
+          && !this.getExternalExecutionOwnership(threadId)) {
         this.registry.setStatus(threadId, "idle");
       }
-      await cleanupStagedAttachments(transformedAttachments.cleanupPaths);
+      try { await cleanupStagedAttachments(transformedAttachments.cleanupPaths); }
+      finally { if (scratchRoot) {
+        const directory = scratchRoot;
+        const cleanup = () => {
+          try { fs.rmSync(directory, { recursive: true }); }
+          catch (error) { this.log.warn({ operation: "validator_storage_cleanup_failed", thread_id: threadId,
+            trace_id: message.trace_id, scratch_directory: directory, err: String(error) }, "Validation scratch cleanup failed"); }
+        };
+        if (!process || process.exitCode !== null || process.signalCode !== null) {
+          cleanup();
+        } else {
+          // Never remove scratch from a child whose termination is still uncertain.
+          process.once("close", cleanup);
+          this.log.warn({ operation: "validator_storage_cleanup_deferred", thread_id: threadId,
+            trace_id: message.trace_id, scratch_directory: scratchRoot }, "Retaining validation scratch until child termination is confirmed");
+        }
+      } }
     }
   }
 
-  private buildStreamArgs(instance: AgentInstance, imagePaths: string[] = [], requestId: string = randomUUID()): string[] {
+  private buildStreamArgs(instance: AgentInstance, imagePaths: string[] = [], requestId: string = randomUUID(), scratchDirectory?: string): string[] {
     if (instance.agent_type === "claude") {
       return [
         ...buildClaudeStreamArgs(instance.model_id, instance.auto_approve),
@@ -1291,7 +1365,9 @@ export class HubRouter {
         if (imagePaths.length > 0) throw new Error("Codex App handoff does not yet accept image attachments; no task was started");
         return buildCodexAppArgs({ requestId, workerId: instance.thread_id,
           sessionId: instance.mode !== "stateless_call" ? instance.codexSessionId : undefined,
-          model: instance.model_id, effort: instance.reasoning_effort });
+          model: instance.model_id, effort: instance.reasoning_effort,
+          executionPolicy: instance.auto_approve === undefined && instance.sandbox_mode === undefined
+            ? undefined : { autoApprove: instance.auto_approve, sandboxMode: instance.sandbox_mode } });
       }
       return instance.mode !== "stateless_call" && instance.codexSessionId
         ? buildCodexResumeArgs(
@@ -1305,7 +1381,8 @@ export class HubRouter {
             instance.model_id,
             instance.auto_approve,
             instance.reasoning_effort,
-            instance.sandbox_mode
+            instance.sandbox_mode,
+            scratchDirectory
           );
     }
 
@@ -1424,13 +1501,25 @@ export class HubRouter {
 
   private async handleStatus(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadId(message);
+    this.recoverOrphanedAppFailure(threadId);
     const before = this.registry.get(threadId);
-    const status = await this.instanceManager.status(threadId);
+    let status;
+    try {
+      status = await this.instanceManager.status(threadId);
+    } catch (error) {
+      // A durable external reservation survives registry loss and provider
+      // probe failure. Report the owner without inventing an instance status.
+      const execution = this.getExternalExecutionOwnership(threadId);
+      if (!execution) throw error;
+      return this.buildResult(message, "success", this.resolveResultSource(message),
+        JSON.stringify({ execution }, null, 2), threadId);
+    }
     this.recordCallerInteraction(threadId, message, { adoptMissingSpawnedBy: true });
     if (this.didPersistentInstanceChange(before, status.instance)) {
       this.persistStateSafely();
     }
-    const content = this.appendAttachmentSummary(JSON.stringify(status, null, 2), status.instance.thread_id);
+    const execution = this.getExternalExecutionOwnership(threadId);
+    const content = this.appendAttachmentSummary(JSON.stringify({ ...status, ...(execution ? { execution } : {}) }, null, 2), status.instance.thread_id);
     return this.buildResult(
       message,
       "success",
@@ -1438,6 +1527,60 @@ export class HubRouter {
       content,
       status.instance.thread_id
     );
+  }
+
+  private getExternalExecutionOwnership(threadId: string): ExternalExecutionOwnership | undefined {
+    const records = new AppHandoffQueue().list(true);
+    for (const record of records) {
+      if (record.workerId !== threadId) continue;
+      const ownership = appHandoffExecution(record);
+      if (ownership) return ownership;
+    }
+    const active = this.activeRunsByThread.get(threadId);
+    // Cover the synchronous reservation before the executor persists its
+    // queue record, but never resurrect a request with a terminal receipt.
+    if (active?.appHandoff && !records.some(record => record.id === active.traceId)) {
+      return ExternalExecutionOwnershipSchema.parse({
+        kind: "external_handoff", state: "pending", request_id: active.traceId, delivery_phase: "queued"
+      });
+    }
+    return undefined;
+  }
+
+  /** Recover a terminal receipt after the original stream owner disappeared. */
+  private recoverOrphanedAppFailure(threadId: string): void {
+    const instance = this.registry.get(threadId);
+    if (!instance || instance.agent_type !== "codex" || !instance.supportsStream
+        || this.activeRunsByThread.has(threadId) || this.getExternalExecutionOwnership(threadId)) return;
+    const history = this.readConversationHistory(threadId);
+    const latestInput = [...history].reverse().find(entry => entry.event_kind === "user_send");
+    if (!latestInput?.trace_id || history.some(entry =>
+      entry.event_kind === "final_reply" && entry.trace_id === latestInput.trace_id)) return;
+    const record = new AppHandoffQueue().list(true).find(candidate =>
+      candidate.id === latestInput.trace_id && candidate.workerId === threadId);
+    const result = record?.result;
+    const terminal = record?.history.at(-1);
+    if (!record || record.state !== "failed" || !record.controller || !record.submissionAttempted
+        || !record.threadId || !record.turnId || !result || result.status === "completed" || !result.text.trim()
+        || result.threadId !== record.threadId || result.turnId !== record.turnId
+        || (instance.codexSessionId && instance.codexSessionId !== result.threadId)
+        || terminal?.state !== "failed" || !z.string().datetime().safeParse(terminal.at).success) return;
+    // Unknown legacy timing cannot establish that this input preceded the
+    // one native submission, even when a request identifier was reused.
+    const timing = z.array(z.string().datetime()).safeParse([
+      record.createdAt, record.submittedAt, record.startedAt, terminal.at, latestInput.timestamp
+    ]);
+    if (!timing.success) return;
+    const evidenceTimes = timing.data.slice(0, 4).map(time => Date.parse(time));
+    if (Date.parse(latestInput.timestamp) > evidenceTimes[1]!
+        || evidenceTimes.some((time, index) => !Number.isFinite(time) || (index > 0 && time < evidenceTimes[index - 1]!))) return;
+    // Recheck durable reservation immediately before changing the local view;
+    // a later request owns the worker even when this older receipt is exact.
+    if (this.getExternalExecutionOwnership(threadId)) return;
+    this.recordAgentConversationEntry(threadId, result.text, record.id, latestInput.raw_content,
+      { status: "error", run_state: "completed", timestamp: terminal.at });
+    if (instance.status === "running") this.registry.setStatus(threadId, "idle");
+    this.persistStateSafely();
   }
 
   private isInstanceProcessAlive(instance: AgentInstance): boolean {
@@ -1682,7 +1825,8 @@ export class HubRouter {
         integrationProfile,
         sandboxMode,
         message.caller,
-        spawnTargetCredential
+        spawnTargetCredential,
+        message.payload.disposable_storage
       );
     } catch (primaryErr) {
       const fallbackProvider: "codex" | "claude" | null =
@@ -1725,7 +1869,8 @@ export class HubRouter {
         integrationProfile,
         sandboxMode,
         message.caller,
-        spawnTargetCredential
+        spawnTargetCredential,
+        message.payload.disposable_storage
       );
     }
     const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
@@ -2588,6 +2733,7 @@ export class HubRouter {
         message.target === "codex" &&
         message.mode === "stateless_call" &&
         sandboxMode === "read-only" &&
+        message.payload.disposable_storage !== true &&
         message.payload.auto_approve !== true
       );
     }
@@ -2604,6 +2750,7 @@ export class HubRouter {
         instance?.agent_type === "codex" &&
         instance.mode === "stateless_call" &&
         instance.sandbox_mode === "read-only" &&
+        instance.disposable_storage !== true &&
         instance.auto_approve === false
       );
     }
@@ -3598,6 +3745,7 @@ export class HubRouter {
   private handleHistory(message: HubMessage): HubResult {
     const requestedThreadId = this.extractConcreteThreadId(message.target) ?? this.extractConcreteThreadId(message.thread_id);
     if (requestedThreadId) {
+      this.recoverOrphanedAppFailure(requestedThreadId);
       const shapedHistory = shapeHistoryPayload(this.getConversationHistoryForThread(requestedThreadId), {
         limit: message.payload.history_limit,
         maxContentChars: message.payload.history_max_content_chars,
@@ -3928,7 +4076,8 @@ export class HubRouter {
     threadId: string,
     rawContent: string,
     traceId: string | null,
-    inputText: string | null
+    inputText: string | null,
+    terminal?: Pick<ConversationHistoryEntry, "status" | "run_state"> & { timestamp?: string }
   ): void {
     const summary = this.summarizeConversationContent(rawContent, traceId);
     const detailsText = this.composeConversationDetails(inputText, rawContent);
@@ -3939,10 +4088,12 @@ export class HubRouter {
       details_text: detailsText,
       raw_content: rawContent,
       trace_id: traceId,
-      timestamp: this.now().toISOString(),
+      timestamp: terminal?.timestamp ?? this.now().toISOString(),
       replace_key: null,
       caller_id: null,
-      caller_label: null
+      caller_label: null,
+      ...(terminal?.status === undefined ? {} : { status: terminal.status }),
+      ...(terminal?.run_state === undefined ? {} : { run_state: terminal.run_state })
     });
   }
 
@@ -4023,7 +4174,9 @@ export class HubRouter {
           raw_content: entry.raw_content,
           trace_id: entry.trace_id,
           timestamp: entry.timestamp,
-          replace_key: entry.replace_key
+          replace_key: entry.replace_key,
+          ...(entry.status === undefined ? {} : { status: entry.status }),
+          ...(entry.run_state === undefined ? {} : { run_state: entry.run_state })
         };
         this.conversationHistoryByThread.set(threadId, this.trimConversationHistory(history));
         return;
@@ -4037,7 +4190,8 @@ export class HubRouter {
       previous.content.trim() === entry.content.trim() &&
       previous.details_text.trim() === entry.details_text.trim() &&
       previous.trace_id === entry.trace_id &&
-      previous.replace_key === entry.replace_key
+      previous.replace_key === entry.replace_key &&
+      previous.status === entry.status && previous.run_state === entry.run_state
     ) {
       return;
     }
@@ -4055,7 +4209,9 @@ export class HubRouter {
       timestamp: entry.timestamp,
       replace_key: entry.replace_key,
       caller_id: entry.caller_id,
-      caller_label: entry.caller_label
+      caller_label: entry.caller_label,
+      ...(entry.status === undefined ? {} : { status: entry.status }),
+      ...(entry.run_state === undefined ? {} : { run_state: entry.run_state })
     });
     this.conversationHistoryByThread.set(threadId, this.trimConversationHistory(history));
   }
@@ -4199,7 +4355,9 @@ export class HubRouter {
           timestamp: entry.timestamp,
           replace_key: entry.replace_key ?? null,
           caller_id: entry.caller_id ?? null,
-          caller_label: entry.caller_label ?? null
+          caller_label: entry.caller_label ?? null,
+          ...(entry.status === undefined ? {} : { status: entry.status }),
+          ...(entry.run_state === undefined ? {} : { run_state: entry.run_state })
         })).sort((left, right) => left.sequence - right.sequence || left.timestamp.localeCompare(right.timestamp))
       );
     }
@@ -4232,7 +4390,9 @@ export class HubRouter {
         timestamp: entry.timestamp,
         replace_key: entry.replace_key,
         caller_id: entry.caller_id,
-        caller_label: entry.caller_label
+        caller_label: entry.caller_label,
+        ...(entry.status === undefined ? {} : { status: entry.status }),
+        ...(entry.run_state === undefined ? {} : { run_state: entry.run_state })
       }));
     }
     return snapshot;

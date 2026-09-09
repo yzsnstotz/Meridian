@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { execFileSync } from "node:child_process";
 
 const restartScriptPath = path.resolve(process.cwd(), "user_scripts/restart.sh");
 const terminateScriptPath = path.resolve(process.cwd(), "user_scripts/terminate.sh");
@@ -138,6 +139,35 @@ test("restart.sh resolves pm2 binary by path when not on PATH (launchd / minimal
     .split(/\r?\n/)
     .filter((line) => /(^|[^"$\w./-])pm2 (delete|ping|reload|restart|start|status)\b/.test(line));
   assert.deepEqual(barePm2Lines, [], `unguarded pm2 invocations found:\n${barePm2Lines.join("\n")}`);
+});
+
+test("build and restart preflight the selected runtime before stopping services", async () => {
+  const restartScript = await readRestartScript();
+  const rebuildScript = await readRebuildRestartScript();
+  const ecosystemConfig = await fs.readFile(path.resolve(process.cwd(), "ecosystem.config.js"), "utf8");
+
+  for (const script of [restartScript, rebuildScript]) {
+    assert.match(script, /source "\$\{ROOT_DIR\}\/user_scripts\/runtime_node\.sh"/);
+    assert.match(script, /prepare_meridian_node "\$\{ROOT_DIR\}"/);
+  }
+  assert.ok(rebuildScript.indexOf('prepare_meridian_node "${ROOT_DIR}"') < rebuildScript.indexOf('log "Building project"'));
+  assert.ok(rebuildScript.indexOf('source "${ROOT_DIR}/.env"') < rebuildScript.indexOf('prepare_meridian_node "${ROOT_DIR}"'));
+  assert.ok(restartScript.indexOf('prepare_meridian_node "${ROOT_DIR}"') < restartScript.indexOf('migrate_legacy_state_path\n'));
+  assert.match(ecosystemConfig, /process\.env\.MERIDIAN_NODE_INTERPRETER \|\| "node"/);
+  assert.match(ecosystemConfig, /interpreter: NODE_INTERPRETER/);
+  assert.doesNotMatch(ecosystemConfig, /interpreter: "node"/);
+});
+
+test("runtime preflight preserves a compatible explicit Node and rejects missing dependencies", () => {
+  const helper = path.resolve(process.cwd(), "user_scripts/runtime_node.sh");
+  const env = { ...process.env, MERIDIAN_NODE_INTERPRETER: process.execPath };
+  const command = 'source "$1"; prepare_meridian_node "$2"; "$MERIDIAN_NODE_INTERPRETER" -p "process.execPath"';
+  const output = execFileSync("bash", ["-e", "-c", command, "test", helper, process.cwd()], { env, encoding: "utf8" });
+  assert.equal(output.trim(), process.execPath);
+  assert.throws(() => execFileSync("bash", ["-e", "-c", command, "test", helper, "/nonexistent-meridian-test-root"], { env, stdio: "pipe" }), /Command failed/);
+  assert.throws(() => execFileSync("bash", ["-e", "-c", command, "test", helper, process.cwd()], {
+    env: { ...env, MERIDIAN_NODE_INTERPRETER: "/nonexistent-node" }, stdio: "pipe"
+  }), /Command failed/);
 });
 
 test("terminate.sh stops Meridian and meridian-roles without starting services", async () => {

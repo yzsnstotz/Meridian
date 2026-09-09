@@ -84,6 +84,21 @@ export type HubRunState = z.infer<typeof HubRunStateSchema>;
 export const AgentInstanceStatusSchema = z.enum(["idle", "running", "waiting", "stopped", "error"]);
 export type AgentInstanceStatus = z.infer<typeof AgentInstanceStatusSchema>;
 
+/** Reservation ownership, independent of provider and registry liveness. */
+export const ExternalExecutionOwnershipSchema = z.object({
+  kind: z.literal("external_handoff"),
+  state: z.enum(["pending", "claimed", "started", "cancel_requested"]),
+  request_id: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,119}$/),
+  delivery_phase: z.enum(["queued", "claimed", "submitted", "running", "cancel_requested"]).optional(),
+  enqueued_at: z.string().datetime().optional(),
+  submitted_at: z.string().datetime().optional(),
+  started_at: z.string().datetime().optional(),
+  last_observed_at: z.string().datetime().optional(),
+  native_thread_id: z.string().uuid().optional(),
+  native_turn_id: z.string().min(1).optional()
+});
+export type ExternalExecutionOwnership = z.infer<typeof ExternalExecutionOwnershipSchema>;
+
 export const HubUsageSchema = z
   .object({
     input_tokens: z.number().finite().optional(),
@@ -208,6 +223,7 @@ export const HubPayloadSchema = z.object({
   auto_approve: z.boolean().optional(),
   integration_profile: IntegrationProfileSchema.optional(),
   sandbox_mode: SandboxModeSchema.optional(),
+  disposable_storage: z.boolean().optional(),
   monitor_updates_enabled: z.boolean().optional(),
   monitor_updates_interval_sec: z.number().int().positive().optional(),
   history_limit: z.number().int().positive().optional(),
@@ -315,6 +331,7 @@ export const AgentInstanceSchema = z.object({
   auto_approve: z.boolean().default(true),
   integration_profile: z.string().min(1).optional(),
   sandbox_mode: SandboxModeSchema.optional(),
+  disposable_storage: z.boolean().optional(),
   /** Hub request trace that created or last correlated this instance (observability only). */
   spawn_trace_id: z.string().nullable().optional(),
   spawned_by: CallerIdentitySchema.optional(),

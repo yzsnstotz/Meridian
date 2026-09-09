@@ -31,6 +31,18 @@ function buildHistoryEntries(threadId: string, timestamps: string[]): PersistedC
   }));
 }
 
+test("state schema round-trips optional final status and run_state without inventing legacy status", () => {
+  const timestamp = new Date().toISOString();
+  const legacy = buildHistoryEntries("opaque", [timestamp])[0]!;
+  const final = { ...legacy, id: "terminal", sequence: 2, event_kind: "final_reply" as const,
+    status: "error" as const, run_state: "completed" as const, content: "Provider denied this request" };
+  const state = buildPersistedHubState(timestamp, [], {}, {}, { opaque: [legacy, final] });
+  const history = state.conversation_history?.opaque;
+  assert.equal(history?.[0]?.status, undefined);
+  assert.equal(history?.[1]?.status, "error");
+  assert.equal(history?.[1]?.run_state, "completed");
+});
+
 test("loadPersistedHubState preserves migrated approval prompts alongside terminal input and final reply", () => {
   const statePath = `/tmp/meridian-state-store-${process.pid}-${Date.now()}.json`;
   const nowIso = new Date().toISOString();
