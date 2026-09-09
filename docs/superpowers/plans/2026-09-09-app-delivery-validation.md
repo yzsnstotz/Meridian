@@ -44,3 +44,35 @@ On actual automatic wakeup:
 5. For a real fault, /resolve --auto within the original canonical orchestration. Preserve79 rows,30 assertions, Growth and independent audits; do not force-complete or rerun accepted1736/1737/R-DESIGN-INTEGRATE/N-SC-FREEZE. Do not disable the controller while requests are outstanding.
 
 The ordinary native App catalog omission and unavailable native permission-application/readback contract remain distinct client limitations. This patch does not claim to repair them or require repeated owner authorization. Product acceptance remains false; orchestration acceptance is not product release.
+
+## First actual scheduled resolver invocation — 2026-09-09 04:57:46.059 UTC
+
+This is observed scheduled execution, not a manual schedule test. Queue delivery occurred before the due deep audit. Both original requests were claimed and submitted once; no duplicate native tasks or forced lifecycle transitions were used.
+
+| Owner / row | Native thread | Exact turn | Submitted UTC | Native turn started UTC | Queue start acknowledged UTC |
+| --- | --- | --- | --- | --- | --- |
+| codex_1728 / N-SC-CORE | 01a0848c-0c2b-7833-8e28-4fbf9cf22263 | 01a0848c-0e34-71b2-a5ba-0a79dfb8c32a | 05:02:44.198 | 05:02:46 | 05:03:22.665 |
+| codex_1729 / N-API-AUTH | 01a0848c-0c2b-7833-8e28-4fa53c122238 | 01a0848c-0e9f-7a90-90d2-ac052f137b73 | 05:02:44.495 | 05:02:46 | 05:03:23.072 |
+
+- Exact native read/wait confirmed actual in-progress turns, correct assigned TaskSpec checkouts and real tool execution. Live canonical CLI, authenticated Hub status and actual Roles browser rendering changed from Queued to Running and displayed both thread/turn pairs.
+- Native create receipts were saved privately, including pending client IDs 5ab78bd7-68a6-44d5-b888-1b82c0675227 and 6310e377-9651-41ab-9844-236e24bc3a38. Pending client IDs were never used as actual thread IDs.
+- Enqueue-to-native-start was approximately 11m18s: about 6m18s before the scheduled invocation and about 5m before native submission during controller preparation. This does not pass a 2-minute delivery-latency SLA. PM delivery below is a separate measured case.
+- Native ordinary list_threads(limit=50) still returned no entries for these exact tasks although section Meridian workers contains both item keys. Exact-ID read succeeds and preview remains empty. Membership does not establish ordinary catalog visibility; the native catalog limitation is not fixed by this patch.
+- Source hash recheck: all 11 source files changed in Hub code commit35c6b21 and all 4 source files changed in Roles commit745d733 match the installed reviewed worktrees. This is an additional subset check, not a replacement for the recorded initial27-source/14-compiled verification.
+
+### Real terminal and PM continuation
+
+N-SC-CORE completed its exact native turn at **05:13:36 UTC** with actual outcome needs_pm. Without a resolver complete command, the Hub recovery path completed request8a643aa5-f1eb-4ae5-8c93-15ecb269143d at **05:13:42.682 UTC** (~6.7seconds) and Roles received the exact final at05:13:42.699, setting the worker lifecycle to blocked. It did not remain a stale running worker and it was not misclassified as product-complete.
+
+The scheduled resolver then called the canonical pm-resolve once for N-SC-CORE. PM codex_1730 was created at05:14:28 and queued request2207099c-b225-467f-8b44-624f84189f4a at05:14:29.066. The controller delivered that request once:
+- Native PM task01a08497-7924-7491-a594-05ced6b87213, exact turn01a08497-7aae-7321-87cd-01191f872dcc.
+- Native turn started05:15:15 UTC (~46seconds from enqueue); queue start acknowledged05:15:45.428.
+- Exact native read/wait confirmed PM execution and real report/lifecycle inspection.
+- Actual Roles renderer shows owner pm_resolver/codex_1730 Running with the new request/thread/turn. The underlying N-SC-CORE worker remains blocked. Thus a Running row now identifies an active PM, not a resurrected completed worker.
+- The PM is to route the demonstrated harness defects through the original producer and independent exact-ref acceptance, also checking the separately reproduced N-API-AUTH database-role defect after that worker terminates. No unchanged worker retry, duplicate controller, direct producer edit or weakened product gate was performed by this resolver.
+
+Acceptance status: **scheduled queued-to-running and terminal-needs_pm-to-running-PM observed**. Independent validator success → next batch and an actual same-worker repair/re-entry remain **pending**. This first scheduled production run found real product prerequisite defects, not a native Codex permission denial. See [the hourly audit record](2026-09-09-scheduled-resolver-audit.md); 79rows/30assertions and25/25 orchestration counterfactuals pass, while the last product baseline remains0green/30red.
+
+### Second terminal and coordinated maintenance hold — 05:18 UTC
+
+N-API-AUTH also completed its exact native turn at05:17:03Z; the Hub automatically completed its original request at05:17:14.083Z (~11seconds), preserving the real blocked marker. Its reproducible NAA-DB-01 test commit ec9650428ed5c8404c85da04f3250dd6f0e630b0 and report were passed to the same running PM, not a second resolver. At that PM's coordination request, the root paused only canonical new dispatch through POST /api/agent-dispatcher/agent-dispatcher-83007909/pause (ok:true,paused), preserving native turns. The PM owns the bounded shared-plan amendment and subsequent canonical resume/continue; the root's existing scheduled resolver retains App queue delivery. This maintenance hold is intentional and is not an unreported orchestration stall or an owner-authorization wait.
