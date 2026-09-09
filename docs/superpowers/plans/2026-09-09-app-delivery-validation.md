@@ -76,3 +76,33 @@ Acceptance status: **scheduled queued-to-running and terminal-needs_pm-to-runnin
 ### Second terminal and coordinated maintenance hold — 05:18 UTC
 
 N-API-AUTH also completed its exact native turn at05:17:03Z; the Hub automatically completed its original request at05:17:14.083Z (~11seconds), preserving the real blocked marker. Its reproducible NAA-DB-01 test commit ec9650428ed5c8404c85da04f3250dd6f0e630b0 and report were passed to the same running PM, not a second resolver. At that PM's coordination request, the root paused only canonical new dispatch through POST /api/agent-dispatcher/agent-dispatcher-83007909/pause (ok:true,paused), preserving native turns. The PM owns the bounded shared-plan amendment and subsequent canonical resume/continue; the root's existing scheduled resolver retains App queue delivery. This maintenance hold is intentional and is not an unreported orchestration stall or an owner-authorization wait.
+
+## Real producer-repair re-entry — observed through 05:35 scheduled check
+
+The configured PM completed its original request2207099c-b225-467f-8b44-624f84189f4a at05:27:36.414Z through the normal queue terminal path. Its bounded pm-consumer-prerequisite-repair.md amendment reopened the original producer rows and BATCH-3-GATE for newly reproduced H-CORE-01/02/03 and NAA-DB-01. This is new producer-owned repair scope, not replay of the previously accepted1736/1737 attempts. Original reports and commits remain historical evidence. The consumers wait on fresh independent producer and integration acceptance.
+
+The PM handback triggered the controller's05:25:53 check (not a new timed invocation). By then canonical runtime had queued both distinct producer requests, including R-DB-FREEZE after the PM's earlier still_blocked response. The root did not issue a second continuation. Each request was claimed/submitted once, with a new native task because its durable request had no existing threadId:
+
+| Row / owner | Request | Enqueued UTC | Submitted UTC | Native thread / exact turn | Native start UTC | Queue start UTC |
+| --- | --- | --- | --- | --- | --- | --- |
+| N-TEST-HARNESS / codex_1731 | 00533b26-927f-4e32-8adb-b3dde11f9bb9 | 05:24:57.208 | 05:26:42.619 | 01a084a1-fde0-7b73-850c-7d33718ad8e2 / 01a084a1-fffc-7b20-afb1-6e4df6e95e02 | 05:26:44 | 05:27:17.732 |
+| R-DB-FREEZE / codex_1732 | c4d85545-ea72-440b-87b1-e5f13e609ed6 | 05:25:29.453 | 05:26:42.861 | 01a084a1-fde0-7b73-850c-7d16f52c7051 / 01a084a2-001e-7860-98f2-a73c03c741b2 | 05:26:44 | 05:27:18.160 |
+
+Native enqueue-to-start was approximately107seconds and75seconds respectively. The actual Roles renderer showed both workers Running with these exact identities, while BATCH-3-GATE and both consumers showed Retry pending with explicit unmet dependencies. A transient unknown in one canonical read was not treated as a terminal event: authenticated Hub status and the subsequent canonical read both returned the same running owner; no resend/restart occurred.
+
+Actual scheduled invocations at05:31:45.223Z and05:35:15.227Z independently confirmed both exact native turns remain in progress, both assigned checkouts/accepted branches are retained, canonical role is active, no validator/PM is active, and there are no additional pending App deliveries. Latest canonical summary is79 rows:17completed,60pending,2running; execution queued0/running2/unknown0. Only genuinely changed native commentary was recorded through observe. audit_due=false retains the completed hourly audit timestamp05:16:45.755Z rather than recording a light check as a new audit.
+
+Acceptance: row-level producer repair re-entry and subsequent scheduled observation are now evidenced. A same-Hub-owner validator fix-cycle/send, independent repair acceptance, repaired BATCH-3-GATE and consumer re-entry remain pending until those exact events occur. Ordinary native catalog entries are still absent despite section membership; no catalog repair, complete scheduled E2E or product acceptance is claimed.
+
+
+## Scheduled repair terminal → independent validator — 06:05 UTC
+
+The actual scheduled invocation at05:59:45.284Z observed N-TEST-HARNESS/codex_1731 complete its exact native turn01a084a1-fffc-7b20-afb1-6e4df6e95e02 at05:59:07Z. Without a resolver complete command, its original request00533b26-927f-4e32-8adb-b3dde11f9bb9 automatically became completed at05:59:19.187Z (~12seconds). The worker emitted the real complete marker and pushed repair commitac4f645264b4aae8f215adaffe333e9d85888e55; the resolver independently read the same exact origin branch ref.
+
+Canonical lifecycle now reports N-TEST-HARNESS awaiting_validation, owned by independent validatorcodex_1733. Authenticated Hub status confirms that validator running in stateless_call CLI mode; it is not an App request awaiting delivery and was not replaced or restarted. The producer reports38/38 harness controls,36/36 model checks and3/3 Safe diagnostics; these remain producer self-test evidence, not independent acceptance. The absent-product Foundry cases remain intentionally RED.
+
+At06:05Z, R-DB-FREEZE/codex_1732 remains in its original native turn with genuine new progress: local commitdd8f1fa was created and the worker is rerunning full DB acceptance against that committed SHA before push/readback. Its earlier118/118 result was pre-commit self-test evidence only. The controller recorded the changed commentary at06:05:03.181Z; it did not manufacture progress from an unchanged poll.
+
+Current canonical state:79rows,17completed,60pending,2active reservations (one producer and one independent validator),0failed/0stale. BATCH-3-GATE explicitly waits for both producers, and N-SC-CORE/N-API-AUTH wait for BATCH-3-GATE. No additional App delivery or PM is pending. The hourly audit checkpoint remains05:16:45.755Z; this light check did not advance it.
+
+Acceptance update: real producer-repair terminal receipt → independent validator takeover is observed. Independent repair acceptance, repaired integration, consumer re-entry and a same-Hub-owner validator fix-cycle/send remain unproven. The ordinary native App catalog omission remains unresolved. No full scheduled E2E or product release is claimed.
