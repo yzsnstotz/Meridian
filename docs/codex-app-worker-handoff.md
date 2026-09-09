@@ -30,7 +30,7 @@ On this host the Hub runs Node 24 from `/Users/yzliu/.local/share/fnm/aliases/de
    `python3 /Users/yzliu/work/Meridian/scripts/codex-app-observe.py --request-file ~/.meridian/codex-app-queue/ID.json --output /tmp/ID-app-observation.json`
    It matches the exact request marker in native user input or native create_thread/send_message_to_thread delegation and only that turn. If native read_thread returns no items, the helper can recover the exact saved turn and original final from its read-only transcript; confirm native terminal status independently before handback. It never edits Codex storage. Zero/multiple matches mean keep claimed and reconcile, never create another task. Validate the resolved UUID with native read_thread.
    Unbound discovery also checks native tasks whose metadata source is `unknown`, within the same total 100-candidate limit. Such a candidate requires an actual `codex_app/create_thread` or `codex_app/send_message_to_thread` delegation containing the exact request marker after that turn starts and before it ends; a normal user message or quoted delegation is insufficient.
-7. Persist `bind ID codex-app-controller THREAD_UUID` for new tasks and `started ID codex-app-controller TURN_ID`. Move the thread to `Meridian workers` with native move_thread_to_sidebar_section. Verify its actual entry with native list_threads. For legacy exec-source sessions, native section placement currently does not override the App default source filter. Continue the same session for native tools and use native navigate_to_codex_page when the owner needs to view it; record the listing limitation truthfully. Never edit Codex source/permission storage or create a duplicate worker to force visibility. Newly registered native workers are the default going forward.
+7. Persist `bind ID codex-app-controller THREAD_UUID` for new tasks and `started ID codex-app-controller TURN_ID`. Move the thread to `Meridian workers` with native move_thread_to_sidebar_section. Verify both section membership and the actual entry in native list_threads; membership alone is not visibility. Missing native tasks must not automatically be diagnosed as legacy-source filtering: current vscode/agent_created_thread tasks can be excluded because the native catalog preview is empty. Use exact-ID native read/wait and the read-only observer to distinguish this catalog defect from a stalled worker. Continue the same task; native navigate_to_codex_page can open it but is not a listing repair. Never edit Codex source/permission storage, fabricate user messages, or create a duplicate worker to force visibility. Newly registered native workers remain the default.
 8. On subsequent passes, use native read_thread/wait_threads snapshots to observe active turns. Record real changed commentary/status with `observe`; do not invent periodic progress. The helper can extract the exact turn's latest commentary, final text and task_complete/turn_aborted event. Never use another turn's final or a title as evidence.
 9. Once native App state and the exact turn event confirm terminal, write `{threadId,turnId,status,text}` to a private result file and `complete ID codex-app-controller FILE`. `status` must be completed, failed or interrupted; `text` is the real final result. A task_complete without final text needs reconciliation. Meridian then receives the real result and applies its normal report/validator rules. App completion is not product acceptance.
 
@@ -70,9 +70,12 @@ default repaired native task inheritance.
 If the worker's scoped Git metadata or required dependency access is denied,
 preserve its checkout and report the exact refusal promptly. Do not change
 Codex permissions/config/database, bypass the denial through another executor,
-or rerun an unchanged failure each heartbeat. Open the actual native worker for
-the owner to select its intended permissions. After the owner changes that
-task's environment, prefer the canonical `meridian-tool run` against its retained
+or rerun an unchanged failure each heartbeat. Distinguish requested Hub policy,
+source-task selection and exact native effective policy. Do not prescribe
+per-worker owner permission changes as the normal provisioning mechanism:
+the unsupported native application contract is an integration blocker, not a
+new owner authorization requirement. If an actual supported native environment
+change is observed, prefer the canonical `meridian-tool run` against its retained
 Hub worker with the original command, model and validation settings; the new
 queue request must retain its native session ID and use one same-task send.
 Verify no active owner before this continuation, and verify the new turn's
