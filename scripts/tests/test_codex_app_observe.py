@@ -69,6 +69,44 @@ class ObserveContinuationTests(unittest.TestCase):
         self.write(self.rows(name="create_thread"))
         self.assertEqual(MODULE.observe(self.request, self.db)["status"], "completed")
 
+    def test_native_error_wins_null_or_present_final_for_exact_turn(self):
+        for final in [None, "A misleading success final"]:
+            with self.subTest(final=final):
+                rows = self.rows()
+                rows[-1]["payload"].update(last_agent_message=final,
+                    error={"message": "Provider denied this request", "codex_error_info": "some_code"})
+                self.write(rows)
+                before = self.db.read_bytes(), self.rollout.read_bytes()
+                result = MODULE.observe(self.request, self.db)
+                self.assertEqual(result["status"], "failed")
+                self.assertEqual(result["text"], "Provider denied this request")
+                self.assertEqual(before, (self.db.read_bytes(), self.rollout.read_bytes()))
+
+    def test_malformed_native_error_never_reports_success(self):
+        for error in [{}, {"message": None}, {"message": 123}, {"message": "  "}, "denied", False, []]:
+            with self.subTest(error=error):
+                rows = self.rows()
+                rows[-1]["payload"]["error"] = error
+                self.write(rows)
+                result = MODULE.observe(self.request, self.db)
+                self.assertEqual(result["status"], "failed")
+                self.assertIsNone(result["text"])
+
+    def test_null_final_without_error_stays_without_terminal_text(self):
+        rows = self.rows()
+        rows[-1]["payload"]["last_agent_message"] = None
+        self.write(rows)
+        self.assertIsNone(MODULE.observe(self.request, self.db)["text"])
+
+    def test_cross_turn_error_cannot_terminate_bound_turn(self):
+        rows = self.rows()
+        rows[-1]["payload"].update(turn_id="another-turn", last_agent_message=None,
+            error={"message": "Unrelated failure"})
+        self.write(rows)
+        result = MODULE.observe(self.request, self.db)
+        self.assertEqual(result["status"], "running")
+        self.assertNotIn("text", result)
+
     def test_unrelated_function_outputs_cannot_supply_the_input_marker(self):
         for name, namespace in [("exec", "codex_app"), ("send_message_to_thread", "untrusted")]:
             with self.subTest(name=name, namespace=namespace):

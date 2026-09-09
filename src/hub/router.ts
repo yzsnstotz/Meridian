@@ -105,6 +105,7 @@ type AgentReplyWaitResult =
     };
 
 interface StreamRunResult {
+  status: "success" | "error";
   content: string;
   attachmentResults: AttachmentResult[];
   usage?: Record<string, unknown>;
@@ -155,6 +156,8 @@ export interface ConversationHistoryEntry {
   replace_key: string | null;
   caller_id: string | null;
   caller_label: string | null;
+  status?: HubResult["status"];
+  run_state?: HubResult["run_state"];
 }
 
 interface ActiveRunState {
@@ -953,13 +956,15 @@ export class HubRouter {
           );
         }
         const content = this.formatRunContent(instance.thread_id, streamContent.content);
-        const result = this.buildResult(message, "success", instance.agent_type, content, instance.thread_id, {
+        const result = this.buildResult(message, streamContent.status, instance.agent_type, content, instance.thread_id, {
+          runState: "completed",
           attachmentResults: streamContent.attachmentResults,
           usage: streamContent.usage,
           modelId: instance.model_id,
           credentialId: instance.credential_id ?? null
         });
-        this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content);
+        this.recordAgentConversationEntry(threadId, content, message.trace_id, message.payload.content,
+          { status: streamContent.status, run_state: "completed" });
         return result;
       }
 
@@ -1155,6 +1160,7 @@ export class HubRouter {
     const parser = this.createStreamParser(instance);
     let process: ChildProcess | null = null;
     let finalDelta: OutputDelta | null = null;
+    let terminalObserved = false;
     let streamedText = "";
     let explicitResultText: string | null = null;
 
@@ -1242,13 +1248,24 @@ export class HubRouter {
       const stderrSummary = this.captureProcessStderr(spawnedAgent.process);
 
       for await (const delta of streamFromSpawn(spawnedAgent.stdout, parser)) {
+        // An authentic terminal error outranks a later transport failure or
+        // trailing result. Retrying after that evidence would repeat a task.
+        if (finalDelta?.phase === "error" && !this.isRecoverableStreamError(finalDelta)) continue;
         // Awaiting blocks the loop until the adapter sink has fully
         // delivered this delta to the reply_channel socket FIFO. That
         // ordering is required for mumu2 streaming so partials never
         // arrive after the run-return final. For non-streaming traces
         // (no delivery context registered) the adapter sink is a no-op
         // and this await resolves immediately.
-        await this.outputBus.pushDelta(message.trace_id, delta);
+        try {
+          await this.outputBus.pushDelta(message.trace_id, delta);
+        } catch (error) {
+          if (!delta.final || delta.phase !== "error" || this.isRecoverableStreamError(delta)) throw error;
+          // Delivery has its own failure channel; it cannot invalidate native
+          // terminal evidence or authorize another model execution.
+          this.log.warn({ trace_id: message.trace_id, thread_id: threadId,
+            err: error instanceof Error ? error.message : String(error) }, "Terminal error delivery failed; retaining terminal result");
+        }
 
         if (typeof delta.text === "string") {
           if (delta.phase === "working") {
@@ -1276,9 +1293,11 @@ export class HubRouter {
       if (exitCode !== 0 && finalDelta.phase !== "error") {
         throw new Error(this.describeStreamExit(exitCode, signal, stderrSummary()));
       }
+      terminalObserved = true;
 
       if (finalDelta.phase === "error") {
         return {
+          status: "error",
           content: finalDelta.text ?? explicitResultText ?? (streamedText || "Task failed."),
           attachmentResults,
           usage: this.extractStreamUsage(finalDelta)
@@ -1286,6 +1305,7 @@ export class HubRouter {
       }
 
       return {
+        status: "success",
         content: explicitResultText ?? (streamedText || "Task completed."),
         attachmentResults,
         usage: this.extractStreamUsage(finalDelta)
@@ -1302,7 +1322,12 @@ export class HubRouter {
       if (process && process.exitCode === null && process.signalCode === null) {
         process.kill();
       }
-      if (instance.mode === "stateless_call" && this.registry.get(threadId)?.status === "running") {
+      const currentRun = this.activeRunsByThread.get(threadId);
+      if ((instance.mode === "stateless_call" || terminalObserved)
+          && currentRun?.traceId === message.trace_id
+          && currentRun.streamProcess === process
+          && this.registry.get(threadId)?.status === "running"
+          && !this.getExternalExecutionOwnership(threadId)) {
         this.registry.setStatus(threadId, "idle");
       }
       try { await cleanupStagedAttachments(transformedAttachments.cleanupPaths); }
@@ -1476,6 +1501,7 @@ export class HubRouter {
 
   private async handleStatus(message: HubMessage): Promise<HubResult> {
     const threadId = this.resolveThreadId(message);
+    this.recoverOrphanedAppFailure(threadId);
     const before = this.registry.get(threadId);
     let status;
     try {
@@ -1519,6 +1545,42 @@ export class HubRouter {
       });
     }
     return undefined;
+  }
+
+  /** Recover a terminal receipt after the original stream owner disappeared. */
+  private recoverOrphanedAppFailure(threadId: string): void {
+    const instance = this.registry.get(threadId);
+    if (!instance || instance.agent_type !== "codex" || !instance.supportsStream
+        || this.activeRunsByThread.has(threadId) || this.getExternalExecutionOwnership(threadId)) return;
+    const history = this.readConversationHistory(threadId);
+    const latestInput = [...history].reverse().find(entry => entry.event_kind === "user_send");
+    if (!latestInput?.trace_id || history.some(entry =>
+      entry.event_kind === "final_reply" && entry.trace_id === latestInput.trace_id)) return;
+    const record = new AppHandoffQueue().list(true).find(candidate =>
+      candidate.id === latestInput.trace_id && candidate.workerId === threadId);
+    const result = record?.result;
+    const terminal = record?.history.at(-1);
+    if (!record || record.state !== "failed" || !record.controller || !record.submissionAttempted
+        || !record.threadId || !record.turnId || !result || result.status === "completed" || !result.text.trim()
+        || result.threadId !== record.threadId || result.turnId !== record.turnId
+        || (instance.codexSessionId && instance.codexSessionId !== result.threadId)
+        || terminal?.state !== "failed" || !z.string().datetime().safeParse(terminal.at).success) return;
+    // Unknown legacy timing cannot establish that this input preceded the
+    // one native submission, even when a request identifier was reused.
+    const timing = z.array(z.string().datetime()).safeParse([
+      record.createdAt, record.submittedAt, record.startedAt, terminal.at, latestInput.timestamp
+    ]);
+    if (!timing.success) return;
+    const evidenceTimes = timing.data.slice(0, 4).map(time => Date.parse(time));
+    if (Date.parse(latestInput.timestamp) > evidenceTimes[1]!
+        || evidenceTimes.some((time, index) => !Number.isFinite(time) || (index > 0 && time < evidenceTimes[index - 1]!))) return;
+    // Recheck durable reservation immediately before changing the local view;
+    // a later request owns the worker even when this older receipt is exact.
+    if (this.getExternalExecutionOwnership(threadId)) return;
+    this.recordAgentConversationEntry(threadId, result.text, record.id, latestInput.raw_content,
+      { status: "error", run_state: "completed", timestamp: terminal.at });
+    if (instance.status === "running") this.registry.setStatus(threadId, "idle");
+    this.persistStateSafely();
   }
 
   private isInstanceProcessAlive(instance: AgentInstance): boolean {
@@ -3683,6 +3745,7 @@ export class HubRouter {
   private handleHistory(message: HubMessage): HubResult {
     const requestedThreadId = this.extractConcreteThreadId(message.target) ?? this.extractConcreteThreadId(message.thread_id);
     if (requestedThreadId) {
+      this.recoverOrphanedAppFailure(requestedThreadId);
       const shapedHistory = shapeHistoryPayload(this.getConversationHistoryForThread(requestedThreadId), {
         limit: message.payload.history_limit,
         maxContentChars: message.payload.history_max_content_chars,
@@ -4013,7 +4076,8 @@ export class HubRouter {
     threadId: string,
     rawContent: string,
     traceId: string | null,
-    inputText: string | null
+    inputText: string | null,
+    terminal?: Pick<ConversationHistoryEntry, "status" | "run_state"> & { timestamp?: string }
   ): void {
     const summary = this.summarizeConversationContent(rawContent, traceId);
     const detailsText = this.composeConversationDetails(inputText, rawContent);
@@ -4024,10 +4088,12 @@ export class HubRouter {
       details_text: detailsText,
       raw_content: rawContent,
       trace_id: traceId,
-      timestamp: this.now().toISOString(),
+      timestamp: terminal?.timestamp ?? this.now().toISOString(),
       replace_key: null,
       caller_id: null,
-      caller_label: null
+      caller_label: null,
+      ...(terminal?.status === undefined ? {} : { status: terminal.status }),
+      ...(terminal?.run_state === undefined ? {} : { run_state: terminal.run_state })
     });
   }
 
@@ -4108,7 +4174,9 @@ export class HubRouter {
           raw_content: entry.raw_content,
           trace_id: entry.trace_id,
           timestamp: entry.timestamp,
-          replace_key: entry.replace_key
+          replace_key: entry.replace_key,
+          ...(entry.status === undefined ? {} : { status: entry.status }),
+          ...(entry.run_state === undefined ? {} : { run_state: entry.run_state })
         };
         this.conversationHistoryByThread.set(threadId, this.trimConversationHistory(history));
         return;
@@ -4122,7 +4190,8 @@ export class HubRouter {
       previous.content.trim() === entry.content.trim() &&
       previous.details_text.trim() === entry.details_text.trim() &&
       previous.trace_id === entry.trace_id &&
-      previous.replace_key === entry.replace_key
+      previous.replace_key === entry.replace_key &&
+      previous.status === entry.status && previous.run_state === entry.run_state
     ) {
       return;
     }
@@ -4140,7 +4209,9 @@ export class HubRouter {
       timestamp: entry.timestamp,
       replace_key: entry.replace_key,
       caller_id: entry.caller_id,
-      caller_label: entry.caller_label
+      caller_label: entry.caller_label,
+      ...(entry.status === undefined ? {} : { status: entry.status }),
+      ...(entry.run_state === undefined ? {} : { run_state: entry.run_state })
     });
     this.conversationHistoryByThread.set(threadId, this.trimConversationHistory(history));
   }
@@ -4284,7 +4355,9 @@ export class HubRouter {
           timestamp: entry.timestamp,
           replace_key: entry.replace_key ?? null,
           caller_id: entry.caller_id ?? null,
-          caller_label: entry.caller_label ?? null
+          caller_label: entry.caller_label ?? null,
+          ...(entry.status === undefined ? {} : { status: entry.status }),
+          ...(entry.run_state === undefined ? {} : { run_state: entry.run_state })
         })).sort((left, right) => left.sequence - right.sequence || left.timestamp.localeCompare(right.timestamp))
       );
     }
@@ -4317,7 +4390,9 @@ export class HubRouter {
         timestamp: entry.timestamp,
         replace_key: entry.replace_key,
         caller_id: entry.caller_id,
-        caller_label: entry.caller_label
+        caller_label: entry.caller_label,
+        ...(entry.status === undefined ? {} : { status: entry.status }),
+        ...(entry.run_state === undefined ? {} : { run_state: entry.run_state })
       }));
     }
     return snapshot;

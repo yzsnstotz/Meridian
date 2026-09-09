@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
 import { AppHandoffQueue } from "./codex-app-queue";
-import { reconcileStartedAppRequest, type AppTurnObserver } from "./codex-app-reconciler";
+import { observeCodexAppTurn, reconcileStartedAppRequest, type AppTurnObserver } from "./codex-app-reconciler";
 
 const threadId = "01a07727-ac38-7c23-8ef3-4bc90f594b9a";
 const turnId = "native-turn";
@@ -31,6 +32,45 @@ function fixture(state: "started" | "cancel_requested" = "started") {
     close: () => rmSync(directory, { recursive: true, force: true })
   };
 }
+
+test("real private SQLite/rollout error evidence reconciles once and null or malformed evidence stays reserved", async () => {
+  for (const mode of ["error", "both", "null", "malformed", "cross-turn"] as const) {
+    const f = fixture();
+    try {
+      const stateDatabase = path.join(f.directory, "state.sqlite");
+      const rollout = path.join(f.directory, "rollout.jsonl");
+      const db = new DatabaseSync(stateDatabase);
+      db.exec("CREATE TABLE threads (id TEXT, rollout_path TEXT)");
+      db.prepare("INSERT INTO threads VALUES (?, ?)").run(threadId, rollout);
+      db.close();
+      chmodSync(stateDatabase, 0o600);
+      const terminal = { type: "task_complete", turn_id: mode === "cross-turn" ? "other-turn" : turnId,
+        last_agent_message: mode === "both" || mode === "malformed" ? "Must not become success" : null,
+        ...(mode === "null" ? {} : { error: { message: mode === "malformed" ? null : "Provider denied this request",
+          codex_error_info: "some_code" } }) };
+      writeFileSync(rollout, [
+        { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+        { type: "response_item", payload: { role: "user", content: [{ text: "[Meridian App handoff request: request-one]" }] } },
+        { type: "event_msg", payload: terminal }
+      ].map(row => JSON.stringify(row)).join("\n"), { mode: 0o600 });
+      const before = [readFileSync(stateDatabase), readFileSync(rollout)];
+      const observe: AppTurnObserver = request => observeCodexAppTurn(request, {
+        queueDirectory: f.directory, stateDatabase
+      });
+      const result = await reconcileStartedAppRequest(f.queue, "request-one", observe);
+      if (mode === "error" || mode === "both") {
+        assert.deepEqual(result, { outcome: "recovered", state: "failed" });
+        assert.equal(f.queue.read("request-one").result?.text, "Provider denied this request");
+        assert.equal(f.queue.list().length, 0);
+        assert.equal((await reconcileStartedAppRequest(f.queue, "request-one", observe)).outcome, "already_terminal");
+      } else {
+        assert.deepEqual(result, { outcome: mode === "cross-turn" ? "not_terminal" : "needs_external_reconciliation", state: "started" });
+        assert.equal(f.queue.read("request-one").result, undefined);
+      }
+      assert.deepEqual([readFileSync(stateDatabase), readFileSync(rollout)], before);
+    } finally { f.close(); }
+  }
+});
 
 test("recovers the exact completed App turn into the durable queue", async () => {
   const f = fixture();

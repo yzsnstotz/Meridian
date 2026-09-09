@@ -36,7 +36,14 @@ def inspect_rollout(filename, marker, *, require_delegation=False):
         if row.get('type') == 'event_msg' and payload.get('turn_id') == current['turnId']:
             kind = payload.get('type')
             if kind == 'task_complete':
-                current.update(status='completed', text=payload.get('last_agent_message', ''))
+                error = payload.get('error')
+                if error is not None:
+                    message = error.get('message') if isinstance(error, dict) else None
+                    # Native errors outrank final text. A malformed error must
+                    # stay unresolved rather than falling through to success.
+                    current.update(status='failed', text=message if isinstance(message, str) and message.strip() else None)
+                else:
+                    current.update(status='completed', text=payload.get('last_agent_message'))
             elif kind == 'turn_aborted':
                 current.update(status='interrupted', text='Codex recorded this exact App turn as aborted.')
     return [{k: v for k, v in turn.items() if k != 'matched'} for turn in turns if turn['matched']]

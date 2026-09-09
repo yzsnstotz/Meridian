@@ -92,6 +92,10 @@ export async function runAppHandoff(options: AppExecutorOptions, prompt: string,
       deps.emit({ type: "turn.completed" });
       return;
     }
+    if (record.state === "failed" && record.result && record.result.status !== "completed") {
+      deps.emit({ type: "turn.failed", turn_id: record.result.turnId, error: { message: record.result.text } });
+      return;
+    }
     if (record.state === "failed" || record.state === "cancelled") {
       throw new Error(record.result?.text || `App handoff ${record.state}`);
     }

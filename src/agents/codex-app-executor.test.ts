@@ -112,7 +112,7 @@ test("executor re-reads a bound turn after terminal reconciliation", async () =>
   }
 });
 
-test("restart reuses durable request without another seed or App turn; failed App result fails the run", async () => {
+for (const terminalStatus of ["failed", "interrupted"] as const) test(`restart reuses durable ${terminalStatus} without another seed or App turn and emits one terminal failure`, async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-app-resume-"));
   const queue = new AppHandoffQueue(dir);
   try {
@@ -120,10 +120,15 @@ test("restart reuses durable request without another seed or App turn; failed Ap
     queue.claim("trace-one", "app-controller");
     queue.submit("trace-one", "app-controller");
     queue.started("trace-one", "app-controller", "app-turn");
-    queue.complete("trace-one", "app-controller", { threadId: uuid, turnId: "app-turn", status: "failed", text: "denied" });
-    await assert.rejects(runAppHandoff({ requestId: "trace-one", workerId: "worker-one", cwd: "/tmp" }, "real task", {
-      queue, emit: () => {}, wait: async () => {}
-    }), /denied/);
+    queue.complete("trace-one", "app-controller", { threadId: uuid, turnId: "app-turn", status: terminalStatus, text: "denied" });
+    const events: unknown[] = [];
+    await runAppHandoff({ requestId: "trace-one", workerId: "worker-one", cwd: "/tmp" }, "real task", {
+      queue, emit: event => events.push(event), wait: async () => assert.fail("terminal failure must not wait or resubmit")
+    });
+    assert.deepEqual(events, [
+      { type: "thread.started", thread_id: uuid },
+      { type: "turn.failed", turn_id: "app-turn", error: { message: "denied" } }
+    ]);
     assert.equal(queue.list(true).length, 1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

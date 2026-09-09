@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { isApprovalPrompt, normalizeApprovalAction, parseApprovalSummaryFromRawContent } from "../shared/approval";
 import { truncateHistoryText } from "../shared/history-payload";
-import { AgentInstanceSchema, CallerAuthoritySchema, type AgentInstance } from "../types";
+import { AgentInstanceSchema, CallerAuthoritySchema, HubResultStatusSchema, HubRunStateSchema, type AgentInstance } from "../types";
 
 export const CallerRecordSchema = z.object({
   caller_id: z.string().min(1),
@@ -92,7 +92,9 @@ const PersistedConversationHistoryEntrySchema = z.object({
   timestamp: z.string().datetime(),
   replace_key: z.string().min(1).nullable().default(null),
   caller_id: z.string().min(1).nullable().default(null),
-  caller_label: z.string().min(1).nullable().default(null)
+  caller_label: z.string().min(1).nullable().default(null),
+  status: HubResultStatusSchema.optional(),
+  run_state: HubRunStateSchema.optional()
 });
 
 const LegacyPersistedHubStateSchema = z.object({

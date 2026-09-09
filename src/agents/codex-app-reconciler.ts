@@ -7,8 +7,8 @@ import { AppHandoffQueue, type AppHandoffRequest } from "./codex-app-queue";
 const NativeAppObservation = z.object({
   threadId: z.string().uuid(),
   turnId: z.string().min(1),
-  status: z.enum(["running", "completed", "interrupted"]),
-  text: z.string().optional(),
+  status: z.enum(["running", "completed", "failed", "interrupted"]),
+  text: z.string().nullable().optional(),
   progress: z.string().optional()
 });
 

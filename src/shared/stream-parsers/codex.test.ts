@@ -6,6 +6,26 @@ import { test } from "node:test";
 import { createCodexStreamParser, extractThreadId, parseCodexEvent } from "./codex";
 import { splitNdjsonStream } from "./ndjson";
 
+test("native failed turn becomes a final nonrecoverable error without an agent message", () => {
+  const parser = createCodexStreamParser();
+  parser({ type: "thread.started", thread_id: "opaque-native-thread" });
+  assert.deepEqual(parser({ type: "turn.failed", turn_id: "exact-turn",
+    error: { message: "Provider denied this request", codex_error_info: "some_code" } }), {
+    traceId: "opaque-native-thread", phase: "error", text: "Provider denied this request",
+    data: { type: "turn.failed", recoverable: false,
+      error: { message: "Provider denied this request", codex_error_info: "some_code" } }, final: true
+  });
+});
+
+test("malformed failed turn remains terminal error without success text", () => {
+  for (const error of [null, {}, { message: 17 }]) {
+    const delta = parseCodexEvent({ type: "turn.failed", thread_id: "opaque-native-thread", error });
+    assert.equal(delta?.phase, "error");
+    assert.equal(delta?.final, true);
+    assert.equal(delta?.text, "Codex turn failed.");
+  }
+});
+
 async function* emitFixtureContent(content: string): AsyncIterable<string> {
   yield content;
 }
