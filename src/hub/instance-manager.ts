@@ -1,11 +1,12 @@
-import { exec, execSync, spawn, type ChildProcess } from "node:child_process";
+import { exec, execFileSync, execSync, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { promisify } from "node:util";
 
 import { buildClaudeSpawnArgs } from "../agents/claude";
-import { buildCodexExecArgs, buildCodexSpawnArgs } from "../agents/codex";
+import { assertCodexDisposableStorageVersion, buildCodexExecArgs, buildCodexSpawnArgs } from "../agents/codex";
+import { verifyDisposableStorageConfig } from "../agents/codex-permissions";
 import { buildCursorSpawnArgs } from "../agents/cursor";
 import { buildGeminiSpawnArgs } from "../agents/gemini";
 import { config } from "../config";
@@ -85,6 +86,7 @@ export interface InstanceManagerOptions {
   agentWorkdir?: string;
   spawnFn?: SpawnFn;
   execSyncFn?: ExecSyncFn;
+  execFileSyncFn?: typeof execFileSync;
   execAsyncFn?: ExecAsyncFn;
   socketPathFactory?: SocketPathFactory;
   agentapiSocketSupport?: boolean;
@@ -131,6 +133,7 @@ export class InstanceManager {
   private readonly agentWorkdir: string;
   private readonly spawnFn: SpawnFn;
   private readonly execSyncFn: ExecSyncFn;
+  private readonly execFileSyncFn: typeof execFileSync;
   private readonly execAsyncFn: ExecAsyncFn;
   private readonly socketPathFactory: SocketPathFactory;
   private readonly forcedAgentapiSocketSupport: boolean | null;
@@ -162,6 +165,7 @@ export class InstanceManager {
     this.agentWorkdir = this.resolveWorkdir(options.agentWorkdir ?? DEFAULT_AGENT_WORKDIR);
     this.spawnFn = options.spawnFn ?? spawn;
     this.execSyncFn = options.execSyncFn ?? execSync;
+    this.execFileSyncFn = options.execFileSyncFn ?? execFileSync;
     this.execAsyncFn = options.execAsyncFn ?? defaultExecAsyncFn;
     this.socketPathFactory = options.socketPathFactory ?? ((threadId: string) => this.formatAgentSocketPath(threadId));
     this.forcedAgentapiSocketSupport = options.agentapiSocketSupport ?? null;
@@ -229,7 +233,8 @@ export class InstanceManager {
     integrationProfile?: string,
     sandboxMode?: SandboxMode,
     caller?: CallerIdentity,
-    resolvedCredential?: ResolvedCredential | null
+    resolvedCredential?: ResolvedCredential | null,
+    disposableStorage?: boolean
   ): Promise<string> {
     return await this.spawnWithRetry(
       type,
@@ -243,8 +248,22 @@ export class InstanceManager {
       integrationProfile,
       sandboxMode,
       caller,
-      resolvedCredential ?? null
+      resolvedCredential ?? null,
+      disposableStorage
     );
+  }
+
+  async verifyDisposableStoragePermissions(threadId: string, args: string[], scratch: string, credential?: ResolvedCredential | null,
+    onChildSpawn?: (child: ChildProcess) => void): Promise<void> {
+    const instance = this.registry.get(threadId);
+    if (instance?.disposable_storage !== true) throw new Error("Disposable storage was not requested");
+    const cwd = this.resolveWorkdir(instance.working_dir ?? this.agentWorkdir);
+    const env = this.buildChildEnv(credential ?? null);
+    env.TMPDIR = env.TMP = env.TEMP = scratch;
+    const command = args[0];
+    if (!command) throw new Error("Missing disposable validator command");
+    assertCodexDisposableStorageVersion(String(this.execFileSyncFn(command, ["--version"], { encoding: "utf8", timeout: 5_000, cwd, env })));
+    await verifyDisposableStorageConfig(command, args.slice(1), cwd, env, scratch, undefined, undefined, onChildSpawn);
   }
 
   spawnStreamAgent(
@@ -253,7 +272,9 @@ export class InstanceManager {
     args: string[],
     prompt: string,
     traceId?: string | null,
-    resolvedCredential?: ResolvedCredential | null
+    resolvedCredential?: ResolvedCredential | null,
+    scratchDirectory?: string,
+    onChildSpawn?: (child: ChildProcess) => void
   ): StreamSpawnResult {
     if (args.length === 0 || !args[0]) {
       throw new Error(`Cannot spawn stream agent for thread_id=${threadId}: missing command`);
@@ -262,7 +283,23 @@ export class InstanceManager {
     const instance = this.registry.get(threadId);
     const spawnWorkdir = this.resolveWorkdir(instance?.working_dir ?? this.agentWorkdir);
     const childEnv = this.buildChildEnv(resolvedCredential ?? null);
+    if (scratchDirectory !== undefined) {
+      if (instance?.disposable_storage !== true || instance.agent_type !== "codex"
+        || instance.mode !== "stateless_call" || instance.sandbox_mode !== "read-only") {
+        throw new Error("Disposable storage requires an opted-in read-only stateless Codex instance");
+      }
+      childEnv.TMPDIR = scratchDirectory;
+      childEnv.TMP = scratchDirectory;
+      childEnv.TEMP = scratchDirectory;
+    } else if (instance?.disposable_storage === true) {
+      throw new Error("Disposable storage was requested but no isolated scratch was provisioned");
+    }
     const [command, ...commandArgs] = args;
+    if (scratchDirectory !== undefined) {
+      assertCodexDisposableStorageVersion(String(this.execFileSyncFn(command, ["--version"], {
+        encoding: "utf8", timeout: 5_000, env: childEnv, cwd: spawnWorkdir
+      })));
+    }
 
     this.log.info(
       {
@@ -284,6 +321,9 @@ export class InstanceManager {
       env: childEnv,
       cwd: spawnWorkdir
     });
+    // Transfer ownership before any post-spawn setup can throw. The router must
+    // not mistake a failed stdio setup for a process that never existed.
+    onChildSpawn?.(child);
 
     if (!child.stdin || !child.stdout) {
       child.kill();
@@ -531,7 +571,10 @@ export class InstanceManager {
       existing.reasoning_effort,
       null,
       existing.integration_profile,
-      existing.sandbox_mode
+      existing.sandbox_mode,
+      undefined,
+      null,
+      existing.disposable_storage
     );
     const current = this.registry.get(restartedThreadId);
 
@@ -694,7 +737,10 @@ export class InstanceManager {
       nextReasoningEffort,
       null,
       existing.integration_profile,
-      existing.sandbox_mode
+      existing.sandbox_mode,
+      undefined,
+      null,
+      existing.disposable_storage
     );
     const current = this.registry.get(restartedThreadId);
 
@@ -843,7 +889,8 @@ export class InstanceManager {
     integrationProfile?: string,
     sandboxMode?: SandboxMode,
     caller?: CallerIdentity,
-    resolvedCredential?: ResolvedCredential | null
+    resolvedCredential?: ResolvedCredential | null,
+    disposableStorage?: boolean
   ): Promise<string> {
     let lastError: unknown;
     const reservedThreadId = threadIdOverride ?? this.nextThreadId(type);
@@ -863,7 +910,8 @@ export class InstanceManager {
           integrationProfile,
           sandboxMode,
           caller,
-          resolvedCredential ?? null
+          resolvedCredential ?? null,
+          disposableStorage
         );
       } catch (error) {
         lastError = error;
@@ -919,11 +967,16 @@ export class InstanceManager {
     integrationProfile?: string,
     sandboxMode?: SandboxMode,
     caller?: CallerIdentity,
-    resolvedCredential?: ResolvedCredential | null
+    resolvedCredential?: ResolvedCredential | null,
+    disposableStorage?: boolean
   ): Promise<string> {
     const threadId = threadIdOverride ?? this.nextThreadId(type);
     const traceId = spawnTraceId ?? null;
     const spawnWorkdir = this.resolveWorkdir(workingDirectory ?? this.agentWorkdir);
+    if (disposableStorage === true && (type !== "codex" || mode !== "stateless_call"
+      || sandboxMode !== "read-only" || integrationProfile !== undefined)) {
+      throw new Error("disposable storage requires explicit read-only stateless Codex without an integration profile");
+    }
     if (mode === "stateless_call") {
       return this.spawnStatelessInstance(
         type,
@@ -935,7 +988,8 @@ export class InstanceManager {
         integrationProfile,
         sandboxMode,
         caller,
-        resolvedCredential ?? null
+        resolvedCredential ?? null,
+        disposableStorage
       );
     }
     // `bridge` mode for stream-capable agents (codex / claude / gemini) is
@@ -1141,7 +1195,8 @@ export class InstanceManager {
     integrationProfile?: string,
     sandboxMode?: SandboxMode,
     caller?: CallerIdentity,
-    resolvedCredential?: ResolvedCredential | null
+    resolvedCredential?: ResolvedCredential | null,
+    disposableStorage?: boolean
   ): string {
     if (type !== "codex") {
       throw new Error("stateless_call mode is only supported for codex");
@@ -1157,6 +1212,7 @@ export class InstanceManager {
       reasoning_effort: reasoningEffort,
       integration_profile: integrationProfile,
       sandbox_mode: "read-only",
+      ...(disposableStorage === true ? { disposable_storage: true } : {}),
       auto_approve: false,
       supportsStream: true,
       mode: "stateless_call",

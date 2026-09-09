@@ -73,6 +73,7 @@ const spawnRequestBodySchema = z.object({
   auto_approve: z.boolean().default(true),
   integration_profile: IntegrationProfileSchema.optional(),
   sandbox_mode: SandboxModeSchema.optional(),
+  disposable_storage: z.boolean().optional(),
   /** GUI picker path or direct absolute directory override. */
   repo: z.string().optional(),
   /**
@@ -1534,6 +1535,7 @@ export class WebInterfaceServer {
           effort: modelReference.reasoningEffort,
           integrationProfile: body.integration_profile,
           sandboxMode,
+          disposableStorage: body.disposable_storage,
           credentialId: body.credential_id,
           caller: this.extractInboundCaller(request)
         })
@@ -2170,6 +2172,7 @@ export class WebInterfaceServer {
     effort?: ReasoningEffort;
     integrationProfile?: IntegrationProfile;
     sandboxMode?: SandboxMode;
+    disposableStorage?: boolean;
     credentialId?: string;
     historyLimit?: number;
     historyMaxContentChars?: number;
@@ -2194,6 +2197,7 @@ export class WebInterfaceServer {
         ...(params.effort && { effort: params.effort }),
         ...(params.integrationProfile && { integration_profile: params.integrationProfile }),
         ...(params.sandboxMode && { sandbox_mode: params.sandboxMode }),
+        ...(params.disposableStorage !== undefined && { disposable_storage: params.disposableStorage }),
         ...(params.credentialId && { credential_id: params.credentialId }),
         ...(params.historyLimit !== undefined && { history_limit: params.historyLimit }),
         ...(params.historyMaxContentChars !== undefined && { history_max_content_chars: params.historyMaxContentChars }),

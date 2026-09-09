@@ -54,6 +54,22 @@ const socketModeOptions = {
   agentapiAttachSocketSupport: true
 } as const;
 
+test("disposable storage is typed, opt-in and limited to readonly stateless Codex", async () => {
+  const registry = new InstanceRegistry();
+  const manager = new InstanceManager(registry, { agentWorkdir: process.cwd() });
+  const plain = await manager.spawn("codex", "stateless_call", process.cwd());
+  assert.equal(registry.get(plain)?.disposable_storage, undefined);
+  for (const callerId of ["repair-controller-a", "independent-review-b"]) {
+    const thread = await manager.spawn("codex", "stateless_call", process.cwd(), "gpt-5.4", false,
+      "xhigh", null, undefined, "read-only", { caller_id: callerId, authority: "admin" } as never, null, true);
+    assert.equal(registry.get(thread)?.disposable_storage, true);
+  }
+  await assert.rejects(manager.spawn("codex", "bridge", process.cwd(), undefined, false,
+    undefined, null, undefined, "read-only", undefined, null, true), /disposable/);
+  await assert.rejects(manager.spawn("codex", "stateless_call", process.cwd(), undefined, false,
+    undefined, null, "ads_public", "read-only", undefined, null, true), /disposable/);
+});
+
 test("spawn registers a streaming-bridge codex instance without launching agentapi", async () => {
   // After the 2026-05-20 streaming-default change, codex/claude/gemini in
   // `bridge` mode are metadata-only: no agentapi child is forked at spawn,
@@ -601,6 +617,34 @@ test("spawnStreamAgent launches a provider CLI directly and pipes the prompt ove
   assert.equal(spawnCalls[0]?.options?.cwd, "/tmp");
   assert.deepEqual(spawnCalls[0]?.options?.stdio, ["pipe", "pipe", "pipe"]);
   assert.equal(child.stdin.read()?.toString("utf8"), "Summarize this");
+});
+
+test("disposable stream pins temporary env and fails closed before spawn for unsupported CLI", () => {
+  const registry = new InstanceRegistry();
+  registry.register({ thread_id: "codex_disposable", agent_type: "codex", mode: "stateless_call",
+    sandbox_mode: "read-only", disposable_storage: true, socket_path: "stateless:codex_disposable",
+    working_dir: "/tmp", pid: 0, status: "idle", created_at: new Date().toISOString() });
+  let version = "codex-cli 0.153.4";
+  let launches = 0;
+  const scratch = "/private/tmp/meridian-validation-unit/scratch";
+  const manager = new InstanceManager(registry, {
+    execFileSyncFn: ((command: string, args: string[]) => {
+      assert.equal(command, "codex"); assert.deepEqual(args, ["--version"]); return version;
+    }) as never,
+    spawnFn: ((_command: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
+      launches++;
+      assert.equal(options.env.TMPDIR, scratch);
+      assert.equal(options.env.TMP, scratch);
+      assert.equal(options.env.TEMP, scratch);
+      return new FakeChildProcess(3390) as never;
+    }) as never
+  });
+  manager.spawnStreamAgent("codex_disposable", "codex", ["codex", "exec", "--json"], "probe", null, null, scratch);
+  assert.equal(launches, 1);
+  version = "codex-cli 0.153.3";
+  assert.throws(() => manager.spawnStreamAgent("codex_disposable", "codex", ["codex", "exec"], "probe", null, null, scratch), /0.153.4/);
+  assert.throws(() => manager.spawnStreamAgent("codex_disposable", "codex", ["codex", "exec"], "probe"), /no isolated scratch/);
+  assert.equal(launches, 1);
 });
 
 test("spawnStreamAgent injects managed codex credential env into the provider CLI", () => {

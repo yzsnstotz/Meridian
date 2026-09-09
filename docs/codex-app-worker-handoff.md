@@ -19,6 +19,35 @@ Separate the delivery driver from expensive investigation. On this host, use the
 
 Run `node dist/agents/codex-app-controller.js check CONTROLLER` first (using the pinned runtime below). It returns compact request IDs, ownership and native-only duties, and persists `lastCheckAt` separately from `lastAuditCompletedAt`. Service every independent ready request before a due deep audit. Interleave short queue checks during a long audit, and check newly eligible downstream/repair work after validation. Only after actually completing the full audit run `node dist/agents/codex-app-controller.js audit-complete CONTROLLER`; a check is not an audit completion. These private, locked checkpoints live in the queue's `.controllers` subdirectory and survive restart. Neither command submits work, changes request ownership nor refreshes worker progress. A corrupt checkpoint is an explicit error requiring repair, never an implicit successful scan/audit. Requests owned by another controller must be reconciled with that owner, not claimed again.
 
+## Repair duties are independent of audit cadence
+
+A confirmed unresolved blocker enters the scoped `resolve --auto` repair path
+even when `audit_due` is false. Read the installed resolve skill in full before
+diagnosing; a known hold is not required to become a new fault to qualify.
+The heartbeat and a Meridian PM resolver share one canonical repair owner, not
+two controllers. PM execution ending does not establish that its issue is resolved.
+
+Check canonical `dispatch-status` resolution duties on every delivery pass.
+For each blocked attempt, require a durable owner, next executable action,
+actual progress evidence and a bounded next-check/deadline. An unowned or overdue
+duty is actionable. Follow an active repair owner without duplicate PM dispatch.
+A real external wait additionally needs an accountable external party, a
+request/evidence reference and an observable release condition. Re-evaluate at
+expiry; do not endlessly extend a deadline on unchanged evidence.
+
+`lastCheckAt` and `lastAuditCompletedAt` are inspection clocks, not repair
+progress. Neither an audit nor repeated identical observations refreshes actual
+progress or clears a duty. If the installed Roles version lacks these fields,
+record that integration gap and use a scoped decision ledger, not an empty-duty
+success. Preserve unrelated active owners and human escalation gates.
+
+Do not repeat an unchanged failing execution. This forbids validator retry
+storms; it does not forbid repairing the execution environment through supported,
+authorized mechanisms. Never bypass a denial, weaken independent acceptance, or
+treat producer self-tests as a validator receipt. A missing capability that truly
+requires external action must be named and assigned, not silently left for the
+next hourly audit. Quiet notifications are independent from useful repair work.
+
 ### Public delivery evidence
 
 Hub `status` and authenticated `GET /api/status?thread_id=OWNER` expose additive, provider-neutral `execution` metadata. The `kind`, `state` and exact `request_id` retain reservation semantics. `delivery_phase` distinguishes queued, claimed, submitted, native running and cancellation; thread binding alone is not execution. Optional enqueue, submit, start and real changed observation timestamps, plus native thread/turn IDs, support diagnostics without exposing prompts, receipts or results. Legacy timestamps remain unknown unless reconstructable from the actual transition history. Observing the same progress again must not reset its freshness. A terminal request is omitted and cannot hide or resurrect a subsequent request for the same owner. Roles scheduling reservations must remain intact while its display shows the delivery phase separately.

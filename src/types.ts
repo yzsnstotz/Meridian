@@ -223,6 +223,7 @@ export const HubPayloadSchema = z.object({
   auto_approve: z.boolean().optional(),
   integration_profile: IntegrationProfileSchema.optional(),
   sandbox_mode: SandboxModeSchema.optional(),
+  disposable_storage: z.boolean().optional(),
   monitor_updates_enabled: z.boolean().optional(),
   monitor_updates_interval_sec: z.number().int().positive().optional(),
   history_limit: z.number().int().positive().optional(),
@@ -330,6 +331,7 @@ export const AgentInstanceSchema = z.object({
   auto_approve: z.boolean().default(true),
   integration_profile: z.string().min(1).optional(),
   sandbox_mode: SandboxModeSchema.optional(),
+  disposable_storage: z.boolean().optional(),
   /** Hub request trace that created or last correlated this instance (observability only). */
   spawn_trace_id: z.string().nullable().optional(),
   spawned_by: CallerIdentitySchema.optional(),

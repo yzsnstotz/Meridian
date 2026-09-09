@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { z } from "zod";
 
@@ -1148,7 +1151,6 @@ export class HubRouter {
     ];
     const appHandoff = instance.agent_type === "codex" && useCodexApp(instance.sandbox_mode);
     if (appHandoff) assertCodexAppIdentity(resolvedCredential);
-    const args = this.buildStreamArgs(instance, imagePaths, message.trace_id);
     const prompt = promptWithAttachments.prompt;
     const parser = this.createStreamParser(instance);
     let process: ChildProcess | null = null;
@@ -1181,6 +1183,7 @@ export class HubRouter {
       );
     }
     let streamingDeliveryActive = false;
+    let scratchRoot: string | undefined;
     if (streamingDecision.activate) {
       this.outputBus.beginAdapterDelivery(message.trace_id, {
         threadId: message.thread_id,
@@ -1195,13 +1198,40 @@ export class HubRouter {
 
     try {
       if (this.isRunInterrupted(threadId, message.trace_id)) throw new RunInterruptedError(threadId);
+      let scratchDirectory: string | undefined;
+      if (instance.disposable_storage === true) {
+        if (instance.agent_type !== "codex" || instance.mode !== "stateless_call"
+          || instance.sandbox_mode !== "read-only" || instance.integration_profile !== undefined) {
+          throw new Error("Disposable storage requires an opted-in read-only stateless Codex instance");
+        }
+        scratchRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "meridian-validation-")));
+        fs.chmodSync(scratchRoot, 0o700);
+        scratchDirectory = path.join(scratchRoot, "scratch");
+        fs.mkdirSync(scratchDirectory, { mode: 0o700 });
+        this.log.info({ operation: "validator_disposable_storage", thread_id: threadId,
+          trace_id: message.trace_id, scratch_directory: scratchDirectory,
+          source_access: "read-only", network_access: false }, "Provisioned isolated validation storage");
+      }
+      const args = this.buildStreamArgs(instance, imagePaths, message.trace_id, scratchDirectory);
+      if (scratchDirectory) await this.instanceManager.verifyDisposableStoragePermissions(threadId, args, scratchDirectory, resolvedCredential, child => {
+        process = child;
+        const activeRun = this.activeRunsByThread.get(threadId);
+        if (activeRun?.traceId === message.trace_id) activeRun.streamProcess = child;
+      });
+      if (this.isRunInterrupted(threadId, message.trace_id)) throw new RunInterruptedError(threadId);
       const spawnedAgent = this.instanceManager.spawnStreamAgent(
         threadId,
         instance.agent_type,
         args,
         prompt,
         message.trace_id,
-        resolvedCredential
+        resolvedCredential,
+        scratchDirectory,
+        child => {
+          process = child;
+          const activeRun = this.activeRunsByThread.get(threadId);
+          if (activeRun?.traceId === message.trace_id) activeRun.streamProcess = child;
+        }
       );
       process = spawnedAgent.process;
       const activeRun = this.activeRunsByThread.get(threadId);
@@ -1275,11 +1305,27 @@ export class HubRouter {
       if (instance.mode === "stateless_call" && this.registry.get(threadId)?.status === "running") {
         this.registry.setStatus(threadId, "idle");
       }
-      await cleanupStagedAttachments(transformedAttachments.cleanupPaths);
+      try { await cleanupStagedAttachments(transformedAttachments.cleanupPaths); }
+      finally { if (scratchRoot) {
+        const directory = scratchRoot;
+        const cleanup = () => {
+          try { fs.rmSync(directory, { recursive: true }); }
+          catch (error) { this.log.warn({ operation: "validator_storage_cleanup_failed", thread_id: threadId,
+            trace_id: message.trace_id, scratch_directory: directory, err: String(error) }, "Validation scratch cleanup failed"); }
+        };
+        if (!process || process.exitCode !== null || process.signalCode !== null) {
+          cleanup();
+        } else {
+          // Never remove scratch from a child whose termination is still uncertain.
+          process.once("close", cleanup);
+          this.log.warn({ operation: "validator_storage_cleanup_deferred", thread_id: threadId,
+            trace_id: message.trace_id, scratch_directory: scratchRoot }, "Retaining validation scratch until child termination is confirmed");
+        }
+      } }
     }
   }
 
-  private buildStreamArgs(instance: AgentInstance, imagePaths: string[] = [], requestId: string = randomUUID()): string[] {
+  private buildStreamArgs(instance: AgentInstance, imagePaths: string[] = [], requestId: string = randomUUID(), scratchDirectory?: string): string[] {
     if (instance.agent_type === "claude") {
       return [
         ...buildClaudeStreamArgs(instance.model_id, instance.auto_approve),
@@ -1310,7 +1356,8 @@ export class HubRouter {
             instance.model_id,
             instance.auto_approve,
             instance.reasoning_effort,
-            instance.sandbox_mode
+            instance.sandbox_mode,
+            scratchDirectory
           );
     }
 
@@ -1716,7 +1763,8 @@ export class HubRouter {
         integrationProfile,
         sandboxMode,
         message.caller,
-        spawnTargetCredential
+        spawnTargetCredential,
+        message.payload.disposable_storage
       );
     } catch (primaryErr) {
       const fallbackProvider: "codex" | "claude" | null =
@@ -1759,7 +1807,8 @@ export class HubRouter {
         integrationProfile,
         sandboxMode,
         message.caller,
-        spawnTargetCredential
+        spawnTargetCredential,
+        message.payload.disposable_storage
       );
     }
     const sessionId = encodeSessionId(message.reply_channel.chat_id, message.reply_channel.bot_id);
@@ -2622,6 +2671,7 @@ export class HubRouter {
         message.target === "codex" &&
         message.mode === "stateless_call" &&
         sandboxMode === "read-only" &&
+        message.payload.disposable_storage !== true &&
         message.payload.auto_approve !== true
       );
     }
@@ -2638,6 +2688,7 @@ export class HubRouter {
         instance?.agent_type === "codex" &&
         instance.mode === "stateless_call" &&
         instance.sandbox_mode === "read-only" &&
+        instance.disposable_storage !== true &&
         instance.auto_approve === false
       );
     }

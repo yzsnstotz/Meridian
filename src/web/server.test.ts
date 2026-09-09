@@ -1349,6 +1349,23 @@ test("Web Interface Server accepts stateless_call spawn mode", async () => {
   });
 });
 
+test("Web Interface Server forwards explicit disposable validation capability", async () => {
+  const messages: HubMessage[] = [];
+  await withServer(async ({ baseUrl }) => {
+    const response = await fetch(`${baseUrl}/api/spawn?token=secret-token`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "codex", mode: "stateless_call", sandbox_mode: "read-only", disposable_storage: true })
+    });
+    assert.equal(response.status, 200);
+    assert.equal(messages[0]?.payload.disposable_storage, true);
+    assert.equal(messages[0]?.payload.sandbox_mode, "read-only");
+  }, { requestHub: async (message: HubMessage) => {
+    messages.push(message);
+    return { trace_id: message.trace_id, thread_id: "codex_stateless", source: "codex", status: "success" as const,
+      content: "{}", attachments: [], timestamp: new Date().toISOString() };
+  } });
+});
+
 test("Web Interface Server enforces ADS profile spawn safety defaults", async () => {
   const hubMessages: HubMessage[] = [];
   await withServer(async ({ baseUrl }) => {

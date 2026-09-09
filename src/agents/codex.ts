@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { BridgeMode, ReasoningEffort, SandboxMode } from "../types";
 
 const CODEX_AGENT_TYPE = "codex";
@@ -12,6 +13,15 @@ export const codexAgentConfig: CodexAgentConfig = {
   type: CODEX_AGENT_TYPE,
   command: CODEX_CLI_COMMAND
 };
+
+/** This public permissions-profile contract is verified against CLI 0.153.4. */
+export function assertCodexDisposableStorageVersion(versionOutput: string): void {
+  const match = /^codex-cli (\d+)\.(\d+)\.(\d+)(?:\s|$)/.exec(versionOutput.trim());
+  if (!match || !(Number(match[1]) > 0 || Number(match[2]) > 153
+    || (Number(match[2]) === 153 && Number(match[3]) >= 4))) {
+    throw new Error("Disposable validation storage requires verified Codex CLI >= 0.153.4; no sandbox fallback is allowed");
+  }
+}
 
 function appendReasoningEffortConfig(args: string[], reasoningEffort?: ReasoningEffort): void {
   if (!reasoningEffort) {
@@ -83,7 +93,8 @@ export function buildCodexExecArgs(
   modelId?: string,
   autoApprove?: boolean,
   reasoningEffort?: ReasoningEffort,
-  sandboxMode?: SandboxMode
+  sandboxMode?: SandboxMode,
+  scratchDirectory?: string
 ): string[] {
   void autoApprove;
   const args = [codexAgentConfig.command, "exec", "--json"];
@@ -92,7 +103,18 @@ export function buildCodexExecArgs(
   if (modelId) {
     args.push("--model", modelId);
   }
-  if (sandboxMode === "read-only") {
+  if (scratchDirectory !== undefined) {
+    if (sandboxMode !== "read-only") throw new Error("Disposable validation storage requires read-only source access");
+    if (!path.isAbsolute(scratchDirectory) || path.basename(scratchDirectory) !== "scratch"
+      || !/^meridian-validation-[a-zA-Z0-9_-]+$/.test(path.basename(path.dirname(scratchDirectory)))) {
+      throw new Error("Invalid isolated validation scratch directory");
+    }
+    // Unique invocation-only profile; the effective config is checked before launch.
+    const profile = path.basename(path.dirname(scratchDirectory));
+    args.push("-c", `default_permissions=${JSON.stringify(profile)}`, "-c",
+      `permissions.${profile}={extends=":read-only",filesystem={${JSON.stringify(scratchDirectory)}="write"},network={enabled=false}}`,
+      "-c", 'approval_policy="never"', "--skip-git-repo-check");
+  } else if (sandboxMode === "read-only") {
     // Read-only sandbox keeps approvals enforced, but headless exec still cannot
     // answer the trusted-directory prompt — bypass the git-repo gate explicitly.
     args.push("--sandbox", "read-only", "--skip-git-repo-check");

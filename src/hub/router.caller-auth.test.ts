@@ -274,6 +274,29 @@ test("authority gate: stateless_call caller can spawn Codex stateless read-only 
   }
 });
 
+test("authority gate: disposable storage requires write authority for both spawn and run", async () => {
+  const harness = await setupHarness();
+  try {
+    const restricted = harness.mintCaller("restricted-validator", { authority: "stateless_call" });
+    const payload = { content: "", attachments: [], sandbox_mode: "read-only" as const, disposable_storage: true };
+    const denied = await harness.router.route(baseMessage({ intent: "spawn", target: "codex", mode: "stateless_call", payload }),
+      { caller_id: "restricted-validator", caller_key: restricted });
+    assert.equal(denied.content, "caller_not_authorized_for_intent");
+    for (const id of ["authorized-validation-alpha", "authorized-validation-beta"]) {
+      const key = harness.mintCaller(id, { authority: "write" });
+      const result = await harness.router.route(baseMessage({ intent: "spawn", target: "codex", mode: "stateless_call", payload }),
+        { caller_id: id, caller_key: key });
+      assert.equal(result.status, "success");
+      const body = parseJsonPrefix<{ instance: { thread_id: string; disposable_storage: boolean } }>(result.content);
+      assert.equal(body.instance.disposable_storage, true);
+      const deniedRun = await harness.router.route(baseMessage({ intent: "run", thread_id: body.instance.thread_id,
+        target: body.instance.thread_id, mode: "stateless_call", payload: { content: "probe", attachments: [] } }),
+        { caller_id: "restricted-validator", caller_key: restricted });
+      assert.equal(deniedRun.content, "caller_not_authorized_for_intent");
+    }
+  } finally { harness.cleanup(); }
+});
+
 test("authority gate: stateless_call caller cannot run bridge threads", async () => {
   const harness = await setupHarness();
   try {

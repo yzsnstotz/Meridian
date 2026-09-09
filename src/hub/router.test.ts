@@ -12,6 +12,157 @@ import { OutputBus } from "./output-bus";
 import { InstanceRegistry } from "./registry";
 import { HubRouter } from "./router";
 
+test("HubRouter provisions unique disposable scratch for exact runs and cleans it on terminal", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const registry = new InstanceRegistry();
+  registry.register({ thread_id: "codex_scratch", agent_type: "codex", sandbox_mode: "read-only",
+    disposable_storage: true, mode: "stateless_call", socket_path: "stateless:codex_scratch", pid: 0,
+    status: "idle", supportsStream: true, created_at: new Date().toISOString() });
+  const scratches: string[] = [];
+  const fake = {
+    verifyDisposableStoragePermissions: async () => {},
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    spawnStreamAgent: (_id: string, _type: string, args: string[], _prompt: string, _trace: string, _credential: unknown, scratch: string) => {
+      assert.equal(typeof scratch, "string");
+      assert.equal(fs.statSync(scratch).isDirectory(), true);
+      assert.equal(fs.statSync(path.dirname(scratch)).mode & 0o777, 0o700);
+      assert.ok(args.some(arg => arg.includes(JSON.stringify(scratch) + '="write"')));
+      assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
+      scratches.push(scratch);
+      return { stdout: Readable.from(['{"type":"thread.started","thread_id":"validation-session"}\n{"type":"item.completed","thread_id":"validation-session","item":{"id":"v-msg","type":"agent_message","text":"storage checked"}}\n{"type":"turn.completed","thread_id":"validation-session","usage":{"total_tokens":10}}\n']), process: createClosedProcess() };
+    }
+  };
+  const router = new HubRouter(registry, { instanceManager: fake as never });
+  for (const trace_id of ["11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]) {
+    const result = await router.route(baseMessage({ trace_id, thread_id: "codex_scratch", target: "codex_scratch", mode: "stateless_call" }));
+    assert.equal(result.status, "success", result.content);
+    assert.equal(fs.existsSync(path.dirname(scratches.at(-1)!)), false);
+  }
+  assert.equal(new Set(scratches).size, 2);
+});
+
+test("HubRouter cleans disposable scratch after failed spawn attempts", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const registry = new InstanceRegistry();
+  registry.register({ thread_id: "codex_scratch_failure", agent_type: "codex", sandbox_mode: "read-only",
+    disposable_storage: true, mode: "stateless_call", socket_path: "stateless:codex_scratch_failure", pid: 0,
+    status: "idle", supportsStream: true, created_at: new Date().toISOString() });
+  const scratches: string[] = [];
+  const fake = {
+    verifyDisposableStoragePermissions: async () => {},
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    spawnStreamAgent: (_id: string, _type: string, _args: string[], _prompt: string, _trace: string, _credential: unknown, scratch: string) => {
+      assert.equal(fs.existsSync(scratch), true);
+      scratches.push(scratch);
+      throw new Error("unsupported CLI capability");
+    }
+  };
+  const router = new HubRouter(registry, { instanceManager: fake as never });
+  const result = await router.route(baseMessage({ thread_id: "codex_scratch_failure", target: "codex_scratch_failure", mode: "stateless_call" }));
+  assert.equal(result.status, "error");
+  assert.ok(scratches.length > 0);
+  for (const scratch of scratches) assert.equal(fs.existsSync(path.dirname(scratch)), false);
+});
+
+test("HubRouter retains scratch for a spawned but unconfirmed child and reclaims on close", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const registry = new InstanceRegistry();
+  registry.register({ thread_id: "codex_scratch_late", agent_type: "codex", sandbox_mode: "read-only",
+    disposable_storage: true, mode: "stateless_call", socket_path: "stateless:codex_scratch_late", pid: 0,
+    status: "idle", supportsStream: true, created_at: new Date().toISOString() });
+  const pending: Array<{ scratch: string; child: ReturnType<typeof createClosedProcess> }> = [];
+  const fake = {
+    verifyDisposableStoragePermissions: async () => {},
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    spawnStreamAgent: (_id: string, _type: string, _args: string[], _prompt: string, _trace: string,
+      _credential: unknown, scratch: string, onSpawn: (child: unknown) => void) => {
+      const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null,
+        stderr: Readable.from([]), kill: () => true }) as ReturnType<typeof createClosedProcess>;
+      pending.push({ scratch, child });
+      onSpawn(child);
+      throw new Error("stdio unavailable after real process spawn");
+    }
+  };
+  const router = new HubRouter(registry, { instanceManager: fake as never });
+  const result = await router.route(baseMessage({ thread_id: "codex_scratch_late", target: "codex_scratch_late", mode: "stateless_call" }));
+  assert.equal(result.status, "error");
+  assert.ok(pending.length > 0);
+  for (const { scratch, child } of pending) {
+    assert.equal(fs.existsSync(scratch), true, "live or unconfirmed child retains scratch");
+    child.exitCode = 1;
+    child.emit("close", 1, null);
+    assert.equal(fs.existsSync(path.dirname(scratch)), false, "terminal callback reclaims scratch");
+  }
+});
+
+test("HubRouter interrupt during permission preflight prevents validator spawn", async () => {
+  const registry = new InstanceRegistry();
+  registry.register({ thread_id: "codex_preflight_interrupt", agent_type: "codex", sandbox_mode: "read-only",
+    disposable_storage: true, mode: "stateless_call", socket_path: "stateless:codex_preflight_interrupt", pid: 0,
+    status: "idle", supportsStream: true, created_at: new Date().toISOString() });
+  let unblock!: () => void, entered!: () => void, spawns = 0;
+  const gate = new Promise<void>(resolve => { unblock = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const fake = {
+    verifyDisposableStoragePermissions: async () => { entered(); await gate; },
+    interrupt: async () => "interrupted",
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    spawnStreamAgent: () => { spawns++; throw new Error("validator must not start after interruption"); }
+  };
+  const router = new HubRouter(registry, { instanceManager: fake as never });
+  const running = router.route(baseMessage({ thread_id: "codex_preflight_interrupt", target: "codex_preflight_interrupt", mode: "stateless_call" }));
+  await started;
+  const interrupted = await router.route(baseMessage({ intent: "interrupt", thread_id: "codex_preflight_interrupt", target: "codex_preflight_interrupt",
+    trace_id: "33333333-cccc-4ccc-8ccc-cccccccccccc" }));
+  assert.equal(interrupted.status, "success");
+  unblock();
+  const result = await running;
+  assert.equal(result.status, "error");
+  assert.equal(spawns, 0);
+});
+
+test("HubRouter keeps preflight scratch until an unconfirmed diagnostic child closes", async () => {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const registry = new InstanceRegistry();
+  registry.register({ thread_id: "codex_preflight_late", agent_type: "codex", sandbox_mode: "read-only",
+    disposable_storage: true, mode: "stateless_call", socket_path: "stateless:codex_preflight_late", pid: 0,
+    status: "idle", supportsStream: true, created_at: new Date().toISOString() });
+  const pending: Array<{ scratch: string; child: ReturnType<typeof createClosedProcess> }> = [];
+  let spawns = 0;
+  const fake = {
+    verifyDisposableStoragePermissions: async (_id: string, _args: string[], scratch: string, _credential: unknown, onSpawn: (child: unknown) => void) => {
+      const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null,
+        stderr: Readable.from([]), kill: () => true }) as ReturnType<typeof createClosedProcess>;
+      pending.push({ scratch, child }); onSpawn(child);
+      throw new Error("permission preflight timed out before its child terminated");
+    },
+    getAttachedThread: () => null,
+    getThreadAttachment: () => ({ sessions: [], interface_id: null }),
+    snapshotState: () => ({ version: 1, updated_at: new Date().toISOString(), instances: registry.list(), session_bindings: {} }),
+    spawnStreamAgent: () => { spawns++; throw new Error("must not launch"); }
+  };
+  const router = new HubRouter(registry, { instanceManager: fake as never });
+  const result = await router.route(baseMessage({ thread_id: "codex_preflight_late", target: "codex_preflight_late", mode: "stateless_call" }));
+  assert.equal(result.status, "error"); assert.equal(spawns, 0); assert.ok(pending.length > 0);
+  for (const { scratch, child } of pending) {
+    assert.equal(fs.existsSync(scratch), true);
+    child.exitCode = 1; child.emit("close", 1, null);
+    assert.equal(fs.existsSync(path.dirname(scratch)), false);
+  }
+});
+
 function useCliSurface(t: TestContext): void {
   const previous = process.env.MERIDIAN_CODEX_EXECUTION_SURFACE;
   t.after(() => {
