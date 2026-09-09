@@ -106,3 +106,19 @@ At06:05Z, R-DB-FREEZE/codex_1732 remains in its original native turn with genuin
 Current canonical state:79rows,17completed,60pending,2active reservations (one producer and one independent validator),0failed/0stale. BATCH-3-GATE explicitly waits for both producers, and N-SC-CORE/N-API-AUTH wait for BATCH-3-GATE. No additional App delivery or PM is pending. The hourly audit checkpoint remains05:16:45.755Z; this light check did not advance it.
 
 Acceptance update: real producer-repair terminal receipt → independent validator takeover is observed. Independent repair acceptance, repaired integration, consumer re-entry and a same-Hub-owner validator fix-cycle/send remain unproven. The ordinary native App catalog omission remains unresolved. No full scheduled E2E or product release is claimed.
+
+
+### Independent repair acceptance — 06:08 scheduled check
+
+The actual06:08:15.317Z scheduled invocation found N-TEST-HARNESS completed with validation_provenance=validated. The canonical append-only report records independent validatorcodex_1733, score1 at06:07:28.447Z, exact refac4f645264b4aae8f215adaffe333e9d85888e55. Its real Safe diagnostics ran through Chisel; the validator explicitly retained cache/temp-write limitations and did not claim the full producer Foundry run independently reproduced. Authenticated lookup of this already-removed validator now returns not registered, consistent with completed canonical ownership, not an active-owner stall.
+
+R-DB-FREEZE remains in its original native turn; its new commentary reports committed-SHA DB acceptance and push, and root independently read origin atdd8f1fa08a6bc54395e9734270d8e36d942d3fbc. Only this changed commentary was observed, at06:09:02.251Z. The canonical summary is18completed/60pending/1running/0failed/0stale; BATCH-3-GATE now has only R-DB-FREEZE unmet. No repeated continue, duplicate validator or false audit-complete was issued. Independent harness repair acceptance is now observed; DB acceptance, repaired integration and consumer re-entry remain pending.
+
+
+### Database repair terminal and validation takeover — 06:12 scheduled invocation
+
+The actual06:12:45.335Z scheduled invocation independently observed R-DB-FREEZE/codex_1732 terminal completion of its exact native turn01a084a2-001e-7860-98f2-a73c03c741b2 at06:10:12Z. The original requestc4d85545-ea72-440b-87b1-e5f13e609ed6 automatically became completed at06:10:24.357Z (~12seconds), retaining the real complete marker. The resolver did not issue complete or retry.
+
+Canonical lifecycle now reports awaiting_validation with CLI validatorcodex_1734. Authenticated Hub status independently confirms that exact owner running in stateless_call mode. The producer's exact commit remainsdd8f1fa08a6bc54395e9734270d8e36d942d3fbc, with reported118/118 DB checks and additional App/Chain/coverage gates. These are producer results pending independent validation. The canonical role remains active with dispatchercodex_1727, no active global/worker PM, no App deliveries awaiting service and no eligible downstream while the database validator owns this row. Empty App queue does not mean the round is finished or idle.
+
+Both actual producer-repair terminals have now returned automatically and triggered independent validation; the harness repair is independently accepted. Database acceptance, new BATCH-3-GATE request/acceptance, consumer re-entry and a real same-Hub-owner validation fix-cycle remain pending. This check leaves the hourly audit checkpoint unchanged.
