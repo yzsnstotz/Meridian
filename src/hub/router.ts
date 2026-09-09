@@ -11,6 +11,7 @@ import { assertCodexAppIdentity, buildCodexAppArgs, useCodexApp } from "../agent
 import { AppHandoffQueue } from "../agents/codex-app-queue";
 import { buildGeminiStreamArgs } from "../agents/gemini";
 import { isApprovalPrompt, parseApprovalSummaryFromRawContent } from "../shared/approval";
+import { appHandoffExecution } from "../agents/codex-app-delivery";
 import { cleanupStagedAttachments, transformAttachments } from "../shared/attachment-transform";
 import { classifyAgentOutput, type AgentOutputKind } from "../shared/agent-output";
 import { shapeHistoryPayload } from "../shared/history-payload";
@@ -1459,17 +1460,15 @@ export class HubRouter {
     const records = new AppHandoffQueue().list(true);
     for (const record of records) {
       if (record.workerId !== threadId) continue;
-      const ownership = ExternalExecutionOwnershipSchema.safeParse({
-        kind: "external_handoff", state: record.state, request_id: record.id
-      });
-      if (ownership.success) return ownership.data;
+      const ownership = appHandoffExecution(record);
+      if (ownership) return ownership;
     }
     const active = this.activeRunsByThread.get(threadId);
     // Cover the synchronous reservation before the executor persists its
     // queue record, but never resurrect a request with a terminal receipt.
     if (active?.appHandoff && !records.some(record => record.id === active.traceId)) {
       return ExternalExecutionOwnershipSchema.parse({
-        kind: "external_handoff", state: "pending", request_id: active.traceId
+        kind: "external_handoff", state: "pending", request_id: active.traceId, delivery_phase: "queued"
       });
     }
     return undefined;

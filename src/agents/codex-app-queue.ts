@@ -30,6 +30,8 @@ const Record = Input.extend({
   submissionAttempted: z.boolean().default(false),
   state: State, controller: Id.optional(), turnId: z.string().optional(),
   createdAt: z.string(), updatedAt: z.string(), result: Result.optional(),
+  submittedAt: z.string().datetime().optional(), startedAt: z.string().datetime().optional(),
+  lastObservedAt: z.string().datetime().optional(),
   receipt: z.string().optional(), progress: z.string().optional(),
   history: z.array(z.object({ state: State, at: z.string() }))
 });
@@ -102,10 +104,10 @@ export class AppHandoffQueue {
     });
   }
 
-  private transition(id: string, update: (record: AppHandoffRequest) => void): AppHandoffRequest {
+  private transition(id: string, update: (record: AppHandoffRequest) => void | false): AppHandoffRequest {
     return this.locked(() => {
       const record = this.read(id);
-      update(record);
+      if (update(record) === false) return record;
       record.updatedAt = new Date().toISOString();
       record.history.push({ state: record.state, at: record.updatedAt });
       return this.save(record);
@@ -126,6 +128,7 @@ export class AppHandoffQueue {
       this.assertController(record, controller);
       if (record.state !== "claimed" || record.submissionAttempted) throw new Error("Native submission is not allowed; never resend an uncertain request");
       record.submissionAttempted = true;
+      record.submittedAt = new Date().toISOString();
     });
   }
 
@@ -152,7 +155,17 @@ export class AppHandoffQueue {
       if (!record.threadId) throw new Error("No native App thread is bound");
       if (!["claimed", "started", "cancel_requested"].includes(record.state)) throw new Error("Request is not claimed");
       if (record.turnId && record.turnId !== turnId) throw new Error("App turn conflict; do not duplicate execution");
-      record.turnId = turnId;
+      if (record.turnId) {
+        // Same-turn acknowledgements are not fresh execution. For a legacy
+        // record recover only an original transition; unknown stays unknown.
+        if (record.startedAt) return false;
+        const original = record.history.find(item => item.state === "started")?.at;
+        if (!original || !Number.isFinite(Date.parse(original))) return false;
+        record.startedAt = new Date(original).toISOString();
+      } else {
+        record.turnId = turnId;
+        record.startedAt = new Date().toISOString();
+      }
       if (record.state !== "cancel_requested") record.state = "started";
     });
   }
@@ -173,7 +186,10 @@ export class AppHandoffQueue {
       this.assertController(record, controller);
       if (TERMINAL.has(record.state)) throw new Error("Cannot update a terminal request");
       record.receipt = receipt;
-      if (progress) record.progress = progress;
+      if (progress && progress !== record.progress) {
+        record.progress = progress;
+        if (record.turnId) record.lastObservedAt = new Date().toISOString();
+      }
     });
   }
 

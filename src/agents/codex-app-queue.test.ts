@@ -1,16 +1,56 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { AppHandoffQueue } from "./codex-app-queue";
 
 const thread = "01a07727-ac38-7c23-8ef3-4bc90f594b9a";
+
+test("submission and native start timestamps survive reopen and are not refreshed by observations", () => {
+  const f = fixture();
+  try {
+    f.queue.create(request());
+    f.queue.claim("request-one", "controller");
+    const submitted = f.queue.submit("request-one", "controller") as unknown as { submittedAt?: string };
+    assert.ok(submitted.submittedAt, "durable submission needs its own timestamp");
+    const started = f.queue.started("request-one", "controller", "exact-turn") as unknown as { startedAt?: string };
+    assert.ok(started.startedAt, "native acknowledgement needs its own timestamp");
+    f.queue.observe("request-one", "controller", "receipt", "real changed progress");
+    const observedAt = f.queue.read("request-one").lastObservedAt;
+    assert.ok(observedAt);
+    f.queue.observe("request-one", "controller", "receipt-only-update", "real changed progress");
+    assert.equal(f.queue.read("request-one").lastObservedAt, observedAt, "a duplicate observation is not new progress");
+    f.queue.started("request-one", "controller", "exact-turn");
+    const reopened = new AppHandoffQueue(f.dir).read("request-one") as unknown as { submittedAt?: string; startedAt?: string };
+    assert.equal(reopened.submittedAt, submitted.submittedAt);
+    assert.equal(reopened.startedAt, started.startedAt);
+  } finally { f.close(); }
+});
 function fixture() {
   const dir = mkdtempSync(path.join(os.tmpdir(), "meridian-app-test-"));
   return { queue: new AppHandoffQueue(dir), dir, close: () => rmSync(dir, { recursive: true, force: true }) };
 }
+
+test("replaying a legacy start acknowledgement cannot make an old native turn fresh", () => {
+  const f = fixture();
+  try {
+    f.queue.create(request()); f.queue.claim("request-one", "controller");
+    f.queue.submit("request-one", "controller"); f.queue.started("request-one", "controller", "exact-turn");
+    const filename = path.join(f.dir, "request-one.json");
+    const legacy = JSON.parse(readFileSync(filename, "utf8"));
+    delete legacy.startedAt;
+    const at = "2026-09-08T01:00:00.000Z";
+    legacy.history = [{ state: "started", at }];
+    writeFileSync(filename, JSON.stringify(legacy));
+    assert.equal(f.queue.started("request-one", "controller", "exact-turn").startedAt, at);
+    delete legacy.startedAt; legacy.history = [];
+    writeFileSync(filename, JSON.stringify(legacy));
+    assert.equal(f.queue.started("request-one", "controller", "exact-turn").startedAt, undefined);
+    assert.deepEqual(f.queue.read("request-one").history, [], "unknown history cannot acquire a fresh start from replay");
+  } finally { f.close(); }
+});
 function request(id = "request-one", workerId = "worker-one") {
   return { id, workerId, threadId: thread, cwd: "/tmp/work", prompt: "Run the assigned task", model: "gpt-6-astra", effort: "xhigh" };
 }

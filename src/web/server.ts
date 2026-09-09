@@ -796,6 +796,11 @@ export class WebInterfaceServer {
       return;
     }
 
+    if (requestUrl.pathname === "/api/status" && request.method === "GET") {
+      await this.handleStatusRequest(request, response);
+      return;
+    }
+
     if (requestUrl.pathname === "/api/health" && request.method === "GET") {
       await this.handleHealthRequest(request, response);
       return;
@@ -1040,6 +1045,24 @@ export class WebInterfaceServer {
     }
 
     await this.serveStaticAsset(requestUrl.pathname, response);
+  }
+
+  private async handleStatusRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    const requestUrl = this.getRequestUrl(request);
+    const threadId = z.string().trim().min(1).max(240).parse(requestUrl.searchParams.get("thread_id"));
+    const sessionId = this.resolveSessionId(request, requestUrl, response);
+    const result = HubResultSchema.parse(await this.requestHubForRequest(request, this.buildHubMessage({
+      sessionId, intent: "status", thread_id: threadId, target: threadId, content: "",
+      caller: this.extractInboundCaller(request)
+    })));
+    if (result.status !== "success") {
+      this.respondJson(response, 502, { error: this.friendlyErrorMessage(result.content) });
+      return;
+    }
+    // The Hub appends human-readable attachments after the leading status JSON.
+    const content = result.content.split("\n\nAttached chat sessions:", 1)[0];
+    const status = z.record(z.string(), z.unknown()).parse(JSON.parse(content));
+    this.respondJson(response, 200, { ...status, thread_id: result.thread_id });
   }
 
   private async handleInstancesRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {

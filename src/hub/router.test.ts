@@ -3735,10 +3735,20 @@ test("status exposes only durable external ownership for arbitrary caller and wo
       const result = await router.route(baseMessage({ intent: "status", actor_id: caller, target: workerId, thread_id: workerId }));
       assert.equal(result.status, "success");
       const status = JSON.parse(result.content);
-      assert.deepEqual(status.execution, { kind: "external_handoff", state, request_id: requestId });
+      assert.equal(status.execution.kind, "external_handoff");
+      assert.equal(status.execution.state, state);
+      assert.equal(status.execution.request_id, requestId);
+      assert.equal(status.execution.delivery_phase, state === "pending" ? "queued" : state === "started" ? "running" : state);
+      assert.equal(status.execution.enqueued_at, queue.read(requestId).createdAt);
+      if (state === "started" || state === "cancel_requested") {
+        assert.equal(status.execution.native_thread_id, threadId);
+        assert.equal(status.execution.native_turn_id, "exact-turn");
+        assert.ok(status.execution.submitted_at);
+        assert.ok(status.execution.started_at);
+      }
       assert.equal(status.instance.thread_id, workerId);
       assert.equal(status.agent_status.status, "running");
-      assert.doesNotMatch(result.content, /private prompt|private receipt|private progress|exact-turn/);
+      assert.doesNotMatch(result.content, /private prompt|private receipt|private progress/);
     }
     queue.complete(requestId, "controller", { threadId, turnId: "exact-turn", status: "interrupted", text: "private final" });
     const terminal = await router.route(baseMessage({ intent: "status", actor_id: caller, target: workerId, thread_id: workerId }));
@@ -3773,10 +3783,16 @@ test("status retains durable external ownership when registry or provider status
     } as never });
     const result = await router.route(baseMessage({ intent: "status", target: workerId, thread_id: workerId }));
     assert.equal(result.status, "success");
-    assert.deepEqual(JSON.parse(result.content).execution, { kind: "external_handoff", state: "pending", request_id: workerId });
+    assert.deepEqual(JSON.parse(result.content).execution, { kind: "external_handoff", state: "pending", request_id: workerId,
+      delivery_phase: "queued", enqueued_at: queue.read(workerId).createdAt });
     queue.cancel(workerId);
     const released = await router.route(baseMessage({ intent: "status", target: workerId, thread_id: workerId }));
     assert.equal(released.status, "error");
+    const repairId = `new-request-${missing}`;
+    queue.create({ id: repairId, workerId, cwd: dir, prompt: "private repair" });
+    const repair = await router.route(baseMessage({ intent: "status", target: workerId, thread_id: workerId }));
+    assert.equal(JSON.parse(repair.content).execution.request_id, repairId, "old terminal receipts cannot hide the next request");
+    assert.equal(JSON.parse(repair.content).execution.delivery_phase, "queued");
   }
 });
 
@@ -3812,7 +3828,8 @@ test("status preserves an external reservation before enqueue and keeps attachme
   try {
     const status = await router.route(baseMessage({ intent: "status", target: workerId, thread_id: workerId }));
     const [json, attachment] = status.content.split("\n\nAttached chat sessions:");
-    assert.deepEqual(JSON.parse(json).execution, { kind: "external_handoff", state: "pending", request_id: baseMessage().trace_id });
+    assert.deepEqual(JSON.parse(json).execution, { kind: "external_handoff", state: "pending", request_id: baseMessage().trace_id,
+      delivery_phase: "queued" });
     assert.match(attachment, /session-a/);
     // The executor can still be unwinding after the exact App turn ends.
     // Its in-memory reservation must not resurrect a terminal queue record.

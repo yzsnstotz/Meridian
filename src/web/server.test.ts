@@ -65,6 +65,32 @@ async function withServer(
   }
 }
 
+test("status bridge preserves caller identity, attachment-compatible JSON and explicit errors", async () => {
+  const seen: HubMessage[] = [];
+  await withServer(async ({ baseUrl }) => {
+    assert.equal((await fetch(`${baseUrl}/api/status?thread_id=opaque-owner`)).status, 401);
+    const headers = { Authorization: "Bearer secret-token", "X-Meridian-Caller-Id": "unrelated-reader", "X-Meridian-Caller-Key": "reader-key" };
+    assert.equal((await fetch(`${baseUrl}/api/status`, { headers })).status, 400);
+    for (const threadId of ["opaque-owner", "another-task"]) {
+      const response = await fetch(`${baseUrl}/api/status?thread_id=${threadId}`, { headers });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { thread_id: threadId, execution: { kind: "external_handoff", state: "pending", request_id: "exact-request", delivery_phase: "queued" } });
+    }
+    assert.equal((await fetch(`${baseUrl}/api/status?thread_id=denied`, { headers })).status, 502);
+  }, {
+    requestHub: async () => { throw new Error("must not drop inbound caller identity"); },
+    requestHubAsCaller: async (message: HubMessage, auth: { caller_id: string; caller_key: string }) => {
+      assert.deepEqual(auth, { caller_id: "unrelated-reader", caller_key: "reader-key" });
+      seen.push(message);
+      return { trace_id: message.trace_id, thread_id: message.thread_id, source: "codex", status: message.thread_id === "denied" ? "error" : "success",
+        content: message.thread_id === "denied" ? "caller denied" : JSON.stringify({ execution: { kind: "external_handoff", state: "pending", request_id: "exact-request", delivery_phase: "queued" } }) + "\n\nAttached chat sessions: private-session",
+        attachments: [], timestamp: new Date().toISOString() };
+    }
+  });
+  assert.equal(seen.length, 3);
+  assert.ok(seen.every(message => message.intent === "status" && message.target === message.thread_id && message.caller?.caller_id === "unrelated-reader"));
+});
+
 test("Web Interface Server rejects unauthenticated requests", async () => {
   let hubCallCount = 0;
 
